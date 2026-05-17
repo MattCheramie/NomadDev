@@ -45,8 +45,11 @@ The Docker runner's defaults are intentionally paranoid:
   Docker container, lower than gVisor's intercepted-syscall model.
 - **Hard resource caps**: `Memory`, `NanoCPUs`, `PidsLimit`. Defaults are
   256 MiB / 1 CPU / 256 pids.
-- **AutoRemove on exit** plus a `defer ContainerRemove(force: true)` safety
-  net in case `ContainerStart` fails before AutoRemove engages.
+- **Explicit cleanup via `defer ContainerRemove(force: true)`**. `AutoRemove`
+  is intentionally **off** so the runner can `ContainerInspect` the exited
+  container and read `State.OOMKilled` before cleanup. The deferred force
+  remove runs on every path — success, timeout, ctx cancel, and the
+  create-then-start failure path — so no container is ever leaked.
 - **Single tool, single shape**. Phase 3 only accepts
   `tool="execute_script"` with `args.script` (and optional `args.shell`).
   Anything else returns `sandbox_bad_request` immediately without touching
