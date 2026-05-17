@@ -20,20 +20,27 @@ The architecture is divided into five modular, decoupled components:
 
 ## 🗺️ Project Roadmap
 
-### Phase 1: Mesh & Foundation 
+### Phase 1: Mesh & Foundation
 *Objective: Establish secure, passwordless communication between devices.*
 - [ ] Configure host VPS with Ubuntu 24.04.
 - [ ] Install and configure Tailscale subnet routing.
 - [ ] Verify ICMP and basic TCP packet transmission exclusively over the Tailscale IP range.
 - [ ] Disable public SSH access on the host (port 22).
 
-### Phase 2: Headless Orchestrator (Go)
+Design notes and a non-destructive provisioning checklist live at
+[`infra/`](./infra/) — see `infra/README.md` and `infra/scripts/provision.sh`.
+
+### Phase 2: Headless Orchestrator (Go) — done
 *Objective: Build the core message relay system.*
-- [ ] Initialize the Go module and set up a basic TCP listener.
-- [ ] Implement a WebSocket server utilizing `gorilla/websocket`.
-- [ ] Create a standard JSON event structure for inbound/outbound payloads.
-- [ ] Implement JWT-based authentication to reject unauthorized WebSocket connections.
-- [ ] Build a robust logging and state-recovery mechanism for dropped connections.
+- [x] Initialize the Go module and set up a basic TCP listener.
+- [x] Implement a WebSocket server utilizing `gorilla/websocket`.
+- [x] Create a standard JSON event structure for inbound/outbound payloads.
+- [x] Implement JWT-based authentication to reject unauthorized WebSocket connections.
+- [x] Build a robust logging and state-recovery mechanism for dropped connections.
+
+Implementation lives under [`cmd/orchestrator`](./cmd/orchestrator/) and
+[`internal/`](./internal/). See [`docs/architecture.md`](./docs/architecture.md),
+[`docs/events.md`](./docs/events.md), and [`docs/auth.md`](./docs/auth.md).
 
 ### Phase 3: Ephemeral Sandbox Runner
 *Objective: Safely execute commands and capture outputs without risking the host system.*
@@ -58,6 +65,31 @@ The architecture is divided into five modular, decoupled components:
 - [ ] Build the main chat/event feed UI components.
 - [ ] Create custom UI cards for "Action Approvals" (intercepting sensitive commands before they run).
 - [ ] Implement background synchronization to fetch state history upon app resume.
+
+---
+
+## 🚀 Running the orchestrator (Phase 2)
+
+```sh
+export NOMADDEV_JWT_SECRET="$(head -c 48 /dev/urandom | base64 | tr -d '\n')"
+make build
+./bin/orchestrator -listen :8080
+```
+
+In another shell, mint a token and connect:
+
+```sh
+TOKEN="$(go run ./scripts/gen-jwt -sub matt -sid sess-1 -ttl 1h)"
+./bin/wsclient -url ws://127.0.0.1:8080/ws -token "$TOKEN" -send ping
+```
+
+Run the test suite:
+
+```sh
+go test -race -count=1 ./...
+```
+
+See [`.env.example`](./.env.example) for all configuration knobs.
 
 ---
 
