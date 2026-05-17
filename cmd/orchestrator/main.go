@@ -6,6 +6,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"os"
 	"os/signal"
@@ -47,6 +48,7 @@ func run(listenOverride string) error {
 	logger := nlog.New(cfg.LogLevel)
 	logger.Info("orchestrator: starting",
 		"addr", cfg.ListenAddr,
+		"session_backend", cfg.Session.Backend,
 		"buffer_size", cfg.Session.BufferSize,
 		"max_bytes", cfg.Session.MaxBytes,
 		"idle_ttl", cfg.Session.IdleTTL,
@@ -59,8 +61,7 @@ func run(listenOverride string) error {
 	h := hub.New(logger)
 	go h.Run(rootCtx)
 
-	sessions := session.NewMemoryStore(cfg.Session.BufferSize, cfg.Session.MaxBytes)
-	go sessions.RunJanitor(rootCtx, cfg.Session.JanitorInterval, cfg.Session.IdleTTL, logger)
+	sessions := buildSessionStore(rootCtx, cfg, logger)
 
 	verifier := auth.NewVerifier(cfg.JWTSecret)
 
@@ -120,6 +121,43 @@ func run(listenOverride string) error {
 	}
 	logger.Info("orchestrator: stopped")
 	return nil
+}
+
+// buildSessionStore picks the session backend and starts its janitor. SQLite
+// is the default; if the backing file cannot be opened we log a warning and
+// fall back to the in-memory store so the daemon always boots — operators
+// see the warning in the structured log and can fix the path without losing
+// time on a crash loop.
+func buildSessionStore(ctx context.Context, cfg *config.Config, logger *slog.Logger) session.Store {
+	switch cfg.Session.Backend {
+	case "memory":
+		mem := session.NewMemoryStore(cfg.Session.BufferSize, cfg.Session.MaxBytes)
+		go mem.RunJanitor(ctx, cfg.Session.JanitorInterval, cfg.Session.IdleTTL, logger)
+		return mem
+	case "", "sqlite":
+		if err := os.MkdirAll(filepath.Dir(cfg.Session.Path), 0o700); err != nil {
+			logger.Warn("session: cannot create dir, falling back to memory",
+				"path", cfg.Session.Path, "err", err)
+			mem := session.NewMemoryStore(cfg.Session.BufferSize, cfg.Session.MaxBytes)
+			go mem.RunJanitor(ctx, cfg.Session.JanitorInterval, cfg.Session.IdleTTL, logger)
+			return mem
+		}
+		sq, err := session.NewSQLiteStore(cfg.Session.Path, cfg.Session.BufferSize, cfg.Session.MaxBytes, logger)
+		if err != nil {
+			logger.Warn("session: sqlite open failed, falling back to memory",
+				"path", cfg.Session.Path, "err", err)
+			mem := session.NewMemoryStore(cfg.Session.BufferSize, cfg.Session.MaxBytes)
+			go mem.RunJanitor(ctx, cfg.Session.JanitorInterval, cfg.Session.IdleTTL, logger)
+			return mem
+		}
+		go sq.RunJanitor(ctx, cfg.Session.JanitorInterval, cfg.Session.IdleTTL, logger)
+		return sq
+	default:
+		logger.Warn("session: unknown backend, falling back to memory", "backend", cfg.Session.Backend)
+		mem := session.NewMemoryStore(cfg.Session.BufferSize, cfg.Session.MaxBytes)
+		go mem.RunJanitor(ctx, cfg.Session.JanitorInterval, cfg.Session.IdleTTL, logger)
+		return mem
+	}
 }
 
 // buildMiddleware constructs the Phase 4 NLP middleware service from config.

@@ -27,6 +27,11 @@ type Session struct {
 	mu       sync.Mutex
 	lastSeen time.Time
 	buffer   *RingBuffer
+
+	// persist, if non-nil, is invoked after each Append outside the per-session
+	// mutex so a backing store can write the envelope through to durable storage
+	// (e.g. SQLite). MemoryStore leaves this nil.
+	persist func(env event.Envelope, size int)
 }
 
 // Touch updates the last-seen timestamp.
@@ -43,12 +48,17 @@ func (s *Session) LastSeen() time.Time {
 	return s.lastSeen
 }
 
-// Append records an outbound envelope in the replay buffer.
+// Append records an outbound envelope in the replay buffer. If a persist hook
+// is installed (see SQLiteStore), it is invoked outside the per-session mutex.
 func (s *Session) Append(env event.Envelope, size int) {
 	s.mu.Lock()
 	s.buffer.Push(env, size)
 	s.lastSeen = time.Now().UTC()
+	persist := s.persist
 	s.mu.Unlock()
+	if persist != nil {
+		persist(env, size)
+	}
 }
 
 // EventsSince returns the envelopes that arrived strictly after lastID.
