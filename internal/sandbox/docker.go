@@ -125,14 +125,19 @@ func (r *DockerRunner) runOne(
 	ctx, cancel := context.WithTimeout(parentCtx, timeout)
 	defer cancel()
 
-	// 1. Pull the image. Reader MUST be drained for the pull to complete.
-	pullReader, err := r.cli.ImagePull(ctx, r.image, types.ImagePullOptions{})
-	if err != nil {
-		out <- ExecChunk{Stream: StreamExit, ExitCode: -1, Err: fmt.Errorf("%w: %v", ErrImagePull, err)}
-		return
+	// 1. Pull the image if it isn't already cached locally. Inspecting first
+	//    keeps a tight per-exec timeout (e.g. TestDocker_TimeoutKills's 500ms)
+	//    from racing a registry round-trip when the image is already present —
+	//    a problem operators hit in CI where the workflow pre-pulls images.
+	if _, _, inspectErr := r.cli.ImageInspectWithRaw(ctx, r.image); inspectErr != nil {
+		pullReader, err := r.cli.ImagePull(ctx, r.image, types.ImagePullOptions{})
+		if err != nil {
+			out <- ExecChunk{Stream: StreamExit, ExitCode: -1, Err: fmt.Errorf("%w: %v", ErrImagePull, err)}
+			return
+		}
+		_, _ = io.Copy(io.Discard, pullReader)
+		_ = pullReader.Close()
 	}
-	_, _ = io.Copy(io.Discard, pullReader)
-	_ = pullReader.Close()
 
 	// 2. Build container config.
 	workingDir := "/work"
