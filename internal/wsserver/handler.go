@@ -65,4 +65,3 @@ func extractToken(r *http.Request) string {
 	}
 	return ""
 }
-

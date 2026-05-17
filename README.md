@@ -42,13 +42,18 @@ Implementation lives under [`cmd/orchestrator`](./cmd/orchestrator/) and
 [`internal/`](./internal/). See [`docs/architecture.md`](./docs/architecture.md),
 [`docs/events.md`](./docs/events.md), and [`docs/auth.md`](./docs/auth.md).
 
-### Phase 3: Ephemeral Sandbox Runner
+### Phase 3: Ephemeral Sandbox Runner — done
 *Objective: Safely execute commands and capture outputs without risking the host system.*
 - [x] Integrate the official Docker SDK for Go.
 - [x] Create a function to dynamically pull and spin up lightweight worker images (e.g., Alpine or Ubuntu).
 - [x] Implement secure volume bind-mounts for a designated workspace directory.
 - [x] Build an execution loop that runs `bash` commands inside the container and streams `stdout`/`stderr` back to the Orchestrator via channels.
 - [x] Implement hard timeouts and resource limits (RAM/CPU) for the sandbox.
+
+Runner implementation lives at [`internal/sandbox/`](./internal/sandbox/);
+the orchestrator wires it in at [`internal/wsserver/sandbox.go`](./internal/wsserver/sandbox.go).
+See [`docs/sandbox.md`](./docs/sandbox.md) for the architecture, threat model,
+and how to switch between the mock and Docker runners.
 
 ### Phase 4: NLP Function Middleware
 *Objective: Standardize natural language into actionable system commands.*
@@ -68,7 +73,7 @@ Implementation lives under [`cmd/orchestrator`](./cmd/orchestrator/) and
 
 ---
 
-## 🚀 Running the orchestrator (Phase 2)
+## 🚀 Running the orchestrator
 
 ```sh
 export NOMADDEV_JWT_SECRET="$(head -c 48 /dev/urandom | base64 | tr -d '\n')"
@@ -83,13 +88,25 @@ TOKEN="$(go run ./scripts/gen-jwt -sub matt -sid sess-1 -ttl 1h)"
 ./bin/wsclient -url ws://127.0.0.1:8080/ws -token "$TOKEN" -send ping
 ```
 
+Drive the Phase 3 sandbox runner end-to-end against the mock backend:
+
+```sh
+./bin/wsclient -url ws://127.0.0.1:8080/ws -token "$TOKEN" \
+  -send command.request -script 'echo hi' \
+  -disconnect-after command.result -timeout 5s
+```
+
 Run the test suite:
 
 ```sh
-go test -race -count=1 ./...
+go test -race -count=1 ./...           # default — mock sandbox only
+make test-docker                       # opt-in — real Docker runner round-trip
 ```
 
-See [`.env.example`](./.env.example) for all configuration knobs.
+The Docker-tagged tests (`internal/sandbox/docker_test.go`) call
+`requireDaemon(t)` first and skip cleanly when no daemon is reachable. Build
+the Docker-enabled binaries with `make build-docker`. See
+[`.env.example`](./.env.example) for all configuration knobs.
 
 ---
 
