@@ -1,16 +1,22 @@
 services:
   orchestrator:
+    # Default to the prebuilt multi-arch image published by
+    # .github/workflows/release.yml so `docker compose up` works on a fresh
+    # VPS without ever running `docker build`. Override with
+    # NOMADDEV_IMAGE=… or use `docker compose build` to use the local
+    # Dockerfile instead.
+    image: ${NOMADDEV_IMAGE:-ghcr.io/mattcheramie/nomaddev:latest}
     build:
       context: .
       dockerfile: Dockerfile
-    image: nomaddev/orchestrator:dev
     container_name: nomaddev-orchestrator
     restart: unless-stopped
-    # The orchestrator listens on the wildcard inside the container; on a
-    # Tailscale host you bind-publish only on tailscale0 (e.g.
-    # `100.x.y.z:8080:8080`) so the public iface stays closed.
+    # Publish on ${NOMADDEV_BIND_ADDR} so phones on the tailnet can reach
+    # the orchestrator. Default 127.0.0.1 keeps a bare `docker compose up`
+    # safe on any host. For a real Tailscale deploy, set
+    # NOMADDEV_BIND_ADDR to the host's tailnet IPv4 (`tailscale ip -4`).
     ports:
-      - "127.0.0.1:8080:8080"
+      - "${NOMADDEV_BIND_ADDR:-127.0.0.1}:8080:8080"
     env_file:
       - .env
     volumes:

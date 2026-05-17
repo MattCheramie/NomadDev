@@ -45,7 +45,7 @@ export function OnboardScreen() {
         accessibilityLabel="server-url"
         value={url}
         onChangeText={setUrl}
-        placeholder="https://nomad.tail123.ts.net"
+        placeholder="http://100.x.y.z:8080"
         autoCapitalize="none"
         autoCorrect={false}
         style={styles.input}
