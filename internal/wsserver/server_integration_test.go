@@ -17,19 +17,33 @@ import (
 	"github.com/mattcheramie/nomaddev/internal/config"
 	"github.com/mattcheramie/nomaddev/internal/event"
 	"github.com/mattcheramie/nomaddev/internal/hub"
+	"github.com/mattcheramie/nomaddev/internal/sandbox"
 	"github.com/mattcheramie/nomaddev/internal/session"
 )
 
 const testSecret = "test-secret-that-is-definitely-long-enough-32"
 
-func newTestServer(t *testing.T) (*httptest.Server, *Server, session.Store, *auth.IssuerSigner) {
+func newTestServer(t *testing.T, runners ...sandbox.Runner) (*httptest.Server, *Server, session.Store, *auth.IssuerSigner) {
+	t.Helper()
+	var runner sandbox.Runner
+	if len(runners) > 0 {
+		runner = runners[0]
+	}
+	return newTestServerWithMaxConcurrent(t, runner, 4)
+}
+
+func newTestServerWithMaxConcurrent(t *testing.T, runner sandbox.Runner, maxConcurrent int) (*httptest.Server, *Server, session.Store, *auth.IssuerSigner) {
 	t.Helper()
 
 	cfg := &config.Config{
-		ListenAddr:   "127.0.0.1:0",
-		JWTSecret:    []byte(testSecret),
-		LogLevel:     slog.LevelInfo,
-		Session:      config.SessionConfig{BufferSize: 8, MaxBytes: 1 << 20},
+		ListenAddr: "127.0.0.1:0",
+		JWTSecret:  []byte(testSecret),
+		LogLevel:   slog.LevelInfo,
+		Session:    config.SessionConfig{BufferSize: 32, MaxBytes: 1 << 20},
+		Sandbox: config.SandboxConfig{
+			DefaultTimeout: 2 * time.Second,
+			MaxConcurrent:  maxConcurrent,
+		},
 		ReadTimeout:  10 * time.Second,
 		WriteTimeout: 2 * time.Second,
 		PingInterval: 30 * time.Second,
@@ -42,7 +56,7 @@ func newTestServer(t *testing.T) (*httptest.Server, *Server, session.Store, *aut
 
 	sessions := session.NewMemoryStore(cfg.Session.BufferSize, cfg.Session.MaxBytes)
 	verifier := auth.NewVerifier(cfg.JWTSecret)
-	srv := New(cfg, logger, h, sessions, verifier)
+	srv := New(cfg, logger, h, sessions, verifier, runner)
 
 	ts := httptest.NewServer(srv.Handler())
 	t.Cleanup(ts.Close)
@@ -194,7 +208,8 @@ func TestIntegration_RejectsUnknownEventType(t *testing.T) {
 	}
 }
 
-func TestIntegration_CommandRequest_NotImplemented(t *testing.T) {
+func TestIntegration_CommandRequest_NotImplementedWithoutRunner(t *testing.T) {
+	// No runner injected → handler replies error{not_implemented}.
 	ts, _, _, issuer := newTestServer(t)
 	tok, _ := issuer.Sign("matt", "sess-1", nil)
 	c, _, err := dialWithAuthHeader(t, ts, tok)
@@ -204,7 +219,10 @@ func TestIntegration_CommandRequest_NotImplemented(t *testing.T) {
 	defer c.Close()
 	_ = readEnv(t, c) // hello
 
-	req, _ := event.NewEnvelope(event.EventCommandRequest, map[string]any{"tool": "noop"})
+	req, _ := event.NewEnvelope(event.EventCommandRequest, event.CommandRequestPayload{
+		Tool: sandbox.ToolExecuteScript,
+		Args: map[string]any{"script": "echo hi"},
+	})
 	writeEnv(t, c, req)
 
 	got := readEnv(t, c)
@@ -215,6 +233,141 @@ func TestIntegration_CommandRequest_NotImplemented(t *testing.T) {
 	_ = got.UnmarshalPayload(&p)
 	if p.Code != event.CodeNotImplemented {
 		t.Fatalf("error.code = %q want %q", p.Code, event.CodeNotImplemented)
+	}
+}
+
+func TestIntegration_CommandRequest_StreamsResult(t *testing.T) {
+	mock := sandbox.NewMockRunner(sandbox.MockScript("hi\n", "warn\n", 0)...)
+	ts, _, _, issuer := newTestServer(t, mock)
+	tok, _ := issuer.Sign("matt", "sess-1", nil)
+	c, _, err := dialWithAuthHeader(t, ts, tok)
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer c.Close()
+	_ = readEnv(t, c) // hello
+
+	req, _ := event.NewEnvelope(event.EventCommandRequest, event.CommandRequestPayload{
+		Tool: sandbox.ToolExecuteScript,
+		Args: map[string]any{"shell": "bash", "script": "echo hi"},
+	})
+	writeEnv(t, c, req)
+
+	// We expect: chunk(stdout) → chunk(stderr) → result.
+	var (
+		stdoutChunks []event.CommandChunkPayload
+		stderrChunks []event.CommandChunkPayload
+		result       *event.CommandResultPayload
+	)
+	for i := 0; i < 5 && result == nil; i++ {
+		env := readEnv(t, c)
+		if env.CorrelationID != req.ID {
+			t.Fatalf("unexpected correlation_id %q on env %q", env.CorrelationID, env.Type)
+		}
+		switch env.Type {
+		case event.EventCommandChunk:
+			var p event.CommandChunkPayload
+			_ = env.UnmarshalPayload(&p)
+			switch p.Stream {
+			case event.StreamStdout:
+				stdoutChunks = append(stdoutChunks, p)
+			case event.StreamStderr:
+				stderrChunks = append(stderrChunks, p)
+			default:
+				t.Fatalf("chunk.stream = %q", p.Stream)
+			}
+		case event.EventCommandResult:
+			var p event.CommandResultPayload
+			_ = env.UnmarshalPayload(&p)
+			result = &p
+		default:
+			t.Fatalf("unexpected env type %q", env.Type)
+		}
+	}
+	if result == nil {
+		t.Fatal("no command.result observed")
+	}
+	if result.ExitCode != 0 || result.Error != "" {
+		t.Fatalf("result = %+v", *result)
+	}
+	if len(stdoutChunks) != 1 || stdoutChunks[0].Data != "hi\n" || stdoutChunks[0].Seq != 0 {
+		t.Errorf("stdout chunks = %+v", stdoutChunks)
+	}
+	if len(stderrChunks) != 1 || stderrChunks[0].Data != "warn\n" || stderrChunks[0].Seq != 0 {
+		t.Errorf("stderr chunks = %+v", stderrChunks)
+	}
+}
+
+func TestIntegration_CommandRequest_MissingTool(t *testing.T) {
+	mock := sandbox.NewMockRunner()
+	ts, _, _, issuer := newTestServer(t, mock)
+	tok, _ := issuer.Sign("matt", "sess-1", nil)
+	c, _, err := dialWithAuthHeader(t, ts, tok)
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer c.Close()
+	_ = readEnv(t, c) // hello
+
+	req, _ := event.NewEnvelope(event.EventCommandRequest, event.CommandRequestPayload{})
+	writeEnv(t, c, req)
+
+	got := readEnv(t, c)
+	if got.Type != event.EventCommandResult {
+		t.Fatalf("got %q want command.result", got.Type)
+	}
+	var p event.CommandResultPayload
+	_ = got.UnmarshalPayload(&p)
+	if p.Error != event.SandboxErrBadRequest {
+		t.Errorf("error = %q want %q", p.Error, event.SandboxErrBadRequest)
+	}
+	if mock.ExecCalls() != 0 {
+		t.Errorf("mock.Exec should not have been called for missing tool")
+	}
+}
+
+func TestIntegration_CommandRequest_ClientDisconnectCancelsExec(t *testing.T) {
+	mock := &sandbox.MockRunner{
+		Script: []sandbox.ExecChunk{
+			{Stream: sandbox.StreamStdout, Data: []byte("partial\n")},
+			{Stream: sandbox.StreamStdout, Data: []byte("never\n")},
+			{Stream: sandbox.StreamExit, ExitCode: 0},
+		},
+		PerChunkDelay: 200 * time.Millisecond,
+	}
+	ts, _, _, issuer := newTestServer(t, mock)
+	tok, _ := issuer.Sign("matt", "sess-disco", nil)
+	c, _, err := dialWithAuthHeader(t, ts, tok)
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	_ = readEnv(t, c) // hello
+
+	req, _ := event.NewEnvelope(event.EventCommandRequest, event.CommandRequestPayload{
+		Tool: sandbox.ToolExecuteScript,
+		Args: map[string]any{"script": "irrelevant"},
+	})
+	writeEnv(t, c, req)
+
+	// Read one frame so we know the exec goroutine has started.
+	first := readEnv(t, c)
+	if first.Type != event.EventCommandChunk {
+		t.Fatalf("first env = %q, want %q", first.Type, event.EventCommandChunk)
+	}
+
+	// Drop the connection mid-stream.
+	_ = c.Close()
+
+	// Give the watchdog a moment to propagate ctx cancel.
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if mock.Cancelled() {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if !mock.Cancelled() {
+		t.Fatal("mock runner did not observe ctx.Done() after client disconnect")
 	}
 }
 

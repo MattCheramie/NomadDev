@@ -1,9 +1,11 @@
-# internal/sandbox/ — Phase 3 (placeholder)
+# internal/sandbox/
 
-This package will host the Docker SDK wrapper that the `cmd/sandbox` binary
-embeds. Phase 2 only ships a placeholder so the import path is stable.
+Phase 3 ephemeral container runner. The orchestrator imports this package
+directly and wraps each emitted chunk in a `command.chunk` envelope; the
+terminal exit becomes a `command.result` envelope. See `docs/sandbox.md` for
+the full design and threat model.
 
-Planned surface:
+## Public surface
 
 ```go
 type Runner interface {
@@ -11,18 +13,37 @@ type Runner interface {
 }
 
 type ExecRequest struct {
-    Tool      string            // "execute_script", "read_file", ...
-    Args      map[string]any
-    TimeoutMs int
-    Limits    ResourceLimits    // CPU shares, memory bytes, pids-limit
+    Tool       string         // "execute_script"
+    Args       map[string]any // {shell: "bash"|"sh", script: "..."}
+    WorkingDir string
+    Timeout    time.Duration
+    Limits     ResourceLimits
 }
 
 type ExecChunk struct {
-    Stream string // "stdout" | "stderr" | "exit"
-    Data   []byte
-    Code   int    // populated on "exit"
+    Stream   string // "stdout" | "stderr" | "exit"
+    Data     []byte
+    ExitCode int    // set when Stream == "exit"
+    Err      error  // set on terminal failure
 }
 ```
 
-Each `ExecChunk` will be wrapped in a `command.result` envelope by the
-orchestrator and forwarded to the connected client.
+## Runners
+
+- `MockRunner` — deterministic, leak-free, default build.
+- `DockerRunner` — real Docker SDK client. Behind `//go:build docker`.
+
+`NewRunner(ctx, FactoryConfig{Runtime: "mock"|"docker"|"none"})` picks one.
+Runtime `"none"` returns `nil`, which the orchestrator handler treats as
+"reply with `event.error{not_implemented}`".
+
+## Running the Docker tests
+
+The Docker tests require a reachable Docker daemon:
+
+```sh
+go test -tags docker -count=1 ./internal/sandbox/...
+```
+
+If `client.NewClientWithOpts(...)` cannot ping the daemon, the tagged tests
+skip themselves rather than fail.

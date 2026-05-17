@@ -44,11 +44,11 @@ Implementation lives under [`cmd/orchestrator`](./cmd/orchestrator/) and
 
 ### Phase 3: Ephemeral Sandbox Runner
 *Objective: Safely execute commands and capture outputs without risking the host system.*
-- [ ] Integrate the official Docker SDK for Go.
-- [ ] Create a function to dynamically pull and spin up lightweight worker images (e.g., Alpine or Ubuntu).
-- [ ] Implement secure volume bind-mounts for a designated workspace directory.
-- [ ] Build an execution loop that runs `bash` commands inside the container and streams `stdout`/`stderr` back to the Orchestrator via channels.
-- [ ] Implement hard timeouts and resource limits (RAM/CPU) for the sandbox.
+- [x] Integrate the official Docker SDK for Go.
+- [x] Create a function to dynamically pull and spin up lightweight worker images (e.g., Alpine or Ubuntu).
+- [x] Implement secure volume bind-mounts for a designated workspace directory.
+- [x] Build an execution loop that runs `bash` commands inside the container and streams `stdout`/`stderr` back to the Orchestrator via channels.
+- [x] Implement hard timeouts and resource limits (RAM/CPU) for the sandbox.
 
 ### Phase 4: NLP Function Middleware
 *Objective: Standardize natural language into actionable system commands.*

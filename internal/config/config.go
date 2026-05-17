@@ -23,12 +23,28 @@ type SessionConfig struct {
 	JanitorInterval time.Duration
 }
 
+// SandboxConfig governs the Phase 3 ephemeral container runner.
+type SandboxConfig struct {
+	Runtime        string        // "mock" | "docker" | "none"
+	Image          string        // container image, used when Runtime == "docker"
+	WorkspaceDir   string        // host path bind-mounted at /work
+	Network        string        // "none" | "bridge"
+	DefaultTimeout time.Duration // applied when CommandRequest.TimeoutMs == 0
+	MaxConcurrent  int           // 0 = unlimited
+	Memory         int64         // HostConfig.Memory bytes; 0 = unset
+	NanoCPUs       int64         // HostConfig.NanoCPUs; 0 = unset
+	PidsLimit      int64         // HostConfig.PidsLimit; 0 = unset
+	ReadOnlyRootfs bool
+	PreferRunsc    bool
+}
+
 // Config is the full set of knobs the orchestrator reads at startup.
 type Config struct {
 	ListenAddr   string
 	JWTSecret    []byte
 	LogLevel     slog.Level
 	Session      SessionConfig
+	Sandbox      SandboxConfig
 	ReadTimeout  time.Duration
 	WriteTimeout time.Duration
 	PingInterval time.Duration
@@ -56,6 +72,19 @@ func Load() (*Config, error) {
 			MaxBytes:        envInt("NOMADDEV_SESSION_MAX_BYTES", 1<<20),
 			IdleTTL:         envDuration("NOMADDEV_SESSION_IDLE_TTL", 30*time.Minute),
 			JanitorInterval: envDuration("NOMADDEV_SESSION_JANITOR_INTERVAL", 5*time.Minute),
+		},
+		Sandbox: SandboxConfig{
+			Runtime:        envOr("NOMADDEV_SANDBOX_RUNTIME", "mock"),
+			Image:          envOr("NOMADDEV_SANDBOX_IMAGE", "alpine:3.20"),
+			WorkspaceDir:   envOr("NOMADDEV_SANDBOX_WORKSPACE_DIR", "/var/lib/nomaddev/work"),
+			Network:        envOr("NOMADDEV_SANDBOX_NETWORK", "none"),
+			DefaultTimeout: envDuration("NOMADDEV_SANDBOX_DEFAULT_TIMEOUT", 30*time.Second),
+			MaxConcurrent:  envInt("NOMADDEV_SANDBOX_MAX_CONCURRENT", 4),
+			Memory:         envInt64("NOMADDEV_SANDBOX_MEMORY", 256<<20),
+			NanoCPUs:       envInt64("NOMADDEV_SANDBOX_NANOCPUS", 1_000_000_000),
+			PidsLimit:      envInt64("NOMADDEV_SANDBOX_PIDS_LIMIT", 256),
+			ReadOnlyRootfs: envBool("NOMADDEV_SANDBOX_READONLY_ROOTFS", true),
+			PreferRunsc:    envBool("NOMADDEV_SANDBOX_PREFER_RUNSC", true),
 		},
 		ReadTimeout:  envDuration("NOMADDEV_READ_TIMEOUT", 60*time.Second),
 		WriteTimeout: envDuration("NOMADDEV_WRITE_TIMEOUT", 10*time.Second),
@@ -116,4 +145,28 @@ func envDuration(key string, fallback time.Duration) time.Duration {
 		return fallback
 	}
 	return d
+}
+
+func envInt64(key string, fallback int64) int64 {
+	v := os.Getenv(key)
+	if v == "" {
+		return fallback
+	}
+	n, err := strconv.ParseInt(v, 10, 64)
+	if err != nil {
+		return fallback
+	}
+	return n
+}
+
+func envBool(key string, fallback bool) bool {
+	v := os.Getenv(key)
+	if v == "" {
+		return fallback
+	}
+	b, err := strconv.ParseBool(v)
+	if err != nil {
+		return fallback
+	}
+	return b
 }

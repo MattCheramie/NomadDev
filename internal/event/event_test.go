@@ -83,3 +83,60 @@ func TestNewID_Sortable(t *testing.T) {
 		t.Errorf("ULIDs should sort by generation order: %q vs %q", a, b)
 	}
 }
+
+func TestCommandRequest_Roundtrip(t *testing.T) {
+	in, err := NewEnvelope(EventCommandRequest, CommandRequestPayload{
+		Tool: "execute_script",
+		Args: map[string]any{"shell": "bash", "script": "echo hi"},
+		// json round-trip turns int into float64 unless we re-Unmarshal into a typed payload, which we do here.
+		TimeoutMs: 1500,
+	})
+	if err != nil {
+		t.Fatalf("NewEnvelope: %v", err)
+	}
+	b, _ := in.Bytes()
+	out, err := DecodeBytes(b)
+	if err != nil {
+		t.Fatalf("DecodeBytes: %v", err)
+	}
+	var p CommandRequestPayload
+	if err := out.UnmarshalPayload(&p); err != nil {
+		t.Fatalf("payload: %v", err)
+	}
+	if p.Tool != "execute_script" || p.TimeoutMs != 1500 {
+		t.Fatalf("payload mismatch: %+v", p)
+	}
+	if p.Args["shell"] != "bash" || p.Args["script"] != "echo hi" {
+		t.Fatalf("args mismatch: %+v", p.Args)
+	}
+}
+
+func TestCommandChunk_Roundtrip(t *testing.T) {
+	in, err := NewReply(EventCommandChunk, "01HX-req",
+		CommandChunkPayload{Stream: StreamStdout, Seq: 3, Data: "hello\n"})
+	if err != nil {
+		t.Fatalf("NewReply: %v", err)
+	}
+	b, _ := in.Bytes()
+	out, _ := DecodeBytes(b)
+	if out.CorrelationID != "01HX-req" {
+		t.Errorf("correlation_id = %q", out.CorrelationID)
+	}
+	var p CommandChunkPayload
+	_ = out.UnmarshalPayload(&p)
+	if p.Stream != StreamStdout || p.Seq != 3 || p.Data != "hello\n" {
+		t.Fatalf("chunk mismatch: %+v", p)
+	}
+}
+
+func TestCommandResult_Roundtrip(t *testing.T) {
+	in, _ := NewReply(EventCommandResult, "01HX-req",
+		CommandResultPayload{ExitCode: -1, DurationMs: 42, Error: SandboxErrTimeout, ErrorMessage: "took too long"})
+	b, _ := in.Bytes()
+	out, _ := DecodeBytes(b)
+	var p CommandResultPayload
+	_ = out.UnmarshalPayload(&p)
+	if p.ExitCode != -1 || p.Error != SandboxErrTimeout || p.DurationMs != 42 {
+		t.Fatalf("result mismatch: %+v", p)
+	}
+}

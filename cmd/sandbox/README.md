@@ -1,13 +1,23 @@
-# cmd/sandbox/ — Phase 3 (placeholder)
+# cmd/sandbox/
 
-The Phase 3 ephemeral container runner will live here as a separate binary.
+A thin CLI around `internal/sandbox.Runner` for ad-hoc debugging — reproduces
+a `command.request` invocation outside the orchestrator's WebSocket flow.
 
-Planned design:
-- `github.com/docker/docker/client` for container lifecycle.
-- gVisor runtime (`--runtime=runsc`) for syscall-level isolation.
-- Read-only system mounts plus one bind-mounted workspace volume scoped per session.
-- `ContainerExecCreate` + `HijackedResponse` streamed back to the orchestrator
-  as `command.result` envelopes (see `internal/event/types.go`).
-- Hard limits: CPU shares, memory bytes, pids-limit, wall-clock timeout.
+Default build uses the mock runner only:
 
-See `internal/sandbox/README.md` for the package-level design notes.
+```sh
+go build ./cmd/sandbox
+./sandbox -script 'echo hi'
+```
+
+Rebuild with the Docker runner enabled:
+
+```sh
+go build -tags docker ./cmd/sandbox
+./sandbox -runtime docker -image alpine:3.20 -script 'uname -a'
+```
+
+Output is one JSON line per chunk on stdout — easy to pipe into `jq`.
+
+See `internal/sandbox/README.md` for the package-level design and
+`docs/sandbox.md` for the full Phase 3 architecture.

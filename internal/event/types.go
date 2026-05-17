@@ -11,8 +11,9 @@ const (
 	EventSessionStale    = "session.stale"
 	EventSessionReplaced = "session.replaced"
 
-	// Phase 3 slot. The Phase 2 orchestrator answers with EventError(code=not_implemented).
+	// Phase 3 sandbox tool invocation flow.
 	EventCommandRequest = "command.request"
+	EventCommandChunk   = "command.chunk"
 	EventCommandResult  = "command.result"
 )
 
@@ -23,6 +24,25 @@ const (
 	CodeNotImplemented = "not_implemented"
 	CodeInternal       = "internal"
 	CodeUnauthorized   = "unauthorized"
+)
+
+// Sandbox-specific error codes carried inside a CommandResultPayload.Error.
+// These are NOT used in EventError; they let a client distinguish runner-side
+// failures from clean non-zero exits.
+const (
+	SandboxErrTimeout     = "sandbox_timeout"
+	SandboxErrOOM         = "sandbox_oom"
+	SandboxErrImagePull   = "sandbox_image_pull"
+	SandboxErrUnavailable = "sandbox_unavailable"
+	SandboxErrBadRequest  = "sandbox_bad_request"
+	SandboxErrInternal    = "sandbox_internal"
+	SandboxErrCanceled    = "sandbox_canceled"
+)
+
+// Stream identifiers on a CommandChunkPayload.
+const (
+	StreamStdout = "stdout"
+	StreamStderr = "stderr"
 )
 
 // ProtocolVersion is bumped any time the envelope or core type set changes
@@ -58,4 +78,34 @@ type SessionStalePayload struct {
 	Reason          string `json:"reason"`
 	LastBufferedID  string `json:"last_buffered_id,omitempty"`
 	FirstBufferedID string `json:"first_buffered_id,omitempty"`
+}
+
+// CommandRequestPayload is what a client sends on a command.request envelope.
+// In Phase 3 the only supported Tool is "execute_script" with Args
+// {"shell": "bash"|"sh", "script": string}.
+type CommandRequestPayload struct {
+	Tool       string         `json:"tool"`
+	Args       map[string]any `json:"args,omitempty"`
+	WorkingDir string         `json:"working_dir,omitempty"`
+	TimeoutMs  int            `json:"timeout_ms,omitempty"`
+}
+
+// CommandChunkPayload is one slice of stdout or stderr from a running exec.
+// Seq is per-(correlation_id, stream) and monotonically increases from 0 so
+// a client can detect gaps within one stream without correlating across both.
+// Data is utf-8 with invalid bytes replaced by U+FFFD.
+type CommandChunkPayload struct {
+	Stream string `json:"stream"`
+	Seq    int    `json:"seq"`
+	Data   string `json:"data"`
+}
+
+// CommandResultPayload is the terminal frame for a command.request — always
+// emitted exactly once, success or failure. Error is empty on clean exit; on
+// sandbox-side failure it is one of the SandboxErr* codes and ExitCode is -1.
+type CommandResultPayload struct {
+	ExitCode     int    `json:"exit_code"`
+	DurationMs   int64  `json:"duration_ms"`
+	Error        string `json:"error,omitempty"`
+	ErrorMessage string `json:"error_message,omitempty"`
 }

@@ -50,7 +50,9 @@ func (s *Server) runConnection(
 
 // bufferAndSend appends env to the session buffer and enqueues it for the
 // write pump. Buffer write happens first so that a slow client can't lose
-// state on a Send channel overflow.
+// state on a Send channel overflow. The non-blocking send means a dead or
+// gone client never blocks; Done() is checked alongside Send so the goroutine
+// driving this can wind down cleanly when the connection drops.
 func (s *Server) bufferAndSend(sess *session.Session, c *hub.Client, env event.Envelope) {
 	b, err := env.Bytes()
 	if err != nil {
@@ -60,6 +62,7 @@ func (s *Server) bufferAndSend(sess *session.Session, c *hub.Client, env event.E
 	sess.Append(env, len(b))
 	select {
 	case c.Send <- env:
+	case <-c.Done():
 	default:
 		s.log.Warn("ws: client send buffer full, dropping", "client_id", c.ID, "type", env.Type)
 	}
@@ -114,12 +117,7 @@ func (s *Server) writePump(
 
 	for {
 		select {
-		case env, ok := <-client.Send:
-			if !ok {
-				_ = conn.WriteMessage(websocket.CloseMessage,
-					websocket.FormatCloseMessage(websocket.CloseNormalClosure, ""))
-				return
-			}
+		case env := <-client.Send:
 			_ = conn.SetWriteDeadline(time.Now().Add(s.cfg.WriteTimeout))
 			b, err := env.Bytes()
 			if err != nil {
@@ -139,6 +137,9 @@ func (s *Server) writePump(
 			}
 
 		case <-client.Done():
+			_ = conn.SetWriteDeadline(time.Now().Add(s.cfg.WriteTimeout))
+			_ = conn.WriteMessage(websocket.CloseMessage,
+				websocket.FormatCloseMessage(websocket.CloseNormalClosure, ""))
 			return
 		}
 	}
@@ -194,8 +195,7 @@ func (s *Server) dispatch(
 		}
 
 	case event.EventCommandRequest:
-		s.replyError(sess, client, env.ID, event.CodeNotImplemented,
-			"command.request is reserved for Phase 3")
+		s.handleCommandRequest(env, client, sess, logger)
 
 	default:
 		s.replyError(sess, client, env.ID, event.CodeUnknownType,
