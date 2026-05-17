@@ -10,6 +10,7 @@ import (
 	"github.com/mattcheramie/nomaddev/internal/event"
 	"github.com/mattcheramie/nomaddev/internal/history"
 	"github.com/mattcheramie/nomaddev/internal/hub"
+	"github.com/mattcheramie/nomaddev/internal/metrics"
 	"github.com/mattcheramie/nomaddev/internal/middleware"
 	"github.com/mattcheramie/nomaddev/internal/sandbox"
 	"github.com/mattcheramie/nomaddev/internal/session"
@@ -67,6 +68,11 @@ func (s *Server) runIntent(
 	ctx context.Context, intentID string, p event.UserIntentPayload,
 	sess *session.Session, client *hub.Client, logger *slog.Logger,
 ) {
+	started := time.Now()
+	defer func() {
+		metrics.MiddlewareTurnSeconds.Observe(time.Since(started).Seconds())
+	}()
+
 	// 1. Persist the user turn before we even hit the translator. If the
 	//    history store is down we emit an error rather than silently dropping.
 	userTurn := history.Turn{
@@ -337,13 +343,20 @@ func (s *Server) emitAssistantChunk(
 	s.bufferAndSend(sess, client, env)
 }
 
-// emitAssistantMessage sends the terminal assistant.message envelope.
+// emitAssistantMessage sends the terminal assistant.message envelope and
+// records the middleware-turn outcome metric. This is the single exit point
+// for a user.intent turn.
 func (s *Server) emitAssistantMessage(
 	sess *session.Session, client *hub.Client, intentID, text, finishReason, errMsg string,
 ) {
 	if finishReason == "" {
 		finishReason = "stop"
 	}
+	outcome := "ok"
+	if errMsg != "" || finishReason == "error" {
+		outcome = "error"
+	}
+	metrics.MiddlewareTurnsTotal.WithLabelValues(outcome).Inc()
 	env, err := event.NewReply(event.EventAssistantMessage, intentID, event.AssistantMessagePayload{
 		Text:         text,
 		FinishReason: finishReason,

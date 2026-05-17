@@ -13,6 +13,7 @@ import (
 	"github.com/mattcheramie/nomaddev/internal/auth"
 	"github.com/mattcheramie/nomaddev/internal/config"
 	"github.com/mattcheramie/nomaddev/internal/hub"
+	"github.com/mattcheramie/nomaddev/internal/metrics"
 	"github.com/mattcheramie/nomaddev/internal/middleware"
 	"github.com/mattcheramie/nomaddev/internal/sandbox"
 	"github.com/mattcheramie/nomaddev/internal/session"
@@ -65,11 +66,12 @@ func New(
 		srv.intentSem = make(chan struct{}, mw.Config.MaxConcurrent)
 	}
 	mux.HandleFunc("/healthz", srv.healthHandler)
+	mux.Handle("/metrics", metrics.Handler())
 	mux.HandleFunc("/ws", srv.wsHandler)
 	if cfg.SPA.Enabled {
-		// Registered AFTER /ws and /healthz so longest-prefix wins keeps them
-		// resolving to their own handlers; "/" only matches when nothing else
-		// does. spa_test.go pins this invariant.
+		// Registered AFTER /ws, /healthz, and /metrics so longest-prefix wins
+		// keeps them resolving to their own handlers; "/" only matches when
+		// nothing else does. spa_test.go pins this invariant.
 		mux.Handle("/", srv.spaHandler())
 	}
 	srv.http = &http.Server{
