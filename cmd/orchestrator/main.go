@@ -26,9 +26,19 @@ import (
 	"github.com/mattcheramie/nomaddev/internal/wsserver"
 )
 
+// version is injected at build time via -ldflags "-X main.version=<tag>".
+// Stays "dev" for local builds and CI test runs.
+var version = "dev"
+
 func main() {
 	listenFlag := flag.String("listen", "", "override NOMADDEV_LISTEN_ADDR")
+	showVersion := flag.Bool("version", false, "print version and exit")
 	flag.Parse()
+
+	if *showVersion {
+		fmt.Println(version)
+		return
+	}
 
 	if err := run(*listenFlag); err != nil {
 		fmt.Fprintln(os.Stderr, "orchestrator:", err)
@@ -47,6 +57,7 @@ func run(listenOverride string) error {
 
 	logger := nlog.New(cfg.LogLevel)
 	logger.Info("orchestrator: starting",
+		"version", version,
 		"addr", cfg.ListenAddr,
 		"session_backend", cfg.Session.Backend,
 		"buffer_size", cfg.Session.BufferSize,
