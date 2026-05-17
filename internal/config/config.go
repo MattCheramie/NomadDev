@@ -16,8 +16,12 @@ import (
 )
 
 // SessionConfig caps the per-session ring buffer used for reconnect replay,
-// and controls how often idle sessions are reaped.
+// and controls how often idle sessions are reaped. Backend selects between
+// the in-memory store (loses bookmarks on restart) and the SQLite-backed
+// store (write-through, rehydrates on restart).
 type SessionConfig struct {
+	Backend         string // "memory" | "sqlite"
+	Path            string // SQLite file path when Backend == "sqlite"
 	BufferSize      int
 	MaxBytes        int
 	IdleTTL         time.Duration
@@ -110,6 +114,8 @@ func Load() (*Config, error) {
 		JWTSecret:  secret,
 		LogLevel:   nlog.ParseLevel(envOr("NOMADDEV_LOG_LEVEL", "info")),
 		Session: SessionConfig{
+			Backend:         envOr("NOMADDEV_SESSION_BACKEND", "sqlite"),
+			Path:            envOr("NOMADDEV_SESSION_PATH", "/var/lib/nomaddev/sessions.db"),
 			BufferSize:      envInt("NOMADDEV_SESSION_BUFFER_SIZE", 256),
 			MaxBytes:        envInt("NOMADDEV_SESSION_MAX_BYTES", 1<<20),
 			IdleTTL:         envDuration("NOMADDEV_SESSION_IDLE_TTL", 30*time.Minute),

@@ -1,0 +1,33 @@
+services:
+  orchestrator:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: nomaddev/orchestrator:dev
+    container_name: nomaddev-orchestrator
+    restart: unless-stopped
+    # The orchestrator listens on the wildcard inside the container; on a
+    # Tailscale host you bind-publish only on tailscale0 (e.g.
+    # `100.x.y.z:8080:8080`) so the public iface stays closed.
+    ports:
+      - "127.0.0.1:8080:8080"
+    env_file:
+      - .env
+    volumes:
+      # Persistent SQLite stores + sandbox workspace. Survives container
+      # rebuilds; back up the whole directory for disaster recovery.
+      - nomaddev-data:/var/lib/nomaddev
+      # Optional: uncomment to let the orchestrator run with -tags docker
+      # against the host Docker daemon. Off by default because mounting the
+      # daemon socket gives the container root-equivalent on the host — only
+      # enable when the orchestrator runs on a host you fully control.
+      # - /var/run/docker.sock:/var/run/docker.sock
+    healthcheck:
+      # distroless/static has no shell, so we point the binary itself or use
+      # an external check. Compose's `service_healthy` runs from the host; if
+      # you need an in-container probe, switch to distroless/cc and install
+      # busybox-wget.
+      disable: true
+
+volumes:
+  nomaddev-data:

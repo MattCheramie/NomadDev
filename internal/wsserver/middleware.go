@@ -10,6 +10,7 @@ import (
 	"github.com/mattcheramie/nomaddev/internal/event"
 	"github.com/mattcheramie/nomaddev/internal/history"
 	"github.com/mattcheramie/nomaddev/internal/hub"
+	"github.com/mattcheramie/nomaddev/internal/metrics"
 	"github.com/mattcheramie/nomaddev/internal/middleware"
 	"github.com/mattcheramie/nomaddev/internal/sandbox"
 	"github.com/mattcheramie/nomaddev/internal/session"
@@ -67,6 +68,11 @@ func (s *Server) runIntent(
 	ctx context.Context, intentID string, p event.UserIntentPayload,
 	sess *session.Session, client *hub.Client, logger *slog.Logger,
 ) {
+	started := time.Now()
+	defer func() {
+		metrics.MiddlewareTurnSeconds.Observe(time.Since(started).Seconds())
+	}()
+
 	// 1. Persist the user turn before we even hit the translator. If the
 	//    history store is down we emit an error rather than silently dropping.
 	userTurn := history.Turn{
@@ -337,13 +343,20 @@ func (s *Server) emitAssistantChunk(
 	s.bufferAndSend(sess, client, env)
 }
 
-// emitAssistantMessage sends the terminal assistant.message envelope.
+// emitAssistantMessage sends the terminal assistant.message envelope and
+// records the middleware-turn outcome metric. This is the single exit point
+// for a user.intent turn.
 func (s *Server) emitAssistantMessage(
 	sess *session.Session, client *hub.Client, intentID, text, finishReason, errMsg string,
 ) {
 	if finishReason == "" {
 		finishReason = "stop"
 	}
+	outcome := "ok"
+	if errMsg != "" || finishReason == "error" {
+		outcome = "error"
+	}
+	metrics.MiddlewareTurnsTotal.WithLabelValues(outcome).Inc()
 	env, err := event.NewReply(event.EventAssistantMessage, intentID, event.AssistantMessagePayload{
 		Text:         text,
 		FinishReason: finishReason,
@@ -362,4 +375,47 @@ func (s *Server) emitAssistantMessage(
 func mustMarshalText(text string) []byte {
 	b, _ := json.Marshal(map[string]any{"text": text})
 	return b
+}
+
+// handleUserCommand dispatches client-driven session controls. The terminal
+// frame is always an EventAck whose correlation_id is the inbound envelope
+// id; Error is empty on success.
+func (s *Server) handleUserCommand(
+	env event.Envelope, client *hub.Client, sess *session.Session, logger *slog.Logger,
+) {
+	var p event.UserCommandPayload
+	if err := env.UnmarshalPayload(&p); err != nil {
+		s.ackUserCommand(sess, client, env.ID, "", "bad_envelope", err.Error())
+		return
+	}
+	switch p.Action {
+	case event.UserCommandResetHistory:
+		if s.mw == nil || s.mw.History == nil {
+			s.ackUserCommand(sess, client, env.ID, p.Action, "not_implemented", "history backend not configured")
+			return
+		}
+		if err := s.mw.History.Reset(context.Background(), sess.SID); err != nil {
+			logger.Warn("user.command: reset_history failed", "err", err)
+			s.ackUserCommand(sess, client, env.ID, p.Action, "internal", err.Error())
+			return
+		}
+		logger.Info("user.command: reset_history ok", "sid", sess.SID)
+		s.ackUserCommand(sess, client, env.ID, p.Action, "", "history cleared")
+	default:
+		s.ackUserCommand(sess, client, env.ID, p.Action, "unknown_action", "unsupported action: "+p.Action)
+	}
+}
+
+func (s *Server) ackUserCommand(
+	sess *session.Session, client *hub.Client, reqID, action, errCode, message string,
+) {
+	env, err := event.NewReply(event.EventAck, reqID, event.AckPayload{
+		Action:  action,
+		Error:   errCode,
+		Message: message,
+	})
+	if err != nil {
+		return
+	}
+	s.bufferAndSend(sess, client, env)
 }

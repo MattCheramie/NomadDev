@@ -1,0 +1,36 @@
+[Unit]
+Description=NomadDev orchestrator (Tailscale-fronted WebSocket relay)
+Documentation=https://github.com/MattCheramie/NomadDev
+# Wait for the network stack so /healthz binds successfully on boot.
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=nomaddev
+Group=nomaddev
+EnvironmentFile=/etc/nomaddev/env
+ExecStart=/usr/local/bin/orchestrator -listen :8080
+Restart=on-failure
+RestartSec=2s
+
+# Hardening. The orchestrator does not need root, special caps, or write
+# access outside /var/lib/nomaddev (sessions.db, history.db, workspace).
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictNamespaces=true
+RestrictRealtime=true
+LockPersonality=true
+SystemCallArchitectures=native
+ReadWritePaths=/var/lib/nomaddev
+# Stdout/stderr → journald (the binary already writes JSON via slog).
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

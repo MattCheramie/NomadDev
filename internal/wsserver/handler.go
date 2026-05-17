@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/mattcheramie/nomaddev/internal/event"
+	"github.com/mattcheramie/nomaddev/internal/metrics"
 )
 
 // wsHandler is the /ws endpoint. It validates the JWT BEFORE upgrading so
@@ -14,12 +15,14 @@ func (s *Server) wsHandler(w http.ResponseWriter, r *http.Request) {
 	token := extractToken(r)
 	if token == "" {
 		s.log.Warn("ws: missing token", "remote", r.RemoteAddr)
+		metrics.WSConnectsTotal.WithLabelValues("unauthorized").Inc()
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
 		return
 	}
 	claims, err := s.verifier.Parse(token)
 	if err != nil {
 		s.log.Warn("ws: token rejected", "remote", r.RemoteAddr, "err", err)
+		metrics.WSConnectsTotal.WithLabelValues("unauthorized").Inc()
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
 		return
 	}
@@ -28,8 +31,12 @@ func (s *Server) wsHandler(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		// Upgrade already wrote a response on error.
 		s.log.Warn("ws: upgrade failed", "remote", r.RemoteAddr, "err", err)
+		metrics.WSConnectsTotal.WithLabelValues("upgrade_failed").Inc()
 		return
 	}
+	metrics.WSConnectsTotal.WithLabelValues("ok").Inc()
+	metrics.WSActiveConnections.Inc()
+	defer metrics.WSActiveConnections.Dec()
 
 	clientID := event.NewID()
 	logger := s.log.With(

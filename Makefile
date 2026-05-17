@@ -11,7 +11,8 @@ GO_PACKAGES = $(shell go list ./... | grep -v '/mobile/node_modules/')
 
 .PHONY: build build-docker build-gemini build-all run test test-race test-docker test-gemini \
         lint fmt vet tidy clean ci \
-        build-mobile build-full dev-mobile clean-mobile test-mobile
+        build-mobile build-full dev-mobile clean-mobile test-mobile \
+        docker-image docker-up docker-down
 
 build:
 	go build -o $(BIN_DIR)/orchestrator ./cmd/orchestrator
@@ -81,3 +82,15 @@ clean:
 	rm -rf $(BIN_DIR)
 
 ci: vet test-race
+
+# Phase 6 deploy artifacts. The Dockerfile is multi-stage (mobile export →
+# Go build → distroless/static); docker-compose mounts a named volume for
+# /var/lib/nomaddev (sessions.db, history.db, workspace).
+docker-image:
+	docker build -t nomaddev/orchestrator:dev .
+
+docker-up:
+	docker compose up -d
+
+docker-down:
+	docker compose down

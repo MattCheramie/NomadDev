@@ -9,6 +9,7 @@ import (
 	"github.com/mattcheramie/nomaddev/internal/auth"
 	"github.com/mattcheramie/nomaddev/internal/event"
 	"github.com/mattcheramie/nomaddev/internal/hub"
+	"github.com/mattcheramie/nomaddev/internal/metrics"
 	"github.com/mattcheramie/nomaddev/internal/session"
 )
 
@@ -60,6 +61,7 @@ func (s *Server) bufferAndSend(sess *session.Session, c *hub.Client, env event.E
 		return
 	}
 	sess.Append(env, len(b))
+	metrics.SessionEventsTotal.WithLabelValues(env.Type).Inc()
 	select {
 	case c.Send <- env:
 	case <-c.Done():
@@ -205,6 +207,9 @@ func (s *Server) dispatch(
 
 	case event.EventToolApprovalDenied:
 		s.routeApproval(env, false)
+
+	case event.EventUserCommand:
+		s.handleUserCommand(env, client, sess, logger)
 
 	default:
 		s.replyError(sess, client, env.ID, event.CodeUnknownType,

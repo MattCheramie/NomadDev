@@ -9,6 +9,7 @@ import (
 
 	"github.com/mattcheramie/nomaddev/internal/event"
 	"github.com/mattcheramie/nomaddev/internal/hub"
+	"github.com/mattcheramie/nomaddev/internal/metrics"
 	"github.com/mattcheramie/nomaddev/internal/middleware"
 	"github.com/mattcheramie/nomaddev/internal/sandbox"
 	"github.com/mattcheramie/nomaddev/internal/session"
@@ -232,14 +233,20 @@ func (s *Server) emitChunk(
 	}
 }
 
-// emitResult builds and sends the single command.result envelope.
+// emitResult builds and sends the single command.result envelope. Every
+// terminal frame for a command.request lands here, so this is also where
+// sandbox-run metrics are recorded.
 func (s *Server) emitResult(
 	sess *session.Session, client *hub.Client, reqID string,
 	started time.Time, exitCode int, errCode, errMsg string,
 ) {
+	dur := time.Since(started)
+	metrics.SandboxRunSeconds.Observe(dur.Seconds())
+	metrics.SandboxRunsTotal.WithLabelValues(sandboxOutcome(errCode)).Inc()
+
 	env, err := event.NewReply(event.EventCommandResult, reqID, event.CommandResultPayload{
 		ExitCode:     exitCode,
-		DurationMs:   time.Since(started).Milliseconds(),
+		DurationMs:   dur.Milliseconds(),
 		Error:        errCode,
 		ErrorMessage: errMsg,
 	})
@@ -248,6 +255,29 @@ func (s *Server) emitResult(
 		return
 	}
 	s.bufferAndSend(sess, client, env)
+}
+
+// sandboxOutcome maps an event.SandboxErr* code to a Prometheus label value.
+func sandboxOutcome(errCode string) string {
+	switch errCode {
+	case "":
+		return "ok"
+	case event.SandboxErrTimeout:
+		return "timeout"
+	case event.SandboxErrCanceled:
+		return "canceled"
+	case event.SandboxErrOOM:
+		return "oom"
+	case event.SandboxErrBadRequest:
+		return "bad_request"
+	case event.SandboxErrImagePull:
+		return "image_pull"
+	case event.SandboxErrUnauthorized:
+		return "unauthorized"
+	case event.SandboxErrUnavailable:
+		return "unavailable"
+	}
+	return "internal"
 }
 
 // classifyExit translates an exit chunk into (exit_code, error_code, message).

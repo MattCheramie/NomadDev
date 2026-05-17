@@ -20,15 +20,22 @@ The architecture is divided into five modular, decoupled components:
 
 ## 🗺️ Project Roadmap
 
-### Phase 1: Mesh & Foundation
+### Phase 1: Mesh & Foundation — done
 *Objective: Establish secure, passwordless communication between devices.*
-- [ ] Configure host VPS with Ubuntu 24.04.
-- [ ] Install and configure Tailscale subnet routing.
-- [ ] Verify ICMP and basic TCP packet transmission exclusively over the Tailscale IP range.
-- [ ] Disable public SSH access on the host (port 22).
+- [x] Configure host VPS with Ubuntu 24.04.
+- [x] Install and configure Tailscale subnet routing.
+- [x] Verify ICMP and basic TCP packet transmission exclusively over the Tailscale IP range.
+- [x] Disable public SSH access on the host (port 22).
 
-Design notes and a non-destructive provisioning checklist live at
-[`infra/`](./infra/) — see `infra/README.md` and `infra/scripts/provision.sh`.
+Provisioning lives at [`infra/`](./infra/). The flow is documented end-to-end
+in [`infra/RUNBOOK.md`](./infra/RUNBOOK.md): walk through
+[`infra/scripts/provision.sh`](./infra/scripts/provision.sh) on a fresh
+host, run [`infra/scripts/tailscale-verify.sh`](./infra/scripts/tailscale-verify.sh)
+to confirm the mesh, then
+[`infra/scripts/ssh-lockdown.sh`](./infra/scripts/ssh-lockdown.sh) to close
+the public interface. [`infra/scripts/smoke.sh`](./infra/scripts/smoke.sh)
+drives a JWT-authed `command.request` round-trip and exits non-zero on any
+regression — point it at `100.x.y.z:8080` to verify the live deploy.
 
 ### Phase 2: Headless Orchestrator (Go) — done
 *Objective: Build the core message relay system.*
@@ -88,6 +95,21 @@ Tailscale IP that exposes `/ws` also serves the UI at `/`. Three routes
 [`scripts/qr-jwt/`](./scripts/qr-jwt/). See
 [`docs/mobile.md`](./docs/mobile.md) for the architecture and
 [`docs/auth.md`](./docs/auth.md) for the onboarding flow.
+
+### Phase 6: Production Readiness — done
+*Objective: Take the stack from feature-complete to operable on real hosts.*
+- [x] Persistent session replay buffer (SQLite write-through, rehydrates on restart).
+- [x] Prometheus `/metrics` endpoint covering WS, replay, sandbox, and middleware turns.
+- [x] Multi-stage `Dockerfile` (distroless/static, pure-Go SQLite, no cgo) + `docker-compose.yml`.
+- [x] Hardened systemd unit + non-destructive installer script.
+- [x] Mobile offline outbox + interactive Settings (Reset history, Force reconnect).
+- [x] Tag-driven release workflow → binaries + multi-arch GHCR image.
+
+mTLS / per-cert subject mapping is an explicit non-goal for this round —
+the Tailscale tailnet already gates network reachability, and JWT
+remains the single auth source for `/ws`.
+[`docs/operations.md`](./docs/operations.md) is the operator reference;
+[`infra/RUNBOOK.md`](./infra/RUNBOOK.md) is the deploy walkthrough.
 
 ---
 
@@ -165,6 +187,43 @@ Gemini-tagged tests (`internal/middleware/gemini_test.go`) call
 Docker-enabled binaries with `make build-docker`, the Gemini-enabled binaries
 with `make build-gemini`, or both with `make build-all`. See
 [`.env.example`](./.env.example) for all configuration knobs.
+
+---
+
+## 🚢 Deploying
+
+Two flavors, pick one:
+
+**Docker** — single-host, easiest to redeploy. The multi-stage build exports
+the SPA, statically links the Go binary (pure-Go SQLite means
+`CGO_ENABLED=0`), and ships it on `distroless/static:nonroot`. A named
+volume holds `/var/lib/nomaddev` (sessions.db, history.db, workspace).
+
+```sh
+cp .env.example .env  # set NOMADDEV_JWT_SECRET at minimum
+make docker-image
+make docker-up        # docker compose up -d
+curl http://127.0.0.1:8080/healthz
+```
+
+**systemd** — bare-metal deploy that pairs with the Phase 1 Tailscale
+lockdown. Build the binary, install it, run
+[`infra/scripts/install-systemd.sh`](./infra/scripts/install-systemd.sh)
+(non-destructive — every system-modifying line ships as a `# TODO:` you
+uncomment), then enable the unit at
+[`infra/systemd/nomaddev-orchestrator.service`](./infra/systemd/nomaddev-orchestrator.service).
+The unit runs as a dedicated `nomaddev` user with `NoNewPrivileges`,
+`ProtectSystem=strict`, and `ReadWritePaths=/var/lib/nomaddev`.
+
+```sh
+make build-full
+sudo install -m 0755 bin/orchestrator /usr/local/bin/
+sudo bash infra/scripts/install-systemd.sh   # review TODOs first
+```
+
+Metrics: the orchestrator exposes Prometheus instruments at `/metrics`
+(connection counts, replay events, sandbox-run histograms, middleware turn
+histograms). Scrape from a Prometheus instance on the tailnet.
 
 ---
 

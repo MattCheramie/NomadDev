@@ -1,0 +1,13 @@
+.git
+.github
+bin
+mobile/node_modules
+mobile/dist
+mobile/.expo
+infra/scripts/*.sh
+docs
+*.md
+.env
+.env.local
+.vscode
+.idea
