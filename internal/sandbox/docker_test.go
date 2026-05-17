@@ -158,3 +158,35 @@ func TestDocker_NoNetwork(t *testing.T) {
 		t.Fatalf("expected non-zero exit with NetworkMode=none, got 0")
 	}
 }
+
+func TestDocker_OOMKill(t *testing.T) {
+	requireDaemon(t)
+	// Tight 16 MiB cap; the script asks dd for a 256 MiB buffer in one
+	// allocation. The cgroup OOM killer should fire and Docker should set
+	// State.OOMKilled, which the runner maps to ErrOOM.
+	workdir := t.TempDir()
+	r, err := NewDockerRunner(context.Background(), DockerRunnerOptions{
+		Image:          "alpine:3.20",
+		WorkspaceDir:   workdir,
+		DefaultTimeout: 15 * time.Second,
+		Limits: ResourceLimits{
+			MemoryBytes: 16 << 20,
+			CPUNanos:    500_000_000,
+			PidsLimit:   64,
+		},
+		ReadonlyRoot: true,
+		Network:      "none",
+	})
+	if err != nil {
+		t.Fatalf("NewDockerRunner: %v", err)
+	}
+	ch, _ := r.Exec(context.Background(), ExecRequest{
+		Tool:    ToolExecuteScript,
+		Args:    map[string]any{"shell": "sh", "script": "dd if=/dev/zero of=/dev/null bs=256M count=1"},
+		Timeout: 10 * time.Second,
+	})
+	_, _, exit := collect(t, ch)
+	if !errors.Is(exit.Err, ErrOOM) {
+		t.Fatalf("expected ErrOOM, got exit_code=%d err=%v", exit.ExitCode, exit.Err)
+	}
+}

@@ -149,7 +149,11 @@ func (r *DockerRunner) runOne(
 	}
 	pidsLimit := r.limits.PidsLimit
 	hostCfg := &container.HostConfig{
-		AutoRemove:     true,
+		// AutoRemove is intentionally off: we need the container around long
+		// enough to ContainerInspect after exit so we can read State.OOMKilled
+		// reliably. The deferred ContainerRemove(force: true) below handles
+		// cleanup on every path.
+		AutoRemove:     false,
 		NetworkMode:    container.NetworkMode(r.network),
 		ReadonlyRootfs: r.readonlyRoot,
 		Runtime:        r.runtime,

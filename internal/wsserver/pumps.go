@@ -217,4 +217,3 @@ func (s *Server) replyError(
 	}
 	s.bufferAndSend(sess, client, env)
 }
-

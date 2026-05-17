@@ -79,7 +79,7 @@ func TestNewID_Sortable(t *testing.T) {
 	if a == b {
 		t.Fatal("ids collided")
 	}
-	if !(a <= b) {
+	if a > b {
 		t.Errorf("ULIDs should sort by generation order: %q vs %q", a, b)
 	}
 }
