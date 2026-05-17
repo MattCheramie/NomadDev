@@ -82,8 +82,10 @@ machine.
 Expo + TypeScript SPA at [`mobile/`](./mobile/), exported as static web
 assets and embedded into the orchestrator binary via
 [`internal/wsserver/spa.go`](./internal/wsserver/spa.go). The same
-Tailscale IP that exposes `/ws` also serves the UI at `/`. JWT onboarding
-ships as a QR helper at [`scripts/qr-jwt/`](./scripts/qr-jwt/). See
+Tailscale IP that exposes `/ws` also serves the UI at `/`. Three routes
+(`/onboard`, `/chat`, `/settings`) over
+`@react-navigation/native-stack`. JWT onboarding ships as a QR helper at
+[`scripts/qr-jwt/`](./scripts/qr-jwt/). See
 [`docs/mobile.md`](./docs/mobile.md) for the architecture and
 [`docs/auth.md`](./docs/auth.md) for the onboarding flow.
 

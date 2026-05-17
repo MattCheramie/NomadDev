@@ -1,5 +1,6 @@
 import { useEffect, useRef } from 'react';
-import { FlatList, StyleSheet, Text, View } from 'react-native';
+import { FlatList, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import type { NativeStackScreenProps } from '@react-navigation/native-stack';
 import {
   EventToolApprovalDenied,
   EventToolApprovalGranted,
@@ -8,15 +9,20 @@ import {
   newReply,
 } from '@/wire/envelope';
 import { useStore } from '@/state/store';
-import { WSClient } from '@/wire/client';
+import { useWSClient } from '@/wire/context';
 import { AssistantTextBubble } from '@/components/AssistantTextBubble';
 import { UserBubble } from '@/components/UserBubble';
 import { ToolCallCard } from '@/components/ToolCallCard';
 import { Composer } from '@/components/Composer';
 import { ConnectionPill } from '@/components/ConnectionPill';
+import { ErrorRow } from '@/components/ErrorRow';
 import { ApprovalSheet } from '@/components/ApprovalSheet';
+import type { RootStackParamList } from '@/navigation/routes';
 
-export function ChatScreen({ client }: { client: WSClient | null }) {
+type Props = NativeStackScreenProps<RootStackParamList, 'Chat'>;
+
+export function ChatScreen({ navigation }: Props) {
+  const client = useWSClient();
   const turns = useStore((s) => s.turns);
   const status = useStore((s) => s.wsStatus);
   const pendingApprovals = useStore((s) => s.pendingApprovals);
@@ -57,6 +63,14 @@ export function ChatScreen({ client }: { client: WSClient | null }) {
         <View style={styles.headerRight}>
           <Text style={styles.sid}>{sessionId ?? '—'}</Text>
           <ConnectionPill status={status} />
+          <TouchableOpacity
+            onPress={() => navigation.navigate('Settings')}
+            accessibilityRole="button"
+            accessibilityLabel="settings-button"
+            style={styles.settingsBtn}
+          >
+            <Text style={styles.settingsText}>⚙</Text>
+          </TouchableOpacity>
         </View>
       </View>
 
@@ -70,7 +84,7 @@ export function ChatScreen({ client }: { client: WSClient | null }) {
             <UserBubble text={item.userText} />
             {item.toolCalls.map((c) => <ToolCallCard key={c.commandId} call={c} />)}
             <AssistantTextBubble text={item.assistantText} finished={item.finished} />
-            {item.error ? <Text style={styles.error}>{item.error}</Text> : null}
+            {item.error ? <ErrorRow message={item.error} /> : null}
           </View>
         )}
         ListEmptyComponent={
@@ -101,8 +115,12 @@ const styles = StyleSheet.create({
   headerRight: { flexDirection: 'row', alignItems: 'center', gap: 8 },
   title: { color: '#e6edf3', fontSize: 18, fontWeight: '700' as '700' },
   sid: { color: '#9aa4b2', fontSize: 11, fontFamily: 'Menlo, Consolas, monospace' as any },
+  settingsBtn: {
+    paddingHorizontal: 8, paddingVertical: 4, borderRadius: 6,
+    backgroundColor: '#161b22', borderColor: '#2a3242', borderWidth: 1,
+  },
+  settingsText: { color: '#e6edf3', fontSize: 14 },
   list: { padding: 12, gap: 12 },
   turn: { gap: 4 },
   empty: { color: '#6b7280', textAlign: 'center' as 'center', padding: 24 },
-  error: { color: '#f87171', fontSize: 12, marginTop: 4 },
 });

@@ -15,6 +15,7 @@ package main
 import (
 	"flag"
 	"fmt"
+	"io"
 	"net/url"
 	"os"
 	"strings"
@@ -34,9 +35,9 @@ func main() {
 }
 
 // run is split out from main so tests can drive the flag parser without
-// touching os.Exit. stdout receives the ASCII QR + URL; stderr receives
-// diagnostics.
-func run(args []string, stdout, stderr *os.File) error {
+// touching os.Exit. stdout receives the URL + ASCII QR; stderr receives
+// flag-parser diagnostics.
+func run(args []string, stdout, stderr io.Writer) error {
 	fs := flag.NewFlagSet("qr-jwt", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 

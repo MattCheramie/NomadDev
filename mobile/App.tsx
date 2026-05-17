@@ -1,28 +1,23 @@
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { StatusBar } from 'expo-status-bar';
 import { StyleSheet, View } from 'react-native';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
+import { NavigationContainer } from '@react-navigation/native';
+import { createNativeStackNavigator } from '@react-navigation/native-stack';
 
 import { useStore } from '@/state/store';
-import { WSClient } from '@/wire/client';
 import { OnboardScreen } from '@/screens/OnboardScreen';
 import { ChatScreen } from '@/screens/ChatScreen';
+import { SettingsScreen } from '@/screens/SettingsScreen';
 import * as kv from '@/storage/kv';
 import { KEY_LAST_EVENT_ID, KEY_SERVER_URL, KEY_TOKEN } from '@/storage/keys';
+import { useWebSocket } from '@/hooks/useWebSocket';
+import { useVisibility } from '@/hooks/useVisibility';
+import { WSClientProvider } from '@/wire/context';
+import { linking } from '@/navigation/linking';
+import type { RootStackParamList } from '@/navigation/routes';
 
-// wsURLFor turns a server URL like https://host:8080 into ws://host:8080/ws.
-function wsURLFor(serverUrl: string): string {
-  try {
-    const u = new URL(serverUrl);
-    u.protocol = u.protocol === 'https:' ? 'wss:' : 'ws:';
-    u.pathname = '/ws';
-    u.search = '';
-    u.hash = '';
-    return u.toString();
-  } catch (_e) {
-    return serverUrl + '/ws';
-  }
-}
+const Stack = createNativeStackNavigator<RootStackParamList>();
 
 // hydrateCredentials reads stored credentials and pulls a token from the
 // URL fragment if present. Returns the credentials when something was hydrated.
@@ -52,16 +47,13 @@ export default function App() {
   const serverUrl = useStore((s) => s.serverUrl);
   const token = useStore((s) => s.token);
   const setCredentials = useStore((s) => s.setCredentials);
-  const clearCredentials = useStore((s) => s.clearCredentials);
-  const setStatus = useStore((s) => s.setStatus);
-  const ingest = useStore((s) => s.ingest);
   const wsStatus = useStore((s) => s.wsStatus);
   const lastEventId = useStore((s) => s.lastEventId);
   const pendingApprovals = useStore((s) => s.pendingApprovals);
 
-  const clientRef = useRef<WSClient | null>(null);
   const [hydrated, setHydrated] = useState(false);
 
+  // Boot: hydrate stored credentials and any URL-fragment token.
   useEffect(() => {
     (async () => {
       const got = await hydrateCredentials();
@@ -70,6 +62,7 @@ export default function App() {
     })();
   }, [setCredentials]);
 
+  // Persist credentials whenever they change.
   useEffect(() => {
     if (!hydrated) return;
     if (serverUrl && token) {
@@ -81,6 +74,7 @@ export default function App() {
     }
   }, [serverUrl, token, hydrated]);
 
+  // Debounced lastEventId persistence so quick bursts don't thrash storage.
   const persistLeidRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   useEffect(() => {
     if (persistLeidRef.current) clearTimeout(persistLeidRef.current);
@@ -89,55 +83,21 @@ export default function App() {
     }, 200);
   }, [lastEventId]);
 
-  useEffect(() => {
-    if (!hydrated) return;
-    if (!serverUrl || !token) {
-      clientRef.current?.close();
-      clientRef.current = null;
-      return;
-    }
-    let alive = true;
-    (async () => {
-      const seed = await kv.get(KEY_LAST_EVENT_ID);
-      if (!alive) return;
-      const client = new WSClient({
-        url: wsURLFor(serverUrl),
-        token,
-        lastEventId: seed,
-      });
-      client.on('onStatus', (s) => {
-        setStatus(s);
-        if (s === 'unauthorized') {
-          clearCredentials();
-          kv.remove(KEY_TOKEN);
-        }
-      });
-      client.on('onEnvelope', (env) => {
-        const out = ingest(env);
-        if (out?.reply) client.send(out.reply);
-        client.setLastEventId(env.id);
-      });
-      clientRef.current = client;
-      client.connect();
-    })();
-    return () => {
-      alive = false;
-      clientRef.current?.close();
-      clientRef.current = null;
-    };
-  }, [hydrated, serverUrl, token, setStatus, clearCredentials, ingest]);
+  // Owns the WSClient instance. clientRef is shared with every screen via
+  // WSClientProvider so they can send envelopes without re-instantiating.
+  const clientRef = useWebSocket();
 
-  useEffect(() => {
-    if (typeof document === 'undefined') return;
-    const onVis = () => {
-      if (document.visibilityState !== 'visible') return;
-      if (!clientRef.current) return;
-      if (wsStatus !== 'open') clientRef.current.connect();
-    };
-    document.addEventListener('visibilitychange', onVis);
-    return () => document.removeEventListener('visibilitychange', onVis);
-  }, [wsStatus]);
+  // Tab visibility: when the user returns to the foreground and the socket
+  // is down, reconnect — the client will send client.hello{last_event_id}
+  // and the orchestrator's ring buffer replays missed envelopes.
+  const onVisible = useCallback(() => {
+    if (!clientRef.current) return;
+    if (wsStatus !== 'open') clientRef.current.connect();
+  }, [clientRef, wsStatus]);
+  useVisibility(onVisible);
 
+  // beforeunload: best-effort deny every pending approval so the server
+  // doesn't burn its full timeout.
   useEffect(() => {
     if (typeof window === 'undefined') return;
     const handler = () => {
@@ -155,19 +115,49 @@ export default function App() {
     };
     window.addEventListener('beforeunload', handler);
     return () => window.removeEventListener('beforeunload', handler);
-  }, [pendingApprovals]);
+  }, [clientRef, pendingApprovals]);
 
   if (!hydrated) return null;
+
+  const authed = Boolean(serverUrl && token);
 
   return (
     <SafeAreaProvider>
       <StatusBar style="light" />
       <View style={styles.app}>
-        {serverUrl && token ? (
-          <ChatScreen client={clientRef.current} />
-        ) : (
-          <OnboardScreen />
-        )}
+        <WSClientProvider value={clientRef}>
+          <NavigationContainer linking={linking}>
+            <Stack.Navigator
+              screenOptions={{
+                headerStyle: { backgroundColor: '#0d1117' },
+                headerTitleStyle: { color: '#e6edf3' },
+                headerTintColor: '#e6edf3',
+                contentStyle: { backgroundColor: '#0b0f17' },
+              }}
+            >
+              {authed ? (
+                <>
+                  <Stack.Screen
+                    name="Chat"
+                    component={ChatScreen}
+                    options={{ headerShown: false }}
+                  />
+                  <Stack.Screen
+                    name="Settings"
+                    component={SettingsScreen}
+                    options={{ title: 'Settings' }}
+                  />
+                </>
+              ) : (
+                <Stack.Screen
+                  name="Onboard"
+                  component={OnboardScreen}
+                  options={{ headerShown: false }}
+                />
+              )}
+            </Stack.Navigator>
+          </NavigationContainer>
+        </WSClientProvider>
       </View>
     </SafeAreaProvider>
   );
