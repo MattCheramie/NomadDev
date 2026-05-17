@@ -71,13 +71,21 @@ at [`internal/fsops/`](./internal/fsops/); per-session conversation memory at
 [`docs/approval.md`](./docs/approval.md) for the human-in-the-loop state
 machine.
 
-### Phase 5: Mobile Control Hub
+### Phase 5: Mobile Control Hub — done
 *Objective: Ditch the terminal for a native, reactive mobile interface.*
-- [ ] Scaffold a new React Native (or Expo) project.
-- [ ] Implement a WebSocket client that connects to the Orchestrator's Tailscale IP.
-- [ ] Build the main chat/event feed UI components.
-- [ ] Create custom UI cards for "Action Approvals" (intercepting sensitive commands before they run).
-- [ ] Implement background synchronization to fetch state history upon app resume.
+- [x] Scaffold a new React Native (or Expo) project.
+- [x] Implement a WebSocket client that connects to the Orchestrator's Tailscale IP.
+- [x] Build the main chat/event feed UI components.
+- [x] Create custom UI cards for "Action Approvals" (intercepting sensitive commands before they run).
+- [x] Implement background synchronization to fetch state history upon app resume.
+
+Expo + TypeScript SPA at [`mobile/`](./mobile/), exported as static web
+assets and embedded into the orchestrator binary via
+[`internal/wsserver/spa.go`](./internal/wsserver/spa.go). The same
+Tailscale IP that exposes `/ws` also serves the UI at `/`. JWT onboarding
+ships as a QR helper at [`scripts/qr-jwt/`](./scripts/qr-jwt/). See
+[`docs/mobile.md`](./docs/mobile.md) for the architecture and
+[`docs/auth.md`](./docs/auth.md) for the onboarding flow.
 
 ---
 
@@ -117,19 +125,36 @@ export NOMADDEV_HISTORY_BACKEND=memory
   -disconnect-after assistant.message -timeout 10s
 ```
 
+Build the Phase 5 SPA into the orchestrator binary and connect with a
+browser:
+
+```sh
+make build-full              # npm install + expo export → embed → go build
+./bin/orchestrator -listen :8080 &
+go run ./scripts/qr-jwt \
+    -server-url http://127.0.0.1:8080 -sub matt -sid sess-1 -ttl 1h \
+    -out qr.png
+# stdout prints the deep-link URL — open it in a browser or scan qr.png.
+```
+
+For SPA dev with Metro hot-reload, run `make dev-mobile` and point the
+Expo dev server at the orchestrator (Expo serves the UI on its own port;
+the WebSocket connects back to `:8080/ws`).
+
 Run the test suite:
 
 ```sh
-go test -race -count=1 ./...           # default — mock sandbox + mock translator
-make test-docker                       # real Docker runner round-trip (requires daemon)
-make test-gemini                       # real Gemini API (requires NOMADDEV_GEMINI_API_KEY)
+make test-race          # default Go suite — mock sandbox + mock translator
+make test-mobile        # mobile SPA tests (Jest + mock-socket)
+make test-docker        # real Docker runner round-trip (requires daemon)
+make test-gemini        # real Gemini API (requires NOMADDEV_GEMINI_API_KEY)
 ```
 
-CI exercises three suites on every PR (see
-[`.github/workflows/ci.yml`](./.github/workflows/ci.yml)): the default
-race-enabled tests, the Docker-tagged sandbox tests (the `ubuntu-latest`
-runner has Docker pre-installed), and tag-build smoke covering `-tags
-docker`, `-tags gemini`, and the combined build.
+CI exercises the default Go suite, the SPA test suite (Jest), the
+Docker-tagged sandbox tests (the `ubuntu-latest` runner has Docker
+pre-installed), and tag-build smoke covering `-tags docker`, `-tags
+gemini`, and the combined build. See
+[`.github/workflows/ci.yml`](./.github/workflows/ci.yml).
 
 The Docker-tagged tests (`internal/sandbox/docker_test.go`) call
 `requireDaemon(t)` and skip cleanly on machines without a daemon. The

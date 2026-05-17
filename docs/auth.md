@@ -65,3 +65,38 @@ close frame is needed because no upgrade happened.
 `jwt.WithValidMethods([]string{"HS256"})`, which causes golang-jwt v5 to
 reject `alg: none` and any asymmetric algorithm. Without this guard, an
 attacker who knows the public key shape could forge tokens.
+
+## Mobile / SPA onboarding (Phase 5)
+
+The hosted SPA at `/` needs a token + server URL on first launch. Two
+delivery paths land in the same place:
+
+1. **`scripts/qr-jwt`** — a Go CLI that wraps `gen-jwt` and renders a QR
+   code carrying a deep link the SPA hydrates from:
+
+   ```
+   https://<server>/#token=<jwt>&sid=<sid>
+   ```
+
+   Scan with the device's camera (or open the URL in a browser) and the
+   SPA persists the token + server URL to `localStorage`, strips the
+   fragment via `history.replaceState`, and connects.
+
+2. **Manual paste.** The Onboard screen takes a server URL + JWT typed
+   or pasted directly. Useful when no scanner is around.
+
+**Why the fragment.** Putting `token=…` in the query string would leak
+the JWT to every layer that touches the request line: the orchestrator's
+access log, any proxy, any third-party `Referer` header sent from a
+linked page. The URL fragment is client-only — browsers never put it on
+the wire — so the JWT stays on the device. Same argument as the OAuth2
+implicit-flow guidance.
+
+```sh
+NOMADDEV_JWT_SECRET=... go run ./scripts/qr-jwt \
+    -server-url https://nomad.tail123.ts.net \
+    -sub matt -sid sess-1 -ttl 1h -out qr.png
+```
+
+The CLI prints the ASCII QR to stdout and, with `-out`, writes a PNG to
+disk for sharing.

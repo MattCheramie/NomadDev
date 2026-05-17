@@ -67,6 +67,15 @@ type ApprovalConfig struct {
 	GateDirectCommands bool          // also gate the legacy command.request path
 }
 
+// SPAConfig governs the Phase 5 hosted single-page app. Enabled is on by
+// default so any orchestrator build serves the bundled UI at /. Set Dir to
+// serve from a host directory instead of the embedded copy — useful during
+// `expo start --web` dev hot-reload.
+type SPAConfig struct {
+	Enabled bool   // NOMADDEV_SPA_ENABLED, default true
+	Dir     string // NOMADDEV_SPA_DIR, default "" → use embed
+}
+
 // Config is the full set of knobs the orchestrator reads at startup.
 type Config struct {
 	ListenAddr   string
@@ -77,6 +86,7 @@ type Config struct {
 	Middleware   MiddlewareConfig
 	History      HistoryConfig
 	Approval     ApprovalConfig
+	SPA          SPAConfig
 	ReadTimeout  time.Duration
 	WriteTimeout time.Duration
 	PingInterval time.Duration
@@ -138,6 +148,10 @@ func Load() (*Config, error) {
 			Timeout:            envDuration("NOMADDEV_APPROVAL_TIMEOUT", 60*time.Second),
 			AutoGrant:          envBool("NOMADDEV_APPROVAL_AUTO_GRANT", false),
 			GateDirectCommands: envBool("NOMADDEV_APPROVAL_GATE_DIRECT_COMMANDS", true),
+		},
+		SPA: SPAConfig{
+			Enabled: envBool("NOMADDEV_SPA_ENABLED", true),
+			Dir:     os.Getenv("NOMADDEV_SPA_DIR"),
 		},
 		ReadTimeout:  envDuration("NOMADDEV_READ_TIMEOUT", 60*time.Second),
 		WriteTimeout: envDuration("NOMADDEV_WRITE_TIMEOUT", 10*time.Second),

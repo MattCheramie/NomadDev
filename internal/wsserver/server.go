@@ -66,6 +66,12 @@ func New(
 	}
 	mux.HandleFunc("/healthz", srv.healthHandler)
 	mux.HandleFunc("/ws", srv.wsHandler)
+	if cfg.SPA.Enabled {
+		// Registered AFTER /ws and /healthz so longest-prefix wins keeps them
+		// resolving to their own handlers; "/" only matches when nothing else
+		// does. spa_test.go pins this invariant.
+		mux.Handle("/", srv.spaHandler())
+	}
 	srv.http = &http.Server{
 		Addr:              cfg.ListenAddr,
 		Handler:           mux,
