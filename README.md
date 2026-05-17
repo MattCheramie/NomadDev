@@ -20,15 +20,22 @@ The architecture is divided into five modular, decoupled components:
 
 ## 🗺️ Project Roadmap
 
-### Phase 1: Mesh & Foundation
+### Phase 1: Mesh & Foundation — done
 *Objective: Establish secure, passwordless communication between devices.*
-- [ ] Configure host VPS with Ubuntu 24.04.
-- [ ] Install and configure Tailscale subnet routing.
-- [ ] Verify ICMP and basic TCP packet transmission exclusively over the Tailscale IP range.
-- [ ] Disable public SSH access on the host (port 22).
+- [x] Configure host VPS with Ubuntu 24.04.
+- [x] Install and configure Tailscale subnet routing.
+- [x] Verify ICMP and basic TCP packet transmission exclusively over the Tailscale IP range.
+- [x] Disable public SSH access on the host (port 22).
 
-Design notes and a non-destructive provisioning checklist live at
-[`infra/`](./infra/) — see `infra/README.md` and `infra/scripts/provision.sh`.
+Provisioning lives at [`infra/`](./infra/). The flow is documented end-to-end
+in [`infra/RUNBOOK.md`](./infra/RUNBOOK.md): walk through
+[`infra/scripts/provision.sh`](./infra/scripts/provision.sh) on a fresh
+host, run [`infra/scripts/tailscale-verify.sh`](./infra/scripts/tailscale-verify.sh)
+to confirm the mesh, then
+[`infra/scripts/ssh-lockdown.sh`](./infra/scripts/ssh-lockdown.sh) to close
+the public interface. [`infra/scripts/smoke.sh`](./infra/scripts/smoke.sh)
+drives a JWT-authed `command.request` round-trip and exits non-zero on any
+regression — point it at `100.x.y.z:8080` to verify the live deploy.
 
 ### Phase 2: Headless Orchestrator (Go) — done
 *Objective: Build the core message relay system.*

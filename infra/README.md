@@ -43,6 +43,20 @@ JWT signing secret (consumed by the orchestrator) rotates independently — see
 
 ## Scripts
 
-`scripts/provision.sh` is a documented checklist, not an executable. Every
-destructive command is commented out with `# TODO:` — review and run each step
-by hand on a fresh host.
+All scripts follow the same non-destructive convention: every destructive
+command ships commented out with `# TODO:`. Review and uncomment in place.
+
+- [`scripts/provision.sh`](./scripts/provision.sh) — base OS + Tailscale
+  install checklist for a fresh Ubuntu 24.04 host.
+- [`scripts/tailscale-verify.sh`](./scripts/tailscale-verify.sh) —
+  read-only mesh verification (tailnet IP, `tailscale0` iface,
+  orchestrator listener). Safe to re-run.
+- [`scripts/ssh-lockdown.sh`](./scripts/ssh-lockdown.sh) — ufw hardening +
+  OpenSSH disable. Has a pre-flight that refuses to proceed unless
+  Tailscale is up.
+- [`scripts/smoke.sh`](./scripts/smoke.sh) — end-to-end smoke against a
+  running orchestrator: `/healthz`, JWT mint via `scripts/gen-jwt`, and a
+  `command.request → command.result` round-trip via `cmd/wsclient`.
+
+See [`RUNBOOK.md`](./RUNBOOK.md) for the ordered first-deploy walkthrough
+and common incident-response recipes.
