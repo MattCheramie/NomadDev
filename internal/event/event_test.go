@@ -140,3 +140,69 @@ func TestCommandResult_Roundtrip(t *testing.T) {
 		t.Fatalf("result mismatch: %+v", p)
 	}
 }
+
+func TestUserIntent_Roundtrip(t *testing.T) {
+	in, _ := NewEnvelope(EventUserIntent, UserIntentPayload{Text: "say hi", HistoryHint: 5})
+	b, _ := in.Bytes()
+	out, _ := DecodeBytes(b)
+	var p UserIntentPayload
+	_ = out.UnmarshalPayload(&p)
+	if p.Text != "say hi" || p.HistoryHint != 5 {
+		t.Fatalf("intent mismatch: %+v", p)
+	}
+}
+
+func TestAssistantChunk_Roundtrip(t *testing.T) {
+	in, _ := NewReply(EventAssistantChunk, "01HX-u", AssistantChunkPayload{Seq: 7, Text: "hello"})
+	b, _ := in.Bytes()
+	out, _ := DecodeBytes(b)
+	var p AssistantChunkPayload
+	_ = out.UnmarshalPayload(&p)
+	if p.Seq != 7 || p.Text != "hello" || out.CorrelationID != "01HX-u" {
+		t.Fatalf("chunk mismatch: payload=%+v correlation=%q", p, out.CorrelationID)
+	}
+}
+
+func TestAssistantMessage_Roundtrip(t *testing.T) {
+	in, _ := NewReply(EventAssistantMessage, "01HX-u",
+		AssistantMessagePayload{Text: "done", FinishReason: "stop"})
+	b, _ := in.Bytes()
+	out, _ := DecodeBytes(b)
+	var p AssistantMessagePayload
+	_ = out.UnmarshalPayload(&p)
+	if p.Text != "done" || p.FinishReason != "stop" {
+		t.Fatalf("message mismatch: %+v", p)
+	}
+}
+
+func TestToolApprovalRequest_Roundtrip(t *testing.T) {
+	in, _ := NewReply(EventToolApprovalRequest, "01HX-cmd", ToolApprovalRequestPayload{
+		Tool:             "write_patch",
+		Args:             map[string]any{"path": "x.txt", "content": "hi"},
+		Reason:           "writes to workspace",
+		PendingCommandID: "01HX-cmd",
+		TimeoutMs:        60000,
+	})
+	b, _ := in.Bytes()
+	out, _ := DecodeBytes(b)
+	var p ToolApprovalRequestPayload
+	_ = out.UnmarshalPayload(&p)
+	if p.Tool != "write_patch" || p.PendingCommandID != "01HX-cmd" || p.TimeoutMs != 60000 {
+		t.Fatalf("approval mismatch: %+v", p)
+	}
+	if p.Args["path"] != "x.txt" {
+		t.Errorf("args lost: %+v", p.Args)
+	}
+}
+
+func TestToolApprovalDenied_Roundtrip(t *testing.T) {
+	in, _ := NewReply(EventToolApprovalDenied, "01HX-app",
+		ToolApprovalDeniedPayload{Reason: "no"})
+	b, _ := in.Bytes()
+	out, _ := DecodeBytes(b)
+	var p ToolApprovalDeniedPayload
+	_ = out.UnmarshalPayload(&p)
+	if p.Reason != "no" || out.CorrelationID != "01HX-app" {
+		t.Fatalf("denied mismatch: payload=%+v correlation=%q", p, out.CorrelationID)
+	}
+}

@@ -15,6 +15,14 @@ const (
 	EventCommandRequest = "command.request"
 	EventCommandChunk   = "command.chunk"
 	EventCommandResult  = "command.result"
+
+	// Phase 4 NLP middleware flow.
+	EventUserIntent          = "user.intent"
+	EventAssistantChunk      = "assistant.chunk"
+	EventAssistantMessage    = "assistant.message"
+	EventToolApprovalRequest = "tool.approval.request"
+	EventToolApprovalGranted = "tool.approval.granted"
+	EventToolApprovalDenied  = "tool.approval.denied"
 )
 
 // Error codes returned in an EventError payload.
@@ -37,6 +45,8 @@ const (
 	SandboxErrBadRequest  = "sandbox_bad_request"
 	SandboxErrInternal    = "sandbox_internal"
 	SandboxErrCanceled    = "sandbox_canceled"
+	// Phase 4: a tool call was denied or timed out at the approval gate.
+	SandboxErrUnauthorized = "sandbox_unauthorized"
 )
 
 // Stream identifiers on a CommandChunkPayload.
@@ -108,4 +118,50 @@ type CommandResultPayload struct {
 	DurationMs   int64  `json:"duration_ms"`
 	Error        string `json:"error,omitempty"`
 	ErrorMessage string `json:"error_message,omitempty"`
+}
+
+// UserIntentPayload is what a client sends on a user.intent envelope — one
+// free-text turn that the middleware translates into zero or more tool calls
+// plus optional assistant prose.
+type UserIntentPayload struct {
+	Text string `json:"text"`
+	// HistoryHint is an optional per-turn override of the configured history
+	// window length. Zero means "use the server default".
+	HistoryHint int `json:"history_hint,omitempty"`
+}
+
+// AssistantChunkPayload is one streamed slice of model-emitted text.
+// correlation_id ties it back to the originating user.intent.
+type AssistantChunkPayload struct {
+	Seq  int    `json:"seq"`
+	Text string `json:"text"`
+}
+
+// AssistantMessagePayload is the terminal frame for one user.intent turn.
+// Text may be empty when the model finished a tool-call-only turn.
+type AssistantMessagePayload struct {
+	Text         string `json:"text,omitempty"`
+	FinishReason string `json:"finish_reason,omitempty"` // "stop"|"tool_calls"|"length"|"safety"|"error"
+	Error        string `json:"error,omitempty"`         // set when FinishReason=="error"
+}
+
+// ToolApprovalRequestPayload is sent S→C when the middleware needs human
+// approval before dispatching a tool call. correlation_id is the pending
+// command.request id; the client matches on that.
+type ToolApprovalRequestPayload struct {
+	Tool             string         `json:"tool"`
+	Args             map[string]any `json:"args"`
+	Reason           string         `json:"reason,omitempty"`
+	PendingCommandID string         `json:"pending_command_id"`
+	TimeoutMs        int            `json:"timeout_ms"`
+}
+
+// ToolApprovalGrantedPayload is sent C→S to allow the pending tool call.
+// correlation_id is the tool.approval.request envelope id.
+type ToolApprovalGrantedPayload struct{}
+
+// ToolApprovalDeniedPayload is sent C→S to refuse the pending tool call.
+// The optional Reason is surfaced to the user as part of error_message.
+type ToolApprovalDeniedPayload struct {
+	Reason string `json:"reason,omitempty"`
 }

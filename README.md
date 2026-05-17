@@ -55,13 +55,21 @@ the orchestrator wires it in at [`internal/wsserver/sandbox.go`](./internal/wsse
 See [`docs/sandbox.md`](./docs/sandbox.md) for the architecture, threat model,
 and how to switch between the mock and Docker runners.
 
-### Phase 4: NLP Function Middleware
+### Phase 4: NLP Function Middleware — done
 *Objective: Standardize natural language into actionable system commands.*
-- [ ] Integrate the Gemini API via Google AI Studio.
-- [ ] Define JSON schemas for core system tools (e.g., `execute_script`, `read_file`, `write_patch`).
-- [ ] Build the loop that receives user intent, queries the LLM, and captures the resulting Function Call.
-- [ ] Map the generated Function Calls directly to the Go Sandbox Runner from Phase 3.
-- [ ] Format execution results back into JSON for the LLM to interpret.
+- [x] Integrate the Gemini API via Google AI Studio.
+- [x] Define JSON schemas for core system tools (e.g., `execute_script`, `read_file`, `write_patch`).
+- [x] Build the loop that receives user intent, queries the LLM, and captures the resulting Function Call.
+- [x] Map the generated Function Calls directly to the Go Sandbox Runner from Phase 3.
+- [x] Format execution results back into JSON for the LLM to interpret.
+
+Translator + dispatcher + approval gate live at
+[`internal/middleware/`](./internal/middleware/); filesystem-only tools live
+at [`internal/fsops/`](./internal/fsops/); per-session conversation memory at
+[`internal/history/`](./internal/history/). See
+[`docs/middleware.md`](./docs/middleware.md) for the full architecture and
+[`docs/approval.md`](./docs/approval.md) for the human-in-the-loop state
+machine.
 
 ### Phase 5: Mobile Control Hub
 *Objective: Ditch the terminal for a native, reactive mobile interface.*
@@ -96,16 +104,33 @@ Drive the Phase 3 sandbox runner end-to-end against the mock backend:
   -disconnect-after command.result -timeout 5s
 ```
 
+Drive the Phase 4 NLP middleware turn loop with the mock translator and the
+auto-grant approval bypass (memory history so it doesn't touch `/var/lib`):
+
+```sh
+export NOMADDEV_MIDDLEWARE_RUNTIME=mock
+export NOMADDEV_APPROVAL_AUTO_GRANT=true
+export NOMADDEV_HISTORY_BACKEND=memory
+./bin/orchestrator -listen :8080 &
+./bin/wsclient -url ws://127.0.0.1:8080/ws -token "$TOKEN" \
+  -send user.intent -text "hello there" \
+  -disconnect-after assistant.message -timeout 10s
+```
+
 Run the test suite:
 
 ```sh
-go test -race -count=1 ./...           # default — mock sandbox only
+go test -race -count=1 ./...           # default — mock sandbox + mock translator
 make test-docker                       # opt-in — real Docker runner round-trip
+make test-gemini                       # opt-in — requires NOMADDEV_GEMINI_API_KEY
 ```
 
 The Docker-tagged tests (`internal/sandbox/docker_test.go`) call
-`requireDaemon(t)` first and skip cleanly when no daemon is reachable. Build
-the Docker-enabled binaries with `make build-docker`. See
+`requireDaemon(t)` first and skip cleanly when no daemon is reachable. The
+Gemini-tagged tests (`internal/middleware/gemini_test.go`) call
+`requireKey(t)` and skip when `NOMADDEV_GEMINI_API_KEY` is absent. Build the
+Docker-enabled binaries with `make build-docker`, the Gemini-enabled binaries
+with `make build-gemini`, or both with `make build-all`. See
 [`.env.example`](./.env.example) for all configuration knobs.
 
 ---

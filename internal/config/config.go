@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 
 	nlog "github.com/mattcheramie/nomaddev/internal/log"
@@ -38,6 +39,34 @@ type SandboxConfig struct {
 	PreferRunsc    bool
 }
 
+// MiddlewareConfig governs the Phase 4 NLP middleware that translates
+// user.intent envelopes into typed tool calls via Gemini (or the mock).
+type MiddlewareConfig struct {
+	Runtime          string  // "mock" | "gemini" | "none"
+	APIKey           string  // NOMADDEV_GEMINI_API_KEY
+	Model            string  // e.g. "gemini-2.0-flash"
+	Temperature      float64 // 0.0–1.0
+	MaxTokens        int
+	SystemPrompt     string // inline override
+	SystemPromptPath string // file path; takes precedence over SystemPrompt
+	MaxConcurrent    int    // per-server cap on concurrent user.intent turns
+}
+
+// HistoryConfig governs the persistent conversation store.
+type HistoryConfig struct {
+	Backend     string // "memory" | "sqlite"
+	Path        string // sqlite file path
+	WindowTurns int    // number of turns to send to the LLM as context
+}
+
+// ApprovalConfig governs the human-in-the-loop gate for destructive tool calls.
+type ApprovalConfig struct {
+	RequiredTools      []string      // tool names that require approval
+	Timeout            time.Duration // how long to wait for grant/deny
+	AutoGrant          bool          // dev escape hatch — bypass gating
+	GateDirectCommands bool          // also gate the legacy command.request path
+}
+
 // Config is the full set of knobs the orchestrator reads at startup.
 type Config struct {
 	ListenAddr   string
@@ -45,6 +74,9 @@ type Config struct {
 	LogLevel     slog.Level
 	Session      SessionConfig
 	Sandbox      SandboxConfig
+	Middleware   MiddlewareConfig
+	History      HistoryConfig
+	Approval     ApprovalConfig
 	ReadTimeout  time.Duration
 	WriteTimeout time.Duration
 	PingInterval time.Duration
@@ -85,6 +117,27 @@ func Load() (*Config, error) {
 			PidsLimit:      envInt64("NOMADDEV_SANDBOX_PIDS_LIMIT", 256),
 			ReadOnlyRootfs: envBool("NOMADDEV_SANDBOX_READONLY_ROOTFS", true),
 			PreferRunsc:    envBool("NOMADDEV_SANDBOX_PREFER_RUNSC", true),
+		},
+		Middleware: MiddlewareConfig{
+			Runtime:          envOr("NOMADDEV_MIDDLEWARE_RUNTIME", "mock"),
+			APIKey:           os.Getenv("NOMADDEV_GEMINI_API_KEY"),
+			Model:            envOr("NOMADDEV_GEMINI_MODEL", "gemini-2.0-flash"),
+			Temperature:      envFloat("NOMADDEV_GEMINI_TEMPERATURE", 0.2),
+			MaxTokens:        envInt("NOMADDEV_GEMINI_MAX_TOKENS", 4096),
+			SystemPrompt:     os.Getenv("NOMADDEV_MIDDLEWARE_SYSTEM_PROMPT"),
+			SystemPromptPath: os.Getenv("NOMADDEV_MIDDLEWARE_SYSTEM_PROMPT_PATH"),
+			MaxConcurrent:    envInt("NOMADDEV_MIDDLEWARE_MAX_CONCURRENT", 4),
+		},
+		History: HistoryConfig{
+			Backend:     envOr("NOMADDEV_HISTORY_BACKEND", "sqlite"),
+			Path:        envOr("NOMADDEV_HISTORY_PATH", "/var/lib/nomaddev/history.db"),
+			WindowTurns: envInt("NOMADDEV_HISTORY_WINDOW_TURNS", 20),
+		},
+		Approval: ApprovalConfig{
+			RequiredTools:      envCSV("NOMADDEV_APPROVAL_REQUIRED_TOOLS", []string{"execute_script", "write_patch"}),
+			Timeout:            envDuration("NOMADDEV_APPROVAL_TIMEOUT", 60*time.Second),
+			AutoGrant:          envBool("NOMADDEV_APPROVAL_AUTO_GRANT", false),
+			GateDirectCommands: envBool("NOMADDEV_APPROVAL_GATE_DIRECT_COMMANDS", true),
 		},
 		ReadTimeout:  envDuration("NOMADDEV_READ_TIMEOUT", 60*time.Second),
 		WriteTimeout: envDuration("NOMADDEV_WRITE_TIMEOUT", 10*time.Second),
@@ -169,4 +222,35 @@ func envBool(key string, fallback bool) bool {
 		return fallback
 	}
 	return b
+}
+
+func envFloat(key string, fallback float64) float64 {
+	v := os.Getenv(key)
+	if v == "" {
+		return fallback
+	}
+	f, err := strconv.ParseFloat(v, 64)
+	if err != nil {
+		return fallback
+	}
+	return f
+}
+
+func envCSV(key string, fallback []string) []string {
+	v := os.Getenv(key)
+	if v == "" {
+		return fallback
+	}
+	parts := strings.Split(v, ",")
+	out := parts[:0]
+	for _, p := range parts {
+		p = strings.TrimSpace(p)
+		if p != "" {
+			out = append(out, p)
+		}
+	}
+	if len(out) == 0 {
+		return fallback
+	}
+	return out
 }

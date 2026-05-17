@@ -32,9 +32,15 @@ All messages — in both directions — are JSON envelopes with this shape:
 | `EventError`          | `error`             | S→C       | Structured error with `code` + `message`. |
 | `EventSessionStale`   | `session.stale`     | S→C       | Buffer rolled past `last_event_id`. |
 | `EventSessionReplaced`| `session.replaced`  | S→C       | A newer connection took over the SID. |
-| `EventCommandRequest` | `command.request`   | C→S       | Run a sandbox tool. Payload: `{tool, args, working_dir, timeout_ms}`. |
+| `EventCommandRequest` | `command.request`   | C→S, S→C  | Run a sandbox tool. Payload: `{tool, args, working_dir, timeout_ms}`. Clients send this directly; the middleware also mints it when the LLM emits a tool call. |
 | `EventCommandChunk`   | `command.chunk`     | S→C       | Live stdout/stderr slice. Payload: `{stream, seq, data}`. `correlation_id` = originating `command.request.id`. |
 | `EventCommandResult`  | `command.result`    | S→C       | Terminal summary — emitted exactly once per request. Payload: `{exit_code, duration_ms, error, error_message}`. |
+| `EventUserIntent`     | `user.intent`       | C→S       | Free-text turn input for the NLP middleware. Payload: `{text, history_hint}`. |
+| `EventAssistantChunk` | `assistant.chunk`   | S→C       | Streamed model text. Payload: `{seq, text}`. `correlation_id` = originating `user.intent.id`. |
+| `EventAssistantMessage` | `assistant.message` | S→C     | Terminal frame for one turn — emitted exactly once. Payload: `{text, finish_reason, error}`. `text` may be empty when the model produced only tool calls. |
+| `EventToolApprovalRequest` | `tool.approval.request` | S→C | Ask the human to authorize a destructive tool call. Payload: `{tool, args, reason, pending_command_id, timeout_ms}`. `correlation_id` = the pending `command.request.id`. |
+| `EventToolApprovalGranted` | `tool.approval.granted` | C→S | Allow the pending tool call. `correlation_id` = the `tool.approval.request.id`. Empty payload. |
+| `EventToolApprovalDenied`  | `tool.approval.denied`  | C→S | Refuse the pending tool call. Payload: `{reason}`. `correlation_id` = the `tool.approval.request.id`. |
 
 ## Example payloads
 
@@ -88,3 +94,45 @@ followed by **exactly one** `command.result`. All three share the request's
 {"id":"01HX-c2","type":"command.chunk","ts":"...","correlation_id":"01HX-r","payload":{"stream":"stderr","seq":0,"data":"err\n"}}
 {"id":"01HX-c3","type":"command.result","ts":"...","correlation_id":"01HX-r","payload":{"exit_code":0,"duration_ms":42}}
 ```
+
+## Phase 4 turn flow
+
+A single `user.intent` from the client triggers a turn the middleware runs to
+completion. The flow is:
+
+```
+client                                 orchestrator + middleware
+──────                                 ─────────────────────────
+user.intent(id=U) ────────────────▶
+                                       (translator opens stream)
+                  ◀──────────────── assistant.chunk(seq=0, correlation_id=U)
+                  ◀──────────────── assistant.chunk(seq=1, correlation_id=U)
+                                       (LLM emits a tool call)
+                  ◀──────────────── command.request(id=C, correlation_id=U)
+                  ◀──────────────── tool.approval.request(id=A, correlation_id=C)
+tool.approval.granted(corr=A) ────▶
+                                       (dispatcher runs the tool)
+                  ◀──────────────── command.chunk(correlation_id=C)*
+                  ◀──────────────── command.result(correlation_id=C)
+                                       (translator resumes with the result)
+                  ◀──────────────── assistant.message(correlation_id=U, finish_reason)
+```
+
+Correlation rules:
+
+- `assistant.chunk` and `assistant.message` `correlation_id` → the originating
+  `user.intent.id`.
+- `command.request` minted by the middleware carries `correlation_id` = the
+  same `user.intent.id`, so a client grouping by "earliest ancestor with empty
+  `correlation_id`" recovers the full turn.
+- `tool.approval.request` `correlation_id` → the pending `command.request.id`.
+- `tool.approval.granted` / `denied` `correlation_id` → the
+  `tool.approval.request.id`.
+
+A denied or timed-out approval still produces a terminal `command.result` with
+`error: "sandbox_unauthorized"` so the wire record is complete and replay-safe.
+
+Defined `command.result.error` codes (set on sandbox-side failure with
+`exit_code == -1`): `sandbox_timeout`, `sandbox_oom`, `sandbox_image_pull`,
+`sandbox_unavailable`, `sandbox_bad_request`, `sandbox_internal`,
+`sandbox_canceled`, `sandbox_unauthorized`.

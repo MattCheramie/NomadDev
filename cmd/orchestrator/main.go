@@ -1,4 +1,4 @@
-// Command orchestrator is the NomadDev WebSocket relay daemon (Phase 2).
+// Command orchestrator is the NomadDev WebSocket relay daemon.
 package main
 
 import (
@@ -9,13 +9,17 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"syscall"
 	"time"
 
 	"github.com/mattcheramie/nomaddev/internal/auth"
 	"github.com/mattcheramie/nomaddev/internal/config"
+	"github.com/mattcheramie/nomaddev/internal/fsops"
+	"github.com/mattcheramie/nomaddev/internal/history"
 	"github.com/mattcheramie/nomaddev/internal/hub"
 	nlog "github.com/mattcheramie/nomaddev/internal/log"
+	"github.com/mattcheramie/nomaddev/internal/middleware"
 	"github.com/mattcheramie/nomaddev/internal/sandbox"
 	"github.com/mattcheramie/nomaddev/internal/session"
 	"github.com/mattcheramie/nomaddev/internal/wsserver"
@@ -80,7 +84,16 @@ func run(listenOverride string) error {
 	}
 	logger.Info("orchestrator: sandbox runner", "runtime", cfg.Sandbox.Runtime, "configured", runner != nil)
 
-	srv := wsserver.New(cfg, logger, h, sessions, verifier, runner)
+	mw, err := buildMiddleware(rootCtx, cfg, runner)
+	if err != nil {
+		return fmt.Errorf("middleware: %w", err)
+	}
+	logger.Info("orchestrator: middleware",
+		"runtime", cfg.Middleware.Runtime, "history_backend", cfg.History.Backend,
+		"configured", mw != nil,
+	)
+
+	srv := wsserver.New(cfg, logger, h, sessions, verifier, runner, mw)
 
 	srvErr := make(chan error, 1)
 	go func() {
@@ -107,4 +120,74 @@ func run(listenOverride string) error {
 	}
 	logger.Info("orchestrator: stopped")
 	return nil
+}
+
+// buildMiddleware constructs the Phase 4 NLP middleware service from config.
+// Returns (nil, nil) when Runtime == "none". History and fsops are wired in
+// regardless of translator runtime so the smoke path (mock translator + auto
+// approval) is exercisable end-to-end.
+func buildMiddleware(ctx context.Context, cfg *config.Config, runner sandbox.Runner) (*middleware.Service, error) {
+	if cfg.Middleware.Runtime == "" || cfg.Middleware.Runtime == middleware.RuntimeNone {
+		return nil, nil
+	}
+
+	// History store.
+	var store history.Store
+	switch cfg.History.Backend {
+	case "memory":
+		store = history.NewMemoryStore()
+	case "", "sqlite":
+		if err := os.MkdirAll(filepath.Dir(cfg.History.Path), 0o700); err != nil {
+			return nil, fmt.Errorf("history dir: %w", err)
+		}
+		s, err := history.NewSQLiteStore(cfg.History.Path)
+		if err != nil {
+			return nil, err
+		}
+		store = s
+	default:
+		return nil, fmt.Errorf("unknown history backend %q", cfg.History.Backend)
+	}
+
+	// FSOps engine — rooted at the same workspace dir the sandbox binds.
+	if err := os.MkdirAll(cfg.Sandbox.WorkspaceDir, 0o755); err != nil {
+		return nil, fmt.Errorf("workspace dir: %w", err)
+	}
+	fs, err := fsops.New(cfg.Sandbox.WorkspaceDir)
+	if err != nil {
+		return nil, fmt.Errorf("fsops: %w", err)
+	}
+
+	systemPrompt := cfg.Middleware.SystemPrompt
+	if cfg.Middleware.SystemPromptPath != "" {
+		b, err := os.ReadFile(cfg.Middleware.SystemPromptPath)
+		if err != nil {
+			return nil, fmt.Errorf("system prompt: %w", err)
+		}
+		systemPrompt = string(b)
+	}
+
+	return middleware.NewService(ctx, middleware.FactoryConfig{
+		Runtime:        cfg.Middleware.Runtime,
+		APIKey:         cfg.Middleware.APIKey,
+		Model:          cfg.Middleware.Model,
+		Temperature:    cfg.Middleware.Temperature,
+		MaxTokens:      cfg.Middleware.MaxTokens,
+		SystemPrompt:   systemPrompt,
+		WindowTurns:    cfg.History.WindowTurns,
+		MaxConcurrent:  cfg.Middleware.MaxConcurrent,
+		DefaultTimeout: cfg.Sandbox.DefaultTimeout,
+		SandboxLimits: sandbox.ResourceLimits{
+			CPUNanos:    cfg.Sandbox.NanoCPUs,
+			MemoryBytes: cfg.Sandbox.Memory,
+			PidsLimit:   cfg.Sandbox.PidsLimit,
+		},
+		GateDirectCommands:    cfg.Approval.GateDirectCommands,
+		Sandbox:               runner,
+		FSOps:                 fs,
+		History:               store,
+		ApprovalRequiredTools: cfg.Approval.RequiredTools,
+		ApprovalAutoGrant:     cfg.Approval.AutoGrant,
+		ApprovalTimeout:       cfg.Approval.Timeout,
+	})
 }

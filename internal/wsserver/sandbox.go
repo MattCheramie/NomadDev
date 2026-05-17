@@ -9,6 +9,7 @@ import (
 
 	"github.com/mattcheramie/nomaddev/internal/event"
 	"github.com/mattcheramie/nomaddev/internal/hub"
+	"github.com/mattcheramie/nomaddev/internal/middleware"
 	"github.com/mattcheramie/nomaddev/internal/sandbox"
 	"github.com/mattcheramie/nomaddev/internal/session"
 )
@@ -71,8 +72,79 @@ func (s *Server) handleCommandRequest(
 		if s.sem != nil {
 			defer func() { <-s.sem }()
 		}
+		// When the middleware is configured AND its policy says we should
+		// gate the legacy direct command.request path too, run the approval
+		// round-trip before dispatching. Otherwise dispatch directly.
+		if s.mw != nil && s.mw.Config.GateDirectCommands {
+			if !s.gateDirectCommand(execCtx, env.ID, p, sess, client) {
+				return
+			}
+		}
 		s.runExec(execCtx, env.ID, p, sess, client, logger)
 	}()
+}
+
+// gateDirectCommand runs the approval round-trip for a legacy direct
+// command.request envelope. Returns true when the dispatch should proceed,
+// false when an authorization-failure command.result has already been emitted.
+func (s *Server) gateDirectCommand(
+	ctx context.Context, reqID string, p event.CommandRequestPayload,
+	sess *session.Session, client *hub.Client,
+) bool {
+	required, reason := s.mw.Approver.RequiresApproval(p.Tool, p.Args)
+	if !required {
+		return true
+	}
+	approvalID := event.NewID()
+	s.mw.Approver.Register(approvalID)
+	defer s.mw.Approver.Cancel(approvalID)
+
+	timeoutMs := int(s.cfg.Approval.Timeout / time.Millisecond)
+	reqEnv, err := event.NewReply(event.EventToolApprovalRequest, reqID, event.ToolApprovalRequestPayload{
+		Tool:             p.Tool,
+		Args:             p.Args,
+		Reason:           reason,
+		PendingCommandID: reqID,
+		TimeoutMs:        timeoutMs,
+	})
+	if err == nil {
+		// Re-stamp the envelope id so the client can correlate the grant/deny
+		// back to this specific approval round-trip without conflating with
+		// the originating command.request id.
+		reqEnv.ID = approvalID
+		s.bufferAndSend(sess, client, reqEnv)
+	}
+
+	granted, awaitErr := s.mw.Approver.Await(ctx, approvalID)
+	if granted {
+		return true
+	}
+	code, msg := classifyApprovalErr(awaitErr)
+	s.emitResult(sess, client, reqID, time.Now(), -1, code, msg)
+	return false
+}
+
+// classifyApprovalErr maps the Approver sentinels to event-layer codes.
+func classifyApprovalErr(err error) (string, string) {
+	switch {
+	case errors.Is(err, middleware.ErrApprovalDenied):
+		return event.SandboxErrUnauthorized, "approval denied"
+	case errors.Is(err, middleware.ErrApprovalTimeout):
+		return event.SandboxErrUnauthorized, "approval timed out"
+	case errors.Is(err, context.Canceled):
+		return event.SandboxErrCanceled, "client disconnected"
+	}
+	return event.SandboxErrUnauthorized, "approval failed"
+}
+
+// routeApproval is invoked from dispatch for incoming tool.approval.granted
+// and tool.approval.denied envelopes. The router forwards the result to the
+// Approver keyed on the correlation_id (= the approval.request envelope id).
+func (s *Server) routeApproval(env event.Envelope, granted bool) {
+	if s.mw == nil || env.CorrelationID == "" {
+		return
+	}
+	s.mw.Approver.Signal(env.CorrelationID, granted)
 }
 
 // runExec drives the runner channel for one request, fanning chunks into
