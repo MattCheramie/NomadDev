@@ -121,12 +121,18 @@ Run the test suite:
 
 ```sh
 go test -race -count=1 ./...           # default — mock sandbox + mock translator
-make test-docker                       # opt-in — real Docker runner round-trip
-make test-gemini                       # opt-in — requires NOMADDEV_GEMINI_API_KEY
+make test-docker                       # real Docker runner round-trip (requires daemon)
+make test-gemini                       # real Gemini API (requires NOMADDEV_GEMINI_API_KEY)
 ```
 
+CI exercises three suites on every PR (see
+[`.github/workflows/ci.yml`](./.github/workflows/ci.yml)): the default
+race-enabled tests, the Docker-tagged sandbox tests (the `ubuntu-latest`
+runner has Docker pre-installed), and tag-build smoke covering `-tags
+docker`, `-tags gemini`, and the combined build.
+
 The Docker-tagged tests (`internal/sandbox/docker_test.go`) call
-`requireDaemon(t)` first and skip cleanly when no daemon is reachable. The
+`requireDaemon(t)` and skip cleanly on machines without a daemon. The
 Gemini-tagged tests (`internal/middleware/gemini_test.go`) call
 `requireKey(t)` and skip when `NOMADDEV_GEMINI_API_KEY` is absent. Build the
 Docker-enabled binaries with `make build-docker`, the Gemini-enabled binaries
