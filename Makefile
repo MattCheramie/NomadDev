@@ -1,7 +1,17 @@
-MODULE  := github.com/mattcheramie/nomaddev
-BIN_DIR := bin
+MODULE   := github.com/mattcheramie/nomaddev
+BIN_DIR  := bin
+NPM      := npm
+EXPO     := npx expo
+SPA_DIST := internal/wsserver/dist
 
-.PHONY: build build-docker build-gemini build-all run test test-race test-docker test-gemini lint fmt vet tidy clean ci
+# GO_PACKAGES filters out mobile/node_modules/ — npm pulls a flatted package
+# that ships a stray flatted.go file, which Go's recursive `./...` walk would
+# otherwise discover and try to test.
+GO_PACKAGES = $(shell go list ./... | grep -v '/mobile/node_modules/')
+
+.PHONY: build build-docker build-gemini build-all run test test-race test-docker test-gemini \
+        lint fmt vet tidy clean ci \
+        build-mobile build-full dev-mobile clean-mobile test-mobile
 
 build:
 	go build -o $(BIN_DIR)/orchestrator ./cmd/orchestrator
@@ -23,8 +33,27 @@ build-all:
 	go build -tags docker -o $(BIN_DIR)/sandbox ./cmd/sandbox
 	go build -o $(BIN_DIR)/wsclient ./cmd/wsclient
 
+# Phase 5: SPA build pipeline.
+build-mobile:
+	cd mobile && $(NPM) install --no-audit --no-fund
+	cd mobile && $(EXPO) export --platform web --output-dir ../$(SPA_DIST)
+
+build-full: build-mobile build
+
+dev-mobile:
+	cd mobile && $(EXPO) start --web
+
+test-mobile:
+	cd mobile && $(NPM) test --silent
+
+clean-mobile:
+	rm -rf mobile/dist $(SPA_DIST)/_expo $(SPA_DIST)/metadata.json
+	@if [ -f $(SPA_DIST)/.stub-index.html ]; then \
+	  cp $(SPA_DIST)/.stub-index.html $(SPA_DIST)/index.html; \
+	fi
+
 test-docker:
-	go test -tags docker -race -count=1 ./internal/sandbox/...
+	go test -tags docker -race -count=1 -timeout 180s ./internal/sandbox/...
 
 test-gemini:
 	go test -tags gemini -race -count=1 ./internal/middleware/...
@@ -33,13 +62,13 @@ run: build
 	./$(BIN_DIR)/orchestrator
 
 test:
-	go test ./...
+	go test $(GO_PACKAGES)
 
 test-race:
-	go test -race -count=1 ./...
+	go test -race -count=1 $(GO_PACKAGES)
 
 vet:
-	go vet ./...
+	go vet $(GO_PACKAGES)
 
 lint:
 	golangci-lint run

@@ -1,10 +1,15 @@
 # NomadDev Architecture
 
 ```
-+--------------+      Tailscale       +-------------------+
-| RN Mobile    | <----------------->  | Orchestrator (Go) |
-| (Phase 5)    |   WSS, JWT, JSON     | cmd/orchestrator  |
-+--------------+                      +---------+---------+
++--------------+      Tailscale       +-------------------------+
+| Browser /    | <----------------->  | Orchestrator (Go)       |
+| Mobile WebView|  WSS + HTTPS         | cmd/orchestrator        |
++--------------+   JWT, JSON          |                         |
+                                      |  GET /     ─┐           |
+                                      |  GET /...  ─┤ Hosted    |
+                                      |             │ SPA       |
+                                      |  GET /ws   ─┘  (Phase 5)|
+                                      +---------+---------------+
                                                 |
                                   in-process    |  function-call
                                                 v
@@ -23,6 +28,13 @@
                                       | debug CLI         |
                                       +-------------------+
 ```
+
+Phase 5 lands the SPA in the **same binary**: the Expo project at `mobile/`
+is exported as static web assets via `expo export --platform web` and
+embedded via `//go:embed all:dist` from `internal/wsserver/spa.go`. The
+`/` and `/<route>` routes serve the bundle; `/ws` and `/healthz` keep
+their handlers because `net/http.ServeMux` longest-prefix wins keeps
+specific paths from being eaten by the catch-all. See `docs/mobile.md`.
 
 Phase 2 ships the WebSocket relay. Phase 3 adds the in-process sandbox
 runner (`internal/sandbox.Runner`), wired in at
@@ -81,4 +93,7 @@ client ──ws──> orchestrator
    |   <── assistant.message  terminal frame for the turn.
 ```
 
-Phase 5 is the UI for all of the above.
+Phase 5 ships the UI: an Expo + TypeScript SPA at `mobile/` that consumes
+the wire protocol described above and renders it as native cards rather
+than raw envelopes. The SPA is built once, embedded into the
+orchestrator, and served at `/` from the same listener as `/ws`.

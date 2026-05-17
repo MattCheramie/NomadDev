@@ -45,6 +45,7 @@ type testOpts struct {
 	Middleware           *middleware.Service
 	SandboxMaxConcurrent int
 	ApprovalTimeout      time.Duration
+	SPA                  config.SPAConfig
 }
 
 func newTestServerFull(t *testing.T, opts testOpts) (*httptest.Server, *Server, session.Store, *auth.IssuerSigner) {
@@ -68,6 +69,7 @@ func newTestServerFull(t *testing.T, opts testOpts) (*httptest.Server, *Server, 
 		Approval: config.ApprovalConfig{
 			Timeout: opts.ApprovalTimeout,
 		},
+		SPA:          opts.SPA,
 		ReadTimeout:  10 * time.Second,
 		WriteTimeout: 2 * time.Second,
 		PingInterval: 30 * time.Second,

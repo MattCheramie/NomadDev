@@ -1,0 +1,15 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>NomadDev — UI not bundled</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+  </head>
+  <body style="font-family:system-ui;padding:24px;background:#0b0f17;color:#e6edf3;">
+    <h1>NomadDev orchestrator running</h1>
+    <p>This build does not include the SPA bundle. Rebuild with:</p>
+    <pre style="background:#161b22;padding:12px;border-radius:6px;">make build-mobile &amp;&amp; make build</pre>
+    <p>Or run the SPA in dev mode (Metro hot-reload): <code>make dev-mobile</code>.</p>
+    <p>The WebSocket endpoint <code>/ws</code> and <code>/healthz</code> remain reachable.</p>
+  </body>
+</html>
