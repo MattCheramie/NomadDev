@@ -175,6 +175,43 @@ with `make build-gemini`, or both with `make build-all`. See
 
 ---
 
+## 🚢 Deploying
+
+Two flavors, pick one:
+
+**Docker** — single-host, easiest to redeploy. The multi-stage build exports
+the SPA, statically links the Go binary (pure-Go SQLite means
+`CGO_ENABLED=0`), and ships it on `distroless/static:nonroot`. A named
+volume holds `/var/lib/nomaddev` (sessions.db, history.db, workspace).
+
+```sh
+cp .env.example .env  # set NOMADDEV_JWT_SECRET at minimum
+make docker-image
+make docker-up        # docker compose up -d
+curl http://127.0.0.1:8080/healthz
+```
+
+**systemd** — bare-metal deploy that pairs with the Phase 1 Tailscale
+lockdown. Build the binary, install it, run
+[`infra/scripts/install-systemd.sh`](./infra/scripts/install-systemd.sh)
+(non-destructive — every system-modifying line ships as a `# TODO:` you
+uncomment), then enable the unit at
+[`infra/systemd/nomaddev-orchestrator.service`](./infra/systemd/nomaddev-orchestrator.service).
+The unit runs as a dedicated `nomaddev` user with `NoNewPrivileges`,
+`ProtectSystem=strict`, and `ReadWritePaths=/var/lib/nomaddev`.
+
+```sh
+make build-full
+sudo install -m 0755 bin/orchestrator /usr/local/bin/
+sudo bash infra/scripts/install-systemd.sh   # review TODOs first
+```
+
+Metrics: the orchestrator exposes Prometheus instruments at `/metrics`
+(connection counts, replay events, sandbox-run histograms, middleware turn
+histograms). Scrape from a Prometheus instance on the tailnet.
+
+---
+
 ## 🛡️ Security Considerations
 
 NomadDev is designed with paranoia as a feature. The public internet never touches the orchestrator. The LLM never touches the host system. The client never touches raw SSH. 
