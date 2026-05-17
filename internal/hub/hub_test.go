@@ -142,11 +142,11 @@ func TestHub_GracefulShutdownClosesClients(t *testing.T) {
 	<-done
 
 	select {
-	case _, ok := <-c.Send:
-		if ok {
-			t.Fatal("Send should be closed after shutdown")
-		}
+	case <-c.Done():
 	case <-time.After(time.Second):
 		t.Fatal("client never closed on shutdown")
+	}
+	if !c.IsClosed() {
+		t.Fatal("IsClosed should be true after shutdown")
 	}
 }

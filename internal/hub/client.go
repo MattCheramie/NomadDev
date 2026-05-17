@@ -27,13 +27,24 @@ func NewClient(id, sid string, sendBuf int) *Client {
 	}
 }
 
-// Close idempotently signals the write pump to exit and closes Send.
+// Close idempotently signals the write pump to exit. It does NOT close Send;
+// callers (e.g. async sandbox handlers) treat Done() as the cancellation
+// signal and use a non-blocking send so a slow/dead client never blocks.
 func (c *Client) Close() {
 	c.closeOnce.Do(func() {
 		close(c.closed)
-		close(c.Send)
 	})
 }
 
 // Done is closed when Close has been called.
 func (c *Client) Done() <-chan struct{} { return c.closed }
+
+// IsClosed reports whether Close has been called. Safe from any goroutine.
+func (c *Client) IsClosed() bool {
+	select {
+	case <-c.closed:
+		return true
+	default:
+		return false
+	}
+}

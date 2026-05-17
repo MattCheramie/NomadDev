@@ -32,8 +32,9 @@ All messages — in both directions — are JSON envelopes with this shape:
 | `EventError`          | `error`             | S→C       | Structured error with `code` + `message`. |
 | `EventSessionStale`   | `session.stale`     | S→C       | Buffer rolled past `last_event_id`. |
 | `EventSessionReplaced`| `session.replaced`  | S→C       | A newer connection took over the SID. |
-| `EventCommandRequest` | `command.request`   | C→S       | Phase 3 placeholder — Phase 2 returns `error{code:"not_implemented"}`. |
-| `EventCommandResult`  | `command.result`    | S→C       | Phase 3 placeholder. |
+| `EventCommandRequest` | `command.request`   | C→S       | Run a sandbox tool. Payload: `{tool, args, working_dir, timeout_ms}`. |
+| `EventCommandChunk`   | `command.chunk`     | S→C       | Live stdout/stderr slice. Payload: `{stream, seq, data}`. `correlation_id` = originating `command.request.id`. |
+| `EventCommandResult`  | `command.result`    | S→C       | Terminal summary — emitted exactly once per request. Payload: `{exit_code, duration_ms, error, error_message}`. |
 
 ## Example payloads
 
@@ -59,3 +60,31 @@ All messages — in both directions — are JSON envelopes with this shape:
 ```
 
 Defined error codes: `unknown_type`, `bad_envelope`, `not_implemented`, `internal`, `unauthorized`.
+
+## Streaming semantics for `command.request`
+
+A single `command.request` produces zero or more `command.chunk` envelopes
+followed by **exactly one** `command.result`. All three share the request's
+`id` via `correlation_id`.
+
+- Chunks are best-effort live frames. Under buffer pressure they may be evicted
+  from the ring buffer between disconnect and reconnect; the `command.result`
+  is the durable record of what happened.
+- `seq` is per-stream (one counter for stdout, one for stderr) so a client can
+  detect gaps inside one stream without correlating across both.
+- `data` is utf-8 — invalid byte sequences are replaced with U+FFFD on the
+  server side. A future tool that needs raw bytes can grow a sibling `data_b64`
+  field; the schema reserves the name.
+- A clean process exit produces `command.result.error == ""` and the real
+  `exit_code`. Sandbox-side failures produce `exit_code == -1` and one of:
+  `sandbox_timeout`, `sandbox_oom`, `sandbox_image_pull`, `sandbox_unavailable`,
+  `sandbox_bad_request`, `sandbox_canceled`, `sandbox_internal`.
+
+**Example flow:**
+
+```json
+{"id":"01HX-r","type":"command.request","ts":"...","payload":{"tool":"execute_script","args":{"shell":"bash","script":"echo hi; echo err >&2"},"timeout_ms":5000}}
+{"id":"01HX-c1","type":"command.chunk","ts":"...","correlation_id":"01HX-r","payload":{"stream":"stdout","seq":0,"data":"hi\n"}}
+{"id":"01HX-c2","type":"command.chunk","ts":"...","correlation_id":"01HX-r","payload":{"stream":"stderr","seq":0,"data":"err\n"}}
+{"id":"01HX-c3","type":"command.result","ts":"...","correlation_id":"01HX-r","payload":{"exit_code":0,"duration_ms":42}}
+```

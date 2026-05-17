@@ -19,13 +19,16 @@ const reconnectAuto = "auto"
 func main() {
 	url := flag.String("url", "ws://127.0.0.1:8080/ws", "orchestrator ws URL")
 	token := flag.String("token", "", "JWT bearer token")
-	send := flag.String("send", "", "envelope type to send after hello (e.g. ping)")
+	send := flag.String("send", "", "envelope type to send after hello (e.g. ping, command.request)")
 	subprotocol := flag.Bool("subprotocol", false, "send token via Sec-WebSocket-Protocol instead of Authorization")
 	timeout := flag.Duration("timeout", 5*time.Second, "read timeout for each frame")
 	disconnectAfter := flag.String("disconnect-after", "",
 		"close the connection after observing an envelope of this type")
 	reconnectWith := flag.String("reconnect-with-last-event-id", "",
 		`after disconnect, reconnect and send client.hello with the given last_event_id ("auto" = last id observed)`)
+	script := flag.String("script", "", "with -send command.request: the script body")
+	shell := flag.String("shell", "bash", "with -send command.request: shell to run the script")
+	cmdTimeout := flag.Int("cmd-timeout-ms", 5000, "with -send command.request: timeout_ms on the request payload")
 	flag.Parse()
 
 	if *token == "" {
@@ -42,7 +45,13 @@ func main() {
 		hdr.Set("Authorization", "Bearer "+*token)
 	}
 
-	lastID, err := runSession(&dialer, hdr, *url, *send, *disconnectAfter, *timeout)
+	payload, err := buildPayload(*send, *shell, *script, *cmdTimeout)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "wsclient:", err)
+		os.Exit(2)
+	}
+
+	lastID, err := runSession(&dialer, hdr, *url, *send, payload, *disconnectAfter, *timeout)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "wsclient:", err)
 		os.Exit(1)
@@ -66,12 +75,36 @@ func main() {
 	}
 }
 
+// buildPayload returns the typed payload for the requested -send type, or nil
+// if the envelope carries no payload by convention.
+func buildPayload(send, shell, script string, cmdTimeoutMs int) (any, error) {
+	switch send {
+	case "", event.EventClientHello:
+		return nil, nil
+	case event.EventPing:
+		return event.PingPayload{Nonce: "wsclient"}, nil
+	case event.EventCommandRequest:
+		if script == "" {
+			return nil, fmt.Errorf("-script is required with -send command.request")
+		}
+		return event.CommandRequestPayload{
+			Tool:      "execute_script",
+			Args:      map[string]any{"shell": shell, "script": script},
+			TimeoutMs: cmdTimeoutMs,
+		}, nil
+	default:
+		return nil, nil
+	}
+}
+
 // runSession dials, reads the hello, optionally sends one envelope, optionally
 // disconnects on a given reply type. Returns the last envelope id observed.
 func runSession(
 	d *websocket.Dialer,
 	hdr http.Header,
-	url, send, disconnectAfter string,
+	url, send string,
+	payload any,
+	disconnectAfter string,
 	timeout time.Duration,
 ) (string, error) {
 	conn, resp, err := d.Dial(url, hdr)
@@ -93,10 +126,6 @@ func runSession(
 		return lastID, nil
 	}
 
-	var payload any
-	if send == event.EventPing {
-		payload = event.PingPayload{Nonce: "wsclient"}
-	}
 	env, err := event.NewEnvelope(send, payload)
 	if err != nil {
 		return lastID, fmt.Errorf("build envelope: %w", err)

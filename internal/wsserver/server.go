@@ -13,6 +13,7 @@ import (
 	"github.com/mattcheramie/nomaddev/internal/auth"
 	"github.com/mattcheramie/nomaddev/internal/config"
 	"github.com/mattcheramie/nomaddev/internal/hub"
+	"github.com/mattcheramie/nomaddev/internal/sandbox"
 	"github.com/mattcheramie/nomaddev/internal/session"
 )
 
@@ -24,13 +25,17 @@ type Server struct {
 	hub      *hub.Hub
 	sessions session.Store
 	verifier *auth.Verifier
+	runner   sandbox.Runner // may be nil — see handleCommandRequest
+	sem      chan struct{}  // optional cap on concurrent execs; nil = unlimited
 	upgrader websocket.Upgrader
 	http     *http.Server
 	mux      *http.ServeMux
 }
 
-// New constructs a Server. The HTTP server is built but not started.
-func New(cfg *config.Config, log *slog.Logger, h *hub.Hub, s session.Store, v *auth.Verifier) *Server {
+// New constructs a Server. The HTTP server is built but not started. runner
+// may be nil; when nil the server replies to command.request with
+// error{not_implemented}.
+func New(cfg *config.Config, log *slog.Logger, h *hub.Hub, s session.Store, v *auth.Verifier, runner sandbox.Runner) *Server {
 	mux := http.NewServeMux()
 	srv := &Server{
 		cfg:      cfg,
@@ -38,11 +43,15 @@ func New(cfg *config.Config, log *slog.Logger, h *hub.Hub, s session.Store, v *a
 		hub:      h,
 		sessions: s,
 		verifier: v,
+		runner:   runner,
 		upgrader: websocket.Upgrader{
 			Subprotocols: []string{"bearer"},
 			CheckOrigin:  func(_ *http.Request) bool { return true },
 		},
 		mux: mux,
+	}
+	if runner != nil && cfg.Sandbox.MaxConcurrent > 0 {
+		srv.sem = make(chan struct{}, cfg.Sandbox.MaxConcurrent)
 	}
 	mux.HandleFunc("/healthz", srv.healthHandler)
 	mux.HandleFunc("/ws", srv.wsHandler)

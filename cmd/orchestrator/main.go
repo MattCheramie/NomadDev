@@ -16,6 +16,7 @@ import (
 	"github.com/mattcheramie/nomaddev/internal/config"
 	"github.com/mattcheramie/nomaddev/internal/hub"
 	nlog "github.com/mattcheramie/nomaddev/internal/log"
+	"github.com/mattcheramie/nomaddev/internal/sandbox"
 	"github.com/mattcheramie/nomaddev/internal/session"
 	"github.com/mattcheramie/nomaddev/internal/wsserver"
 )
@@ -58,7 +59,28 @@ func run(listenOverride string) error {
 	go sessions.RunJanitor(rootCtx, cfg.Session.JanitorInterval, cfg.Session.IdleTTL, logger)
 
 	verifier := auth.NewVerifier(cfg.JWTSecret)
-	srv := wsserver.New(cfg, logger, h, sessions, verifier)
+
+	runner, err := sandbox.NewRunner(rootCtx, sandbox.FactoryConfig{
+		Runtime:        cfg.Sandbox.Runtime,
+		Image:          cfg.Sandbox.Image,
+		WorkspaceDir:   cfg.Sandbox.WorkspaceDir,
+		DefaultTimeout: cfg.Sandbox.DefaultTimeout,
+		Limits: sandbox.ResourceLimits{
+			CPUNanos:    cfg.Sandbox.NanoCPUs,
+			MemoryBytes: cfg.Sandbox.Memory,
+			PidsLimit:   cfg.Sandbox.PidsLimit,
+		},
+		ReadonlyRoot: cfg.Sandbox.ReadOnlyRootfs,
+		Network:      cfg.Sandbox.Network,
+		PreferRunsc:  cfg.Sandbox.PreferRunsc,
+		Logger:       logger,
+	})
+	if err != nil {
+		return fmt.Errorf("sandbox: %w", err)
+	}
+	logger.Info("orchestrator: sandbox runner", "runtime", cfg.Sandbox.Runtime, "configured", runner != nil)
+
+	srv := wsserver.New(cfg, logger, h, sessions, verifier, runner)
 
 	srvErr := make(chan error, 1)
 	go func() {
