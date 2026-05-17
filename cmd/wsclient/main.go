@@ -29,6 +29,9 @@ func main() {
 	script := flag.String("script", "", "with -send command.request: the script body")
 	shell := flag.String("shell", "bash", "with -send command.request: shell to run the script")
 	cmdTimeout := flag.Int("cmd-timeout-ms", 5000, "with -send command.request: timeout_ms on the request payload")
+	text := flag.String("text", "", "with -send user.intent: the free-text turn body")
+	correlationID := flag.String("correlation-id", "", "explicit correlation_id (overrides the default)")
+	denyReason := flag.String("deny-reason", "", "with -send tool.approval.denied: optional reason")
 	flag.Parse()
 
 	if *token == "" {
@@ -45,13 +48,13 @@ func main() {
 		hdr.Set("Authorization", "Bearer "+*token)
 	}
 
-	payload, err := buildPayload(*send, *shell, *script, *cmdTimeout)
+	payload, err := buildPayload(*send, *shell, *script, *cmdTimeout, *text, *denyReason)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "wsclient:", err)
 		os.Exit(2)
 	}
 
-	lastID, err := runSession(&dialer, hdr, *url, *send, payload, *disconnectAfter, *timeout)
+	lastID, err := runSession(&dialer, hdr, *url, *send, payload, *correlationID, *disconnectAfter, *timeout)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "wsclient:", err)
 		os.Exit(1)
@@ -77,12 +80,21 @@ func main() {
 
 // buildPayload returns the typed payload for the requested -send type, or nil
 // if the envelope carries no payload by convention.
-func buildPayload(send, shell, script string, cmdTimeoutMs int) (any, error) {
+func buildPayload(send, shell, script string, cmdTimeoutMs int, text, denyReason string) (any, error) {
 	switch send {
 	case "", event.EventClientHello:
 		return nil, nil
 	case event.EventPing:
 		return event.PingPayload{Nonce: "wsclient"}, nil
+	case event.EventUserIntent:
+		if text == "" {
+			return nil, fmt.Errorf("-text is required with -send user.intent")
+		}
+		return event.UserIntentPayload{Text: text}, nil
+	case event.EventToolApprovalGranted:
+		return event.ToolApprovalGrantedPayload{}, nil
+	case event.EventToolApprovalDenied:
+		return event.ToolApprovalDeniedPayload{Reason: denyReason}, nil
 	case event.EventCommandRequest:
 		if script == "" {
 			return nil, fmt.Errorf("-script is required with -send command.request")
@@ -99,12 +111,15 @@ func buildPayload(send, shell, script string, cmdTimeoutMs int) (any, error) {
 
 // runSession dials, reads the hello, optionally sends one envelope, optionally
 // disconnects on a given reply type. Returns the last envelope id observed.
+// correlationID, when non-empty, stamps the outgoing envelope so the client
+// can target a specific request — useful for sending tool.approval.granted
+// in response to a tool.approval.request the operator just observed.
 func runSession(
 	d *websocket.Dialer,
 	hdr http.Header,
 	url, send string,
 	payload any,
-	disconnectAfter string,
+	correlationID, disconnectAfter string,
 	timeout time.Duration,
 ) (string, error) {
 	conn, resp, err := d.Dial(url, hdr)
@@ -129,6 +144,9 @@ func runSession(
 	env, err := event.NewEnvelope(send, payload)
 	if err != nil {
 		return lastID, fmt.Errorf("build envelope: %w", err)
+	}
+	if correlationID != "" {
+		env.CorrelationID = correlationID
 	}
 	b, _ := env.Bytes()
 	if err := conn.WriteMessage(websocket.TextMessage, b); err != nil {

@@ -197,6 +197,15 @@ func (s *Server) dispatch(
 	case event.EventCommandRequest:
 		s.handleCommandRequest(env, client, sess, logger)
 
+	case event.EventUserIntent:
+		s.handleUserIntent(env, client, sess, logger)
+
+	case event.EventToolApprovalGranted:
+		s.routeApproval(env, true)
+
+	case event.EventToolApprovalDenied:
+		s.routeApproval(env, false)
+
 	default:
 		s.replyError(sess, client, env.ID, event.CodeUnknownType,
 			"unsupported event type: "+env.Type)

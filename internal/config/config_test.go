@@ -189,3 +189,143 @@ func TestLoad_HonoursSandboxOverrides(t *testing.T) {
 		t.Errorf("PreferRunsc = true; want false")
 	}
 }
+
+func clearPhase4Env(t *testing.T) {
+	t.Helper()
+	for _, k := range []string{
+		"NOMADDEV_MIDDLEWARE_RUNTIME", "NOMADDEV_GEMINI_API_KEY",
+		"NOMADDEV_GEMINI_MODEL", "NOMADDEV_GEMINI_TEMPERATURE",
+		"NOMADDEV_GEMINI_MAX_TOKENS", "NOMADDEV_MIDDLEWARE_SYSTEM_PROMPT",
+		"NOMADDEV_MIDDLEWARE_SYSTEM_PROMPT_PATH", "NOMADDEV_MIDDLEWARE_MAX_CONCURRENT",
+		"NOMADDEV_HISTORY_BACKEND", "NOMADDEV_HISTORY_PATH",
+		"NOMADDEV_HISTORY_WINDOW_TURNS",
+		"NOMADDEV_APPROVAL_REQUIRED_TOOLS", "NOMADDEV_APPROVAL_TIMEOUT",
+		"NOMADDEV_APPROVAL_AUTO_GRANT", "NOMADDEV_APPROVAL_GATE_DIRECT_COMMANDS",
+	} {
+		t.Setenv(k, "")
+	}
+}
+
+func TestLoad_AppliesMiddlewareDefaults(t *testing.T) {
+	t.Setenv("NOMADDEV_JWT_SECRET", strings.Repeat("x", 32))
+	clearPhase4Env(t)
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Middleware.Runtime != "mock" {
+		t.Errorf("Runtime default = %q", cfg.Middleware.Runtime)
+	}
+	if cfg.Middleware.Model != "gemini-2.0-flash" {
+		t.Errorf("Model default = %q", cfg.Middleware.Model)
+	}
+	if cfg.Middleware.Temperature != 0.2 {
+		t.Errorf("Temperature default = %v", cfg.Middleware.Temperature)
+	}
+	if cfg.Middleware.MaxTokens != 4096 {
+		t.Errorf("MaxTokens default = %d", cfg.Middleware.MaxTokens)
+	}
+	if cfg.Middleware.MaxConcurrent != 4 {
+		t.Errorf("MaxConcurrent default = %d", cfg.Middleware.MaxConcurrent)
+	}
+}
+
+func TestLoad_HonoursMiddlewareOverrides(t *testing.T) {
+	t.Setenv("NOMADDEV_JWT_SECRET", strings.Repeat("x", 32))
+	t.Setenv("NOMADDEV_MIDDLEWARE_RUNTIME", "gemini")
+	t.Setenv("NOMADDEV_GEMINI_MODEL", "gemini-1.5-flash")
+	t.Setenv("NOMADDEV_GEMINI_TEMPERATURE", "0.9")
+	t.Setenv("NOMADDEV_GEMINI_MAX_TOKENS", "1024")
+	t.Setenv("NOMADDEV_MIDDLEWARE_MAX_CONCURRENT", "8")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Middleware.Runtime != "gemini" {
+		t.Errorf("Runtime = %q", cfg.Middleware.Runtime)
+	}
+	if cfg.Middleware.Model != "gemini-1.5-flash" {
+		t.Errorf("Model = %q", cfg.Middleware.Model)
+	}
+	if cfg.Middleware.Temperature != 0.9 {
+		t.Errorf("Temperature = %v", cfg.Middleware.Temperature)
+	}
+	if cfg.Middleware.MaxTokens != 1024 {
+		t.Errorf("MaxTokens = %d", cfg.Middleware.MaxTokens)
+	}
+	if cfg.Middleware.MaxConcurrent != 8 {
+		t.Errorf("MaxConcurrent = %d", cfg.Middleware.MaxConcurrent)
+	}
+}
+
+func TestLoad_AppliesHistoryDefaults(t *testing.T) {
+	t.Setenv("NOMADDEV_JWT_SECRET", strings.Repeat("x", 32))
+	clearPhase4Env(t)
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.History.Backend != "sqlite" {
+		t.Errorf("Backend default = %q", cfg.History.Backend)
+	}
+	if cfg.History.Path != "/var/lib/nomaddev/history.db" {
+		t.Errorf("Path default = %q", cfg.History.Path)
+	}
+	if cfg.History.WindowTurns != 20 {
+		t.Errorf("WindowTurns default = %d", cfg.History.WindowTurns)
+	}
+}
+
+func TestLoad_AppliesApprovalDefaults(t *testing.T) {
+	t.Setenv("NOMADDEV_JWT_SECRET", strings.Repeat("x", 32))
+	clearPhase4Env(t)
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	want := map[string]bool{"execute_script": true, "write_patch": true}
+	got := map[string]bool{}
+	for _, t := range cfg.Approval.RequiredTools {
+		got[t] = true
+	}
+	for k := range want {
+		if !got[k] {
+			t.Errorf("RequiredTools missing %q (got %+v)", k, cfg.Approval.RequiredTools)
+		}
+	}
+	if cfg.Approval.Timeout.String() != "1m0s" {
+		t.Errorf("Timeout default = %s", cfg.Approval.Timeout)
+	}
+	if cfg.Approval.AutoGrant {
+		t.Errorf("AutoGrant default = true")
+	}
+	if !cfg.Approval.GateDirectCommands {
+		t.Errorf("GateDirectCommands default = false")
+	}
+}
+
+func TestLoad_HonoursApprovalOverrides(t *testing.T) {
+	t.Setenv("NOMADDEV_JWT_SECRET", strings.Repeat("x", 32))
+	t.Setenv("NOMADDEV_APPROVAL_REQUIRED_TOOLS", "write_patch,execute_script,read_file")
+	t.Setenv("NOMADDEV_APPROVAL_TIMEOUT", "5s")
+	t.Setenv("NOMADDEV_APPROVAL_AUTO_GRANT", "true")
+	t.Setenv("NOMADDEV_APPROVAL_GATE_DIRECT_COMMANDS", "false")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if len(cfg.Approval.RequiredTools) != 3 {
+		t.Errorf("RequiredTools = %+v", cfg.Approval.RequiredTools)
+	}
+	if cfg.Approval.Timeout.String() != "5s" {
+		t.Errorf("Timeout = %s", cfg.Approval.Timeout)
+	}
+	if !cfg.Approval.AutoGrant {
+		t.Errorf("AutoGrant = false; want true")
+	}
+	if cfg.Approval.GateDirectCommands {
+		t.Errorf("GateDirectCommands = true; want false")
+	}
+}

@@ -17,6 +17,7 @@ import (
 	"github.com/mattcheramie/nomaddev/internal/config"
 	"github.com/mattcheramie/nomaddev/internal/event"
 	"github.com/mattcheramie/nomaddev/internal/hub"
+	"github.com/mattcheramie/nomaddev/internal/middleware"
 	"github.com/mattcheramie/nomaddev/internal/sandbox"
 	"github.com/mattcheramie/nomaddev/internal/session"
 )
@@ -29,11 +30,31 @@ func newTestServer(t *testing.T, runners ...sandbox.Runner) (*httptest.Server, *
 	if len(runners) > 0 {
 		runner = runners[0]
 	}
-	return newTestServerWithMaxConcurrent(t, runner, 4)
+	return newTestServerFull(t, testOpts{Runner: runner, SandboxMaxConcurrent: 4})
 }
 
 func newTestServerWithMaxConcurrent(t *testing.T, runner sandbox.Runner, maxConcurrent int) (*httptest.Server, *Server, session.Store, *auth.IssuerSigner) {
 	t.Helper()
+	return newTestServerFull(t, testOpts{Runner: runner, SandboxMaxConcurrent: maxConcurrent})
+}
+
+// testOpts captures everything newTestServerFull needs. Most fields are
+// optional; zero values pick sane defaults.
+type testOpts struct {
+	Runner               sandbox.Runner
+	Middleware           *middleware.Service
+	SandboxMaxConcurrent int
+	ApprovalTimeout      time.Duration
+}
+
+func newTestServerFull(t *testing.T, opts testOpts) (*httptest.Server, *Server, session.Store, *auth.IssuerSigner) {
+	t.Helper()
+	if opts.SandboxMaxConcurrent == 0 {
+		opts.SandboxMaxConcurrent = 4
+	}
+	if opts.ApprovalTimeout == 0 {
+		opts.ApprovalTimeout = 2 * time.Second
+	}
 
 	cfg := &config.Config{
 		ListenAddr: "127.0.0.1:0",
@@ -42,7 +63,10 @@ func newTestServerWithMaxConcurrent(t *testing.T, runner sandbox.Runner, maxConc
 		Session:    config.SessionConfig{BufferSize: 32, MaxBytes: 1 << 20},
 		Sandbox: config.SandboxConfig{
 			DefaultTimeout: 2 * time.Second,
-			MaxConcurrent:  maxConcurrent,
+			MaxConcurrent:  opts.SandboxMaxConcurrent,
+		},
+		Approval: config.ApprovalConfig{
+			Timeout: opts.ApprovalTimeout,
 		},
 		ReadTimeout:  10 * time.Second,
 		WriteTimeout: 2 * time.Second,
@@ -56,7 +80,7 @@ func newTestServerWithMaxConcurrent(t *testing.T, runner sandbox.Runner, maxConc
 
 	sessions := session.NewMemoryStore(cfg.Session.BufferSize, cfg.Session.MaxBytes)
 	verifier := auth.NewVerifier(cfg.JWTSecret)
-	srv := New(cfg, logger, h, sessions, verifier, runner)
+	srv := New(cfg, logger, h, sessions, verifier, opts.Runner, opts.Middleware)
 
 	ts := httptest.NewServer(srv.Handler())
 	t.Cleanup(ts.Close)

@@ -11,7 +11,7 @@
                                       +-------------------+
                                       | Middleware (Go)   |
                                       | internal/middleware
-                                      | (Gemini, Phase 4) |
+                                      | (Gemini, in-process)|
                                       +---------+---------+
                                                 |  Runner.Exec
                                   in-process    v
@@ -24,11 +24,16 @@
                                       +-------------------+
 ```
 
-In Phase 2 the orchestrator hosts the WebSocket relay. Phase 3 ships the
-sandbox runner in-process (`internal/sandbox.Runner`); the orchestrator calls
-it directly from `internal/wsserver/sandbox.go`. The Middleware box is still
-notional — Phase 4 will plug Gemini between the client envelope and the
-runner call.
+Phase 2 ships the WebSocket relay. Phase 3 adds the in-process sandbox
+runner (`internal/sandbox.Runner`), wired in at
+`internal/wsserver/sandbox.go`. Phase 4 plugs Gemini between the client and
+the runner: `internal/middleware` translates `user.intent` envelopes into
+typed tool calls and dispatches them through either
+`sandbox.Runner` (for `execute_script`) or `internal/fsops` (for
+`read_file` / `list_dir` / `write_patch`). Persistent LLM history lives in
+`internal/history` (SQLite by default) — a separate concern from the
+session ring buffer in `internal/session`, which handles wire-level
+reconnect replay.
 
 ## Trust boundaries
 
@@ -64,7 +69,16 @@ client ──ws──> orchestrator
    |              |        Runner.Exec streams ExecChunks back as
    |   <── command.chunk*  command.chunk envelopes (utf-8, per-stream seq),
    |   <── command.result  then exactly one command.result on exit.
+   |              |
+   |── user.intent ──> handleUserIntent drives the translator loop:
+   |   <── assistant.chunk*  streamed model text,
+   |              |          when the model emits a tool call →
+   |   <── command.request   server-minted (correlation_id = user.intent.id),
+   |   <── tool.approval.request (if RequiresApproval(tool, args))
+   |── tool.approval.granted ──> dispatch through CompositeDispatcher
+   |   <── command.chunk* / command.result
+   |              |          then resume the translator with the tool result,
+   |   <── assistant.message  terminal frame for the turn.
 ```
 
-Phase 4 makes the orchestrator emit `command.request` itself in response to
-free-text user input. Phase 5 is the UI for all of the above.
+Phase 5 is the UI for all of the above.
