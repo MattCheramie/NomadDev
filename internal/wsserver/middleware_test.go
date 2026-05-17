@@ -470,6 +470,60 @@ func TestMiddleware_ConcurrencyLimit_Intents(t *testing.T) {
 	}
 }
 
+func TestMiddleware_UserIntent_ClientDisconnectDuringApproval(t *testing.T) {
+	runner := sandbox.NewMockRunner(sandbox.MockScript("never\n", "", 0)...)
+	mock := middleware.NewMockTranslator(
+		[]middleware.AssistantEvent{
+			{ToolCall: &middleware.ToolCall{
+				ID: "c1", Tool: middleware.ToolExecuteScript,
+				Args: map[string]any{"script": "echo nope"},
+			}},
+		},
+		[]middleware.AssistantEvent{
+			{FinalMessage: &middleware.FinalMessage{Text: "should not reach", FinishReason: "stop"}},
+		},
+	)
+	// Long approval timeout — the test ends the wait by closing the connection,
+	// not by timing out.
+	app := middleware.NewPolicyApprover(
+		[]string{middleware.ToolExecuteScript, middleware.ToolWritePatch}, false, 30*time.Second)
+	mw := buildMW(t, mwOpts{Translator: mock, Runner: runner, Approver: app})
+	ts, _, _, issuer := newTestServerFull(t, testOpts{Middleware: mw})
+	tok, _ := issuer.Sign("matt", "sess-disc", nil)
+	c, _, _ := dialWithAuthHeader(t, ts, tok)
+	_ = readEnv(t, c) // hello
+
+	intent, _ := event.NewEnvelope(event.EventUserIntent, event.UserIntentPayload{Text: "x"})
+	writeEnv(t, c, intent)
+
+	// Read until we see the approval request, then drop the connection.
+	for i := 0; i < 5; i++ {
+		env := readEnv(t, c)
+		if env.Type == event.EventToolApprovalRequest {
+			break
+		}
+		if i == 4 {
+			t.Fatal("never saw tool.approval.request")
+		}
+	}
+	_ = c.Close()
+
+	// Give the handler a beat to observe the disconnect and unwind.
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if mock.Streams() == 1 && runner.ExecCalls() == 0 {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if mock.Streams() != 1 {
+		t.Errorf("translator stream count = %d; want 1 (resume must not fire after disconnect)", mock.Streams())
+	}
+	if runner.ExecCalls() != 0 {
+		t.Errorf("runner.Exec called %d times; want 0 (dispatch must not fire after disconnect)", runner.ExecCalls())
+	}
+}
+
 // writeFileSimple is a small helper that the test reuses for the fsops setup.
 func writeFileSimple(t *testing.T, dir, name, body string) string {
 	t.Helper()
