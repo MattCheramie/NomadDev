@@ -33,13 +33,21 @@ fi
 echo "3. tailscale0 interface present with 100.x.y.z address"
 if ip -4 addr show tailscale0 >/dev/null 2>&1; then
     addr="$(ip -4 -o addr show tailscale0 | awk '{print $4}')"
-    note "tailscale0: ${addr}"
+    note "tailscale0 v4: ${addr}"
     case "${addr}" in
         100.*) ;;
         *) err "tailscale0 address is not in 100.64.0.0/10" ;;
     esac
 else
     err "tailscale0 interface not found"
+fi
+
+# IPv6: Tailscale issues a fd7a:115c:... address per node. Hetzner also
+# gives the host a /64 public v6 — they are independent. The orchestrator
+# binds dual-stack on :8080 by default; surface the v6 tailnet address
+# so operators can use it for AAAA-style QR onboarding if they want.
+if v6="$(tailscale ip -6 2>/dev/null | head -n1)" && [[ -n "${v6}" ]]; then
+    note "tailscale0 v6: ${v6}"
 fi
 
 echo "4. orchestrator (if running) listens on tailscale0 or 0.0.0.0:${PORT}"

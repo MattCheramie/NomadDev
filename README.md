@@ -192,34 +192,28 @@ with `make build-gemini`, or both with `make build-all`. See
 
 ## 🚢 Deploying
 
-Two flavors, pick one:
+**Prerequisites:** A fresh Ubuntu VPS (any provider — verified on Hetzner
+CX22 / CAX11), a Tailscale account. No DNS, no certificate, no extra
+infrastructure.
 
-**Docker** — single-host, easiest to redeploy. The multi-stage build exports
-the SPA, statically links the Go binary (pure-Go SQLite means
-`CGO_ENABLED=0`), and ships it on `distroless/static:nonroot`. A named
-volume holds `/var/lib/nomaddev` (sessions.db, history.db, workspace).
+Pick one path:
 
-```sh
-cp .env.example .env  # set NOMADDEV_JWT_SECRET at minimum
-make docker-image
-make docker-up        # docker compose up -d
-curl http://127.0.0.1:8080/healthz
-```
+| Path | When to use | One-command deploy |
+| --- | --- | --- |
+| **Docker / GHCR** | Default. Sidesteps Go 1.25 / npm build on the VPS by pulling the prebuilt multi-arch image. | `sudo bash infra/scripts/quickstart-docker.sh` |
+| **systemd** | When you don't want Docker on the box. Downloads the matching prebuilt binary from the latest GitHub release. | `sudo bash infra/scripts/quickstart-systemd.sh` |
 
-**systemd** — bare-metal deploy that pairs with the Phase 1 Tailscale
-lockdown. Build the binary, install it, run
-[`infra/scripts/install-systemd.sh`](./infra/scripts/install-systemd.sh)
-(non-destructive — every system-modifying line ships as a `# TODO:` you
-uncomment), then enable the unit at
-[`infra/systemd/nomaddev-orchestrator.service`](./infra/systemd/nomaddev-orchestrator.service).
-The unit runs as a dedicated `nomaddev` user with `NoNewPrivileges`,
+Both quickstarts auto-detect the tailnet IPv4, generate `NOMADDEV_JWT_SECRET`,
+install/start the service, and run the smoke test. Re-runnable.
+
+See [`infra/RUNBOOK.md`](./infra/RUNBOOK.md) for the full manual
+walkthrough (review-every-script discipline), Hetzner-specific notes
+(Cloud Firewall, CX22 sizing, IPv6), and incident response. The Docker
+image is built from the multi-stage [`Dockerfile`](./Dockerfile)
+(distroless/static, pure-Go SQLite, `CGO_ENABLED=0`); the systemd unit
+at [`infra/systemd/nomaddev-orchestrator.service`](./infra/systemd/nomaddev-orchestrator.service)
+runs as a dedicated `nomaddev` user with `NoNewPrivileges`,
 `ProtectSystem=strict`, and `ReadWritePaths=/var/lib/nomaddev`.
-
-```sh
-make build-full
-sudo install -m 0755 bin/orchestrator /usr/local/bin/
-sudo bash infra/scripts/install-systemd.sh   # review TODOs first
-```
 
 Metrics: the orchestrator exposes Prometheus instruments at `/metrics`
 (connection counts, replay events, sandbox-run histograms, middleware turn
