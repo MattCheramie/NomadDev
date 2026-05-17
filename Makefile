@@ -47,10 +47,8 @@ test-mobile:
 	cd mobile && $(NPM) test --silent
 
 clean-mobile:
-	rm -rf mobile/dist $(SPA_DIST)/_expo $(SPA_DIST)/metadata.json
-	@if [ -f $(SPA_DIST)/.stub-index.html ]; then \
-	  cp $(SPA_DIST)/.stub-index.html $(SPA_DIST)/index.html; \
-	fi
+	rm -rf mobile/dist $(SPA_DIST)/_expo $(SPA_DIST)/assets $(SPA_DIST)/metadata.json $(SPA_DIST)/favicon.ico
+	git checkout -- $(SPA_DIST)/index.html 2>/dev/null || true
 
 test-docker:
 	go test -tags docker -race -count=1 -timeout 180s ./internal/sandbox/...

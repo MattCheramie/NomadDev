@@ -9,21 +9,33 @@ exposes `/ws` also serves the UI at `/`.
 
 ```
 mobile/                            Expo TS project (web build target = "single")
-├── App.tsx                        boot: hydrate creds → connect → screens
+├── App.tsx                        boot: hydrate creds → useWebSocket → NavigationContainer
 ├── src/wire/                      direct port of internal/event/types.go
 │   ├── envelope.ts                envelope shapes + builders
 │   ├── client.ts                  WebSocket singleton + reconnect
+│   ├── context.tsx                WSClientProvider / useWSClient
 │   └── backoff.ts                 1s → 30s capped backoff
 ├── src/state/                     Zustand store
 │   └── store.ts                   ingest() switch + turn/approval reducers
+├── src/hooks/                     useWebSocket, useVisibility
+├── src/navigation/                routes + linking config
 ├── src/screens/                   OnboardScreen, ChatScreen, SettingsScreen
-├── src/components/                bubbles, tool cards, approval sheet, …
+├── src/components/                bubbles, tool cards, approval sheet, ErrorRow, …
 └── src/storage/                   AsyncStorage wrapper (web → localStorage)
 
 internal/wsserver/spa.go           Go static handler, //go:embed all:dist
 internal/wsserver/dist/            embedded bundle (stub committed)
 scripts/qr-jwt/                    onboarding QR generator
 ```
+
+Routes (handled by `@react-navigation/native-stack` with a web linking
+config in `src/navigation/linking.ts`):
+
+| Path        | Screen          | Notes                                         |
+|-------------|-----------------|-----------------------------------------------|
+| `/onboard`  | OnboardScreen   | Default when no token is stored.              |
+| `/chat`     | ChatScreen      | Authenticated landing pad.                    |
+| `/settings` | SettingsScreen  | Reached via the ⚙ button in the chat header. |
 
 The wire types live in `mobile/src/wire/envelope.ts` and are kept in
 lockstep with `internal/event/types.go`. When the Go side adds an event,

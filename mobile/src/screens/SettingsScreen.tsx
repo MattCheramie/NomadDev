@@ -1,23 +1,30 @@
 import { ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { useStore } from '@/state/store';
+import { ErrorRow } from '@/components/ErrorRow';
 
 export function SettingsScreen() {
   const serverUrl = useStore((s) => s.serverUrl);
   const sessionId = useStore((s) => s.sessionId);
   const wsStatus = useStore((s) => s.wsStatus);
   const lastEventId = useStore((s) => s.lastEventId);
+  const lastError = useStore((s) => s.lastError);
   const clearCredentials = useStore((s) => s.clearCredentials);
 
   return (
     <ScrollView contentContainerStyle={styles.root}>
-      <Text style={styles.title}>Settings</Text>
-
       <Row label="Server URL" value={serverUrl ?? '—'} />
       <Row label="Session ID" value={sessionId ?? '—'} />
-      <Row label="Status" value={wsStatus} />
+      <Row label="Connection" value={wsStatus} />
       <Row label="Last event ID" value={lastEventId ?? '—'} />
 
-      <TouchableOpacity onPress={clearCredentials} style={styles.button} accessibilityRole="button">
+      {lastError ? <ErrorRow message={lastError.message} code={lastError.code} /> : null}
+
+      <TouchableOpacity
+        onPress={clearCredentials}
+        style={styles.button}
+        accessibilityRole="button"
+        accessibilityLabel="sign-out-button"
+      >
         <Text style={styles.buttonText}>Sign out (clear stored token)</Text>
       </TouchableOpacity>
     </ScrollView>
@@ -35,7 +42,6 @@ function Row({ label, value }: { label: string; value: string }) {
 
 const styles = StyleSheet.create({
   root: { padding: 24, gap: 12, maxWidth: 560, marginHorizontal: 'auto' as 'auto' },
-  title: { fontSize: 22, fontWeight: '700' as '700', color: '#e6edf3', marginBottom: 4 },
   row: { borderBottomWidth: 1, borderBottomColor: '#2a3242', paddingVertical: 10 },
   label: { color: '#9aa4b2', fontSize: 12 },
   value: { color: '#e6edf3', fontFamily: 'Menlo, Consolas, monospace' as any, fontSize: 14, marginTop: 4 },
