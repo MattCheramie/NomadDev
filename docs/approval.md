@@ -72,6 +72,17 @@ silently.
 to the wire, so a chatty client can't race and have its grant land before the
 goroutine is ready to receive it.
 
+## Client disconnect during approval
+
+If the WebSocket closes while an approval is pending, the per-intent context
+is cancelled by the existing `client.Done()` watchdog. `Approver.Await`
+returns `ctx.Err()`, the handler emits a final `command.result{error:
+"sandbox_canceled", error_message: "client disconnected"}`, and the
+translator's `Resume` is never invoked — i.e. the dispatch never runs.
+`TestMiddleware_UserIntent_ClientDisconnectDuringApproval` enforces this:
+after a disconnect on a pending approval, `MockTranslator.Streams() == 1`
+(no resume) and `MockRunner.ExecCalls() == 0`.
+
 ## Why we gate the direct `command.request` path
 
 Two paths reach `Runner.Exec` in Phase 4:
