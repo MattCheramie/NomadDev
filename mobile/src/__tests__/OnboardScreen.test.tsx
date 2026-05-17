@@ -26,10 +26,10 @@ test('rejects an empty server URL', () => {
 
 test('accepts a well-formed token + URL and writes credentials', () => {
   const { getByLabelText, getByText } = render(<OnboardScreen />);
-  fireEvent.changeText(getByLabelText('server-url'), 'https://nomad.tail.ts.net');
+  fireEvent.changeText(getByLabelText('server-url'), 'http://100.64.0.1:8080');
   fireEvent.changeText(getByLabelText('jwt-token'), 'aaa.bbb.ccc');
   fireEvent.press(getByText('Connect'));
   const st = useStore.getState();
-  expect(st.serverUrl).toBe('https://nomad.tail.ts.net');
+  expect(st.serverUrl).toBe('http://100.64.0.1:8080');
   expect(st.token).toBe('aaa.bbb.ccc');
 });

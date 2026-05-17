@@ -121,10 +121,13 @@ follow-ups.
 
 Three paths:
 
-1. **URL fragment** (the QR path). `https://<server>/#token=<jwt>&sid=<sid>`.
+1. **URL fragment** (the QR path). `http://<tailscale-ip>:8080/#token=<jwt>&sid=<sid>`.
    The SPA reads `window.location.hash`, persists token + URL to
    `localStorage`, strips the fragment via `history.replaceState`, and
-   connects.
+   connects. Plain `http://` is by design — Tailscale is the transport
+   boundary, no certificate is required. The WS client adapts the scheme
+   (`http→ws`, `https→wss`) if you choose to front the orchestrator with
+   a TLS reverse proxy.
 2. **Persisted credentials.** `kv.get('nomaddev.token')` + `serverUrl`.
 3. **Manual paste.** Settings/Onboard screen has a textarea with a loose
    JWT regex check.
@@ -133,7 +136,7 @@ Generate a token + QR with:
 
 ```sh
 NOMADDEV_JWT_SECRET=... go run ./scripts/qr-jwt \
-    -server-url https://nomad.tail123.ts.net \
+    -server-url http://100.64.0.1:8080 \
     -sub matt -sid sess-1 -ttl 1h -out qr.png
 ```
 

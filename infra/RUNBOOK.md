@@ -2,7 +2,14 @@
 
 First-deploy and incident runbook for the orchestrator + Tailscale mesh.
 Reference; not auto-executed. Every destructive command in `infra/scripts/`
-ships commented out with `# TODO:` — review and uncomment in place.
+ships commented out with `# TODO:` — review and uncomment in place. The
+quickstart scripts below (PR B/C) wrap the happy path without the
+`# TODO:` discipline for operators who want one-command deploys.
+
+> **No TLS certificate is required.** The orchestrator runs over plain
+> HTTP on `:8080`; Tailscale is the transport-security boundary. See
+> `docs/auth.md#tls-termination` if you want HTTPS via a Caddy/nginx
+> proxy.
 
 ## First deploy
 

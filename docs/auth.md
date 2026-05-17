@@ -75,12 +75,16 @@ delivery paths land in the same place:
    code carrying a deep link the SPA hydrates from:
 
    ```
-   https://<server>/#token=<jwt>&sid=<sid>
+   http://<tailscale-ip>:8080/#token=<jwt>&sid=<sid>
    ```
 
    Scan with the device's camera (or open the URL in a browser) and the
    SPA persists the token + server URL to `localStorage`, strips the
    fragment via `history.replaceState`, and connects.
+
+   Plain `http://` is by design — Tailscale is the transport-security
+   boundary. See [TLS termination](#tls-termination) below for operators
+   who insist on HTTPS.
 
 2. **Manual paste.** The Onboard screen takes a server URL + JWT typed
    or pasted directly. Useful when no scanner is around.
@@ -94,9 +98,25 @@ implicit-flow guidance.
 
 ```sh
 NOMADDEV_JWT_SECRET=... go run ./scripts/qr-jwt \
-    -server-url https://nomad.tail123.ts.net \
+    -server-url http://100.64.0.1:8080 \
     -sub matt -sid sess-1 -ttl 1h -out qr.png
 ```
 
-The CLI prints the ASCII QR to stdout and, with `-out`, writes a PNG to
-disk for sharing.
+Substitute the host's actual Tailscale IPv4 (`tailscale ip -4`) for the
+`100.64.0.1` placeholder. The CLI prints the ASCII QR to stdout and,
+with `-out`, writes a PNG to disk for sharing.
+
+## TLS termination
+
+The orchestrator does not terminate TLS itself, and **no certificate is
+required to operate NomadDev**. Tailscale already encrypts every byte
+between the host and the client device on the tailnet, and the JWT
+gates `/ws`. Running plain HTTP on `:8080` over Tailscale is the
+intended deploy.
+
+Operators who want HTTPS for organizational reasons can put Caddy or
+nginx in front of `:8080` on the tailnet — that proxy stays out of
+scope for this repo. If you do front the orchestrator with a TLS
+reverse proxy, point `-server-url` at the proxy URL when minting QR
+codes; the SPA's WS client already adapts `https://` → `wss://`
+(`mobile/src/hooks/useWebSocket.ts:19`).

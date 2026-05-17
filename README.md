@@ -229,8 +229,25 @@ histograms). Scrape from a Prometheus instance on the tailnet.
 
 ## 🛡️ Security Considerations
 
-NomadDev is designed with paranoia as a feature. The public internet never touches the orchestrator. The LLM never touches the host system. The client never touches raw SSH. 
+NomadDev is designed with paranoia as a feature. The public internet never touches the orchestrator. The LLM never touches the host system. The client never touches raw SSH.
 
 *   **No Open Ports:** Bypasses traditional firewall risks via Tailscale.
 *   **Total Isolation:** Execution occurs entirely within ephemeral Docker containers.
 *   **Human-in-the-Loop:** Destructive commands parsed by the middleware require explicit biometric approval on the mobile client.
+
+### Networking and TLS
+
+**No SSL/TLS certificate is required to run NomadDev.** The orchestrator
+listens on plain HTTP (`:8080`) by design — Tailscale already encrypts
+every byte between the host and the client device, and the JWT gates
+`/ws`. There is no HSTS, no `http→https` redirect, and no cert manager
+in the stack. The mobile SPA does not use any secure-context-only
+browser APIs (`crypto.subtle`, service workers, etc.); the only crypto
+call is `crypto.getRandomValues`, which works on plain HTTP.
+
+If your organization demands HTTPS, drop Caddy or nginx in front of
+`:8080` on the tailnet and point QR onboarding at the proxy URL. The
+WS client adapts `http://` → `ws://` and `https://` → `wss://`
+automatically. See [`docs/auth.md`](./docs/auth.md#tls-termination) for
+details. Adding TLS support to the orchestrator binary itself is an
+explicit non-goal.
