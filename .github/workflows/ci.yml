@@ -9,6 +9,12 @@ permissions:
   contents: read
 
 jobs:
+  smoke:
+    name: smoke
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo "hello from $RUNNER_OS"
+
   test:
     name: test
     runs-on: ubuntu-latest
