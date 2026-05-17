@@ -23,8 +23,11 @@ deferred until there's a reason for them.
 - `sub` — user id.
 - `sid` — **session id**. Reused across reconnects so the server can locate
   the buffered session (see `internal/session/`).
-- `scopes` — `orchestrator:connect` in Phase 2; future scopes for sandbox
-  reads/exec arrive in Phase 3.
+- `scopes` — `orchestrator:connect` is the only scope today. It gates the
+  WebSocket upgrade itself; once connected, the client may send
+  `command.request` (Phase 3 sandbox) without an additional scope check.
+  Per-tool scopes (e.g. `sandbox:exec`, `sandbox:read`) are deferred until a
+  multi-tenant deployment needs to enforce them.
 - `iat` / `exp` — required. The verifier rejects expired tokens.
 - `jti` — optional. Reserved for a revocation list.
 
