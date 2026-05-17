@@ -22,6 +22,23 @@ jobs:
       - run: go vet ./...
       - run: go test -race -count=1 ./...
 
+  test-docker:
+    name: test (docker tag)
+    runs-on: ubuntu-latest
+    # The ubuntu-latest runner has Docker pre-installed. We exercise the live
+    # daemon to cover the round-trip paths in internal/sandbox/docker.go that
+    # the default suite can only fake with the MockRunner.
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - run: go mod download
+      - run: docker pull alpine:3.20
+      - run: go vet -tags docker ./...
+      - run: go test -tags docker -race -count=1 -timeout 180s ./internal/sandbox/...
+
   lint:
     name: lint
     runs-on: ubuntu-latest
@@ -33,3 +50,18 @@ jobs:
       - uses: golangci/golangci-lint-action@v7
         with:
           version: v2.5.0
+
+  build-tags:
+    name: build (tagged)
+    # Confirms that the docker and gemini build tags compile without
+    # actually exercising the SDK; useful for catching API breakage early.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - run: go build -tags docker ./...
+      - run: go build -tags gemini ./...
+      - run: go build -tags "docker gemini" ./...

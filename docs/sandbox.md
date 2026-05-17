@@ -111,10 +111,11 @@ go test -tags docker -count=1 ./internal/sandbox/...
 ```
 
 Each Docker test calls `requireDaemon(t)` first; if the daemon is not
-reachable the test is `t.Skip`ed rather than failed. CI does not run these
-tests — the GitHub Actions runner has no daemon and the cost of provisioning
-one for every PR is not worth the marginal coverage. Run them on your local
-machine before merging anything that touches `internal/sandbox/docker.go`.
+reachable the test is `t.Skip`ed rather than failed. The `ubuntu-latest`
+GitHub Actions runner has Docker pre-installed, so the `test-docker` job in
+[`.github/workflows/ci.yml`](../.github/workflows/ci.yml) actually exercises
+all six Docker round-trip tests on every PR (~10s total wall-clock).
+`make test-docker` runs the same suite locally against your daemon.
 
 ## Future work (out of scope for Phase 3)
 
