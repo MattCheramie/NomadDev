@@ -44,6 +44,8 @@ func run(listenOverride string) error {
 		"addr", cfg.ListenAddr,
 		"buffer_size", cfg.Session.BufferSize,
 		"max_bytes", cfg.Session.MaxBytes,
+		"idle_ttl", cfg.Session.IdleTTL,
+		"janitor_interval", cfg.Session.JanitorInterval,
 	)
 
 	rootCtx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
@@ -53,6 +55,8 @@ func run(listenOverride string) error {
 	go h.Run(rootCtx)
 
 	sessions := session.NewMemoryStore(cfg.Session.BufferSize, cfg.Session.MaxBytes)
+	go sessions.RunJanitor(rootCtx, cfg.Session.JanitorInterval, cfg.Session.IdleTTL, logger)
+
 	verifier := auth.NewVerifier(cfg.JWTSecret)
 	srv := wsserver.New(cfg, logger, h, sessions, verifier)
 

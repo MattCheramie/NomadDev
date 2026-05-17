@@ -3,6 +3,8 @@
 package session
 
 import (
+	"context"
+	"log/slog"
 	"sync"
 	"time"
 
@@ -143,4 +145,24 @@ func (m *MemoryStore) SweepIdle(ttl time.Duration) int {
 		}
 	}
 	return dropped
+}
+
+// RunJanitor calls SweepIdle on a ticker until ctx is cancelled. Intended to
+// be launched in its own goroutine by the orchestrator.
+func (m *MemoryStore) RunJanitor(ctx context.Context, interval, ttl time.Duration, log *slog.Logger) {
+	if interval <= 0 {
+		return
+	}
+	t := time.NewTicker(interval)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+			if dropped := m.SweepIdle(ttl); dropped > 0 && log != nil {
+				log.Info("session: janitor swept", "dropped", dropped)
+			}
+		}
+	}
 }

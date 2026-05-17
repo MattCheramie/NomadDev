@@ -1,7 +1,11 @@
 package session
 
 import (
+	"context"
 	"fmt"
+	"io"
+	"log/slog"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -122,6 +126,53 @@ func TestMemoryStore_GetOrCreate_Idempotent(t *testing.T) {
 	if a != b {
 		t.Fatal("GetOrCreate must return the same *Session for the same SID")
 	}
+}
+
+func TestMemoryStore_RunJanitor_StopsOnContextCancel(t *testing.T) {
+	s := NewMemoryStore(8, 1<<20)
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		s.RunJanitor(ctx, 10*time.Millisecond, time.Hour, log)
+		close(done)
+	}()
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("RunJanitor did not stop on ctx cancel")
+	}
+}
+
+func TestMemoryStore_RunJanitor_DropsIdle(t *testing.T) {
+	s := NewMemoryStore(8, 1<<20)
+	var now atomic.Pointer[time.Time]
+	t0 := time.Now().UTC()
+	now.Store(&t0)
+	s.SetClock(func() time.Time { return *now.Load() })
+
+	s.GetOrCreate("idle-1")
+	s.GetOrCreate("idle-2")
+
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go s.RunJanitor(ctx, 5*time.Millisecond, time.Minute, log)
+
+	// Jump the clock past TTL.
+	future := t0.Add(2 * time.Minute)
+	now.Store(&future)
+
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		if s.Get("idle-1") == nil && s.Get("idle-2") == nil {
+			return
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Fatal("janitor never reaped idle sessions")
 }
 
 func TestMemoryStore_SweepIdle(t *testing.T) {

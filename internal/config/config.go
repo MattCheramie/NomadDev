@@ -14,10 +14,13 @@ import (
 	nlog "github.com/mattcheramie/nomaddev/internal/log"
 )
 
-// SessionConfig caps the per-session ring buffer used for reconnect replay.
+// SessionConfig caps the per-session ring buffer used for reconnect replay,
+// and controls how often idle sessions are reaped.
 type SessionConfig struct {
-	BufferSize int
-	MaxBytes   int
+	BufferSize      int
+	MaxBytes        int
+	IdleTTL         time.Duration
+	JanitorInterval time.Duration
 }
 
 // Config is the full set of knobs the orchestrator reads at startup.
@@ -49,8 +52,10 @@ func Load() (*Config, error) {
 		JWTSecret:  secret,
 		LogLevel:   nlog.ParseLevel(envOr("NOMADDEV_LOG_LEVEL", "info")),
 		Session: SessionConfig{
-			BufferSize: envInt("NOMADDEV_SESSION_BUFFER_SIZE", 256),
-			MaxBytes:   envInt("NOMADDEV_SESSION_MAX_BYTES", 1<<20),
+			BufferSize:      envInt("NOMADDEV_SESSION_BUFFER_SIZE", 256),
+			MaxBytes:        envInt("NOMADDEV_SESSION_MAX_BYTES", 1<<20),
+			IdleTTL:         envDuration("NOMADDEV_SESSION_IDLE_TTL", 30*time.Minute),
+			JanitorInterval: envDuration("NOMADDEV_SESSION_JANITOR_INTERVAL", 5*time.Minute),
 		},
 		ReadTimeout:  envDuration("NOMADDEV_READ_TIMEOUT", 60*time.Second),
 		WriteTimeout: envDuration("NOMADDEV_WRITE_TIMEOUT", 10*time.Second),
