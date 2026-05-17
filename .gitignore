@@ -1,0 +1,27 @@
+# Go
+bin/
+*.exe
+*.test
+*.out
+coverage.txt
+
+# Env
+.env
+.env.local
+
+# IDE
+.vscode/
+.idea/
+*.swp
+
+# Mobile (Phase 5)
+mobile/node_modules/
+mobile/.expo/
+mobile/dist/
+mobile/ios/Pods/
+mobile/android/.gradle/
+mobile/android/app/build/
+
+# OS
+.DS_Store
+Thumbs.db
