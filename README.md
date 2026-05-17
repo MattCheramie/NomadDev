@@ -96,6 +96,21 @@ Tailscale IP that exposes `/ws` also serves the UI at `/`. Three routes
 [`docs/mobile.md`](./docs/mobile.md) for the architecture and
 [`docs/auth.md`](./docs/auth.md) for the onboarding flow.
 
+### Phase 6: Production Readiness — done
+*Objective: Take the stack from feature-complete to operable on real hosts.*
+- [x] Persistent session replay buffer (SQLite write-through, rehydrates on restart).
+- [x] Prometheus `/metrics` endpoint covering WS, replay, sandbox, and middleware turns.
+- [x] Multi-stage `Dockerfile` (distroless/static, pure-Go SQLite, no cgo) + `docker-compose.yml`.
+- [x] Hardened systemd unit + non-destructive installer script.
+- [x] Mobile offline outbox + interactive Settings (Reset history, Force reconnect).
+- [x] Tag-driven release workflow → binaries + multi-arch GHCR image.
+
+mTLS / per-cert subject mapping is an explicit non-goal for this round —
+the Tailscale tailnet already gates network reachability, and JWT
+remains the single auth source for `/ws`.
+[`docs/operations.md`](./docs/operations.md) is the operator reference;
+[`infra/RUNBOOK.md`](./infra/RUNBOOK.md) is the deploy walkthrough.
+
 ---
 
 ## 🚀 Running the orchestrator
