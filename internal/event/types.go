@@ -23,6 +23,14 @@ const (
 	EventToolApprovalRequest = "tool.approval.request"
 	EventToolApprovalGranted = "tool.approval.granted"
 	EventToolApprovalDenied  = "tool.approval.denied"
+
+	// Phase 6 client-driven session controls (e.g. Settings → Reset history).
+	EventUserCommand = "user.command"
+)
+
+// UserCommandAction values for UserCommandPayload.Action.
+const (
+	UserCommandResetHistory = "reset_history"
 )
 
 // Error codes returned in an EventError payload.
@@ -164,4 +172,19 @@ type ToolApprovalGrantedPayload struct{}
 // The optional Reason is surfaced to the user as part of error_message.
 type ToolApprovalDeniedPayload struct {
 	Reason string `json:"reason,omitempty"`
+}
+
+// UserCommandPayload is sent C→S for client-driven session controls that are
+// not natural-language intents — e.g. the mobile Settings "Reset history"
+// button. The orchestrator acks success/failure with an EventAck reply whose
+// correlation_id is the user.command envelope id.
+type UserCommandPayload struct {
+	Action string `json:"action"` // one of UserCommand* constants
+}
+
+// AckPayload carries the outcome of a user.command. Error is empty on success.
+type AckPayload struct {
+	Action  string `json:"action"`
+	Error   string `json:"error,omitempty"`
+	Message string `json:"message,omitempty"`
 }

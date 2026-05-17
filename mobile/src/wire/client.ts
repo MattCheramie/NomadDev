@@ -10,10 +10,16 @@ import {
   Envelope,
   EventClientHello,
   EventType,
+  EventUserIntent,
   PayloadByType,
   newEnvelope,
   decodeEnvelope,
 } from './envelope';
+
+// outboxCap bounds how many user.intent envelopes can queue while the socket
+// is down. Past this, send() returns false instead of growing the queue
+// unbounded — the UI surfaces the outbox length so the user can see drops.
+const outboxCap = 64;
 
 export type ConnectionStatus = 'idle' | 'connecting' | 'open' | 'closed' | 'unauthorized';
 
@@ -40,10 +46,22 @@ export class WSClient {
   private stopped = false;
   private opts: ClientOptions;
   private listeners: Partial<ClientEvents> = {};
+  private outbox: Envelope[] = [];
 
   constructor(opts: ClientOptions) {
     this.opts = opts;
     this.backoff = new Backoff(opts.baseBackoffMs ?? 1000, opts.capBackoffMs ?? 30_000);
+  }
+
+  // outboxLength surfaces the pending-while-offline count to the UI.
+  outboxLength(): number {
+    return this.outbox.length;
+  }
+
+  // clearOutbox drops every queued envelope without sending. Used when the
+  // user signs out so their intents don't replay against a new session.
+  clearOutbox(): void {
+    this.outbox = [];
   }
 
   on<K extends keyof ClientEvents>(event: K, fn: ClientEvents[K]): void {
@@ -71,15 +89,43 @@ export class WSClient {
     this.setStatus('idle');
   }
 
-  // send writes an envelope to the socket. Returns false if the socket isn't
-  // open; callers can choose to buffer or drop.
+  // send writes an envelope to the socket. user.intent envelopes are queued
+  // (up to outboxCap) when the socket is down and flushed in order on the
+  // next successful open. Every other envelope type is dropped — control
+  // envelopes (pings, approval grants) are only meaningful in a live
+  // session, and queueing them across reconnect would either be duplicate
+  // (server-state) or stale (approvals timeout server-side).
   send<T extends EventType>(env: Envelope<T>): boolean {
-    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return false;
-    try {
-      this.ws.send(JSON.stringify(env));
+    if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+      try {
+        this.ws.send(JSON.stringify(env));
+        return true;
+      } catch (_e) {
+        return false;
+      }
+    }
+    if (env.type === EventUserIntent && this.outbox.length < outboxCap) {
+      this.outbox.push(env as Envelope);
       return true;
-    } catch (_e) {
-      return false;
+    }
+    return false;
+  }
+
+  private flushOutbox(): void {
+    if (this.outbox.length === 0 || !this.ws || this.ws.readyState !== WebSocket.OPEN) {
+      return;
+    }
+    const drained = this.outbox;
+    this.outbox = [];
+    for (const env of drained) {
+      try {
+        this.ws.send(JSON.stringify(env));
+      } catch (_e) {
+        // Socket flapped mid-flush; re-queue what's left and stop.
+        const idx = drained.indexOf(env);
+        this.outbox = drained.slice(idx);
+        return;
+      }
     }
   }
 
@@ -104,6 +150,8 @@ export class WSClient {
       // Always send client.hello — empty last_event_id is fine for a fresh start.
       const hello = newEnvelope(EventClientHello, { last_event_id: this.opts.lastEventId ?? undefined });
       try { ws.send(JSON.stringify(hello)); } catch (_e) { /* ignore; close handler will fire */ }
+      // Drain anything the user queued while we were offline.
+      this.flushOutbox();
     };
 
     ws.onmessage = (ev) => {

@@ -376,3 +376,46 @@ func mustMarshalText(text string) []byte {
 	b, _ := json.Marshal(map[string]any{"text": text})
 	return b
 }
+
+// handleUserCommand dispatches client-driven session controls. The terminal
+// frame is always an EventAck whose correlation_id is the inbound envelope
+// id; Error is empty on success.
+func (s *Server) handleUserCommand(
+	env event.Envelope, client *hub.Client, sess *session.Session, logger *slog.Logger,
+) {
+	var p event.UserCommandPayload
+	if err := env.UnmarshalPayload(&p); err != nil {
+		s.ackUserCommand(sess, client, env.ID, "", "bad_envelope", err.Error())
+		return
+	}
+	switch p.Action {
+	case event.UserCommandResetHistory:
+		if s.mw == nil || s.mw.History == nil {
+			s.ackUserCommand(sess, client, env.ID, p.Action, "not_implemented", "history backend not configured")
+			return
+		}
+		if err := s.mw.History.Reset(context.Background(), sess.SID); err != nil {
+			logger.Warn("user.command: reset_history failed", "err", err)
+			s.ackUserCommand(sess, client, env.ID, p.Action, "internal", err.Error())
+			return
+		}
+		logger.Info("user.command: reset_history ok", "sid", sess.SID)
+		s.ackUserCommand(sess, client, env.ID, p.Action, "", "history cleared")
+	default:
+		s.ackUserCommand(sess, client, env.ID, p.Action, "unknown_action", "unsupported action: "+p.Action)
+	}
+}
+
+func (s *Server) ackUserCommand(
+	sess *session.Session, client *hub.Client, reqID, action, errCode, message string,
+) {
+	env, err := event.NewReply(event.EventAck, reqID, event.AckPayload{
+		Action:  action,
+		Error:   errCode,
+		Message: message,
+	})
+	if err != nil {
+		return
+	}
+	s.bufferAndSend(sess, client, env)
+}

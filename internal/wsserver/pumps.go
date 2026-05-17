@@ -208,6 +208,9 @@ func (s *Server) dispatch(
 	case event.EventToolApprovalDenied:
 		s.routeApproval(env, false)
 
+	case event.EventUserCommand:
+		s.handleUserCommand(env, client, sess, logger)
+
 	default:
 		s.replyError(sess, client, env.ID, event.CodeUnknownType,
 			"unsupported event type: "+env.Type)

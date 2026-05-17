@@ -24,6 +24,10 @@ export const EventToolApprovalRequest = 'tool.approval.request' as const;
 export const EventToolApprovalGranted = 'tool.approval.granted' as const;
 export const EventToolApprovalDenied = 'tool.approval.denied' as const;
 
+// Phase 6 client-driven session controls (Settings → Reset history etc.).
+export const EventUserCommand = 'user.command' as const;
+export const UserCommandResetHistory = 'reset_history' as const;
+
 export type EventType =
   | typeof EventHello
   | typeof EventClientHello
@@ -41,7 +45,8 @@ export type EventType =
   | typeof EventAssistantMessage
   | typeof EventToolApprovalRequest
   | typeof EventToolApprovalGranted
-  | typeof EventToolApprovalDenied;
+  | typeof EventToolApprovalDenied
+  | typeof EventUserCommand;
 
 // Error codes inside EventError.payload.code.
 export const CodeUnknownType = 'unknown_type';
@@ -136,6 +141,10 @@ export type ToolApprovalDeniedPayload = {
   reason?: string;
 };
 
+export type UserCommandPayload = {
+  action: typeof UserCommandResetHistory | string;
+};
+
 // Discriminated payload union, type → payload.
 export type PayloadByType = {
   [EventHello]: HelloPayload;
@@ -155,6 +164,7 @@ export type PayloadByType = {
   [EventToolApprovalRequest]: ToolApprovalRequestPayload;
   [EventToolApprovalGranted]: ToolApprovalGrantedPayload;
   [EventToolApprovalDenied]: ToolApprovalDeniedPayload;
+  [EventUserCommand]: UserCommandPayload;
 };
 
 // Envelope shape mirroring internal/event.Envelope.

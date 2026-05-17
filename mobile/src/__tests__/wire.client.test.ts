@@ -1,6 +1,13 @@
 import { Server } from 'mock-socket';
 import { WSClient } from '@/wire/client';
-import { decodeEnvelope, EventClientHello, EventHello } from '@/wire/envelope';
+import {
+  decodeEnvelope,
+  EventClientHello,
+  EventHello,
+  EventPing,
+  EventUserIntent,
+  newEnvelope,
+} from '@/wire/envelope';
 
 const URL = 'ws://localhost:12999/ws';
 
@@ -100,3 +107,58 @@ test('reconnect sends a fresh client.hello with the updated lastEventId', async 
   client.close();
   server.stop();
 }, 10000);
+
+test('user.intent queues while offline and flushes in order on reconnect', async () => {
+  const client = new WSClient({ url: URL, token: 'TOKEN', baseBackoffMs: 30, capBackoffMs: 100 });
+
+  // No server running yet — sending user.intent must succeed (queued) but a
+  // non-intent envelope must drop.
+  const a = newEnvelope(EventUserIntent, { text: 'one' });
+  const b = newEnvelope(EventUserIntent, { text: 'two' });
+  const c = newEnvelope(EventPing, { nonce: 'while-offline' });
+
+  expect(client.send(a)).toBe(true);
+  expect(client.send(b)).toBe(true);
+  expect(client.send(c)).toBe(false);
+  expect(client.outboxLength()).toBe(2);
+
+  // Bring the server up and connect.
+  const server = new Server(URL);
+  const received: any[] = [];
+  server.on('connection', (sock) => {
+    sock.on('message', (msg: any) => {
+      try {
+        received.push(decodeEnvelope(typeof msg === 'string' ? msg : String(msg)));
+      } catch (_e) { /* ignore */ }
+    });
+    sock.send(JSON.stringify({
+      id: 'H1', type: EventHello, ts: '2026-01-01T00:00:00Z',
+      payload: { session_id: 'S', server_time: '', protocol_version: 1 },
+    }));
+  });
+
+  client.connect();
+  await wait(200);
+
+  // After the open + flush, the server should have seen client.hello followed
+  // by the two queued user.intent envelopes in order.
+  const intents = received.filter((e) => e.type === EventUserIntent);
+  expect(intents.length).toBe(2);
+  expect((intents[0].payload as any).text).toBe('one');
+  expect((intents[1].payload as any).text).toBe('two');
+  expect(client.outboxLength()).toBe(0);
+
+  client.close();
+  server.stop();
+});
+
+test('outbox cap drops user.intent past the limit', async () => {
+  const client = new WSClient({ url: URL, token: 'TOKEN' });
+  // Fill exactly to cap (64).
+  for (let i = 0; i < 64; i++) {
+    expect(client.send(newEnvelope(EventUserIntent, { text: 'x' + i }))).toBe(true);
+  }
+  // 65th must be rejected.
+  expect(client.send(newEnvelope(EventUserIntent, { text: 'overflow' }))).toBe(false);
+  expect(client.outboxLength()).toBe(64);
+});
