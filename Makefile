@@ -12,7 +12,8 @@ GO_PACKAGES = $(shell go list ./... | grep -v '/mobile/node_modules/')
 .PHONY: build build-docker build-gemini build-all run test test-race test-docker test-gemini \
         lint fmt vet tidy clean ci \
         build-mobile build-full dev-mobile clean-mobile test-mobile \
-        docker-image docker-up docker-down
+        docker-image docker-up docker-down quickstart-docker quickstart-systemd \
+        gen-secret
 
 build:
 	go build -o $(BIN_DIR)/orchestrator ./cmd/orchestrator
@@ -94,3 +95,15 @@ docker-up:
 
 docker-down:
 	docker compose down
+
+# Phase 6 one-command deploys. Both quickstart scripts are fully executable
+# (no # TODO: discipline) — they wrap the happy path for fresh-VPS installs.
+quickstart-docker:
+	sudo bash infra/scripts/quickstart-docker.sh
+
+quickstart-systemd:
+	sudo bash infra/scripts/quickstart-systemd.sh
+
+# Print a NOMADDEV_JWT_SECRET=… line backed by /dev/urandom.
+gen-secret:
+	@bash infra/scripts/gen-secret.sh
