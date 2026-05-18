@@ -39,3 +39,8 @@ yarn-error.*
 # generated native folders
 /ios
 /android
+
+# Playwright (Phase 9.4)
+playwright-report/
+test-results/
+playwright/.cache/

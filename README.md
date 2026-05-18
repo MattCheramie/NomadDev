@@ -468,9 +468,12 @@ top-10 are now shipped (8.1 through 8.10). The review's wider gap
 list still has ~50 unaddressed items grouped by lens — see the plan
 file for the inventory.
 
-### Phase 9: Developer-experience lens — in progress
+### Phase 9: Developer-experience lens — done
 *Objective: Work the Developer Experience lens from the review's
-wider gap list. Small, cohesive items that unblock contributors.*
+wider gap list. Small, cohesive items that unblock contributors.
+4/4 batches shipped (9.1 governance, 9.2 CI coverage + ADR +
+ChatScreen test + dev-loop docs, 9.3 session-export CLI + SQLite
+chaos tests, 9.4 mobile E2E).*
 
 #### 9.1 Governance docs — done
 - [x] [`SECURITY.md`](./SECURITY.md) — disclosure policy via
@@ -526,18 +529,34 @@ wider gap list. Small, cohesive items that unblock contributors.*
   migration (`alpha` table must not exist + `user_version` must
   not bump).
 
-**Remaining DX-lens follow-ups:**
-- Mobile E2E (Playwright/Cypress) covering the onboarding-to-first-turn
-  path — its own PR because the Node test stack is independent of
-  everything else.
-- **Reproducible-build verification** — attempted in this PR (see
-  reverted commit on `claude/dx-tooling`) but Go-on-`ubuntu-latest`
-  consistently produced different sha256s across two builds with
-  `-trimpath -ldflags "-s -w -buildid="`, even though the same
-  flags are bit-identical on developer machines. The next attempt
-  should use `diffoscope` to identify exactly which section
-  differs (likely a `runtime/debug.BuildInfo` non-determinism or
-  a module-extraction-order quirk) before re-adding the check.
+#### 9.4 Mobile E2E via Playwright — done
+*Closes the DX-lens follow-up that needed its own PR because
+Playwright brings a separate test stack (real browser, full
+orchestrator round-trip) from the Jest unit suite.*
+- [x] **`@playwright/test` added** as a mobile devDep (chromium
+  only — extra browsers add test time without catching real
+  regressions for a small web SPA).
+- [x] **`mobile/e2e/onboarding-to-first-turn.spec.ts`** drives the
+  exact code path operators hit on a phone: fragment-based deep
+  link (`#token=…&sid=…`), fragment-stripped on first paint,
+  navigates to /chat, WS handshake to "open", Composer un-disables,
+  user types a turn, mock translator's canned reply lands in the
+  feed.
+- [x] **New `mobile-e2e` CI job.** Builds the SPA + orchestrator
+  with `make build-full`, starts the binary with mock translator +
+  auto-grant approvals + memory backends, waits for `/healthz`,
+  mints a JWT via `scripts/gen-jwt` (masked in the workflow log),
+  runs Playwright. Uploads the HTML report + traces on failure for
+  post-mortem.
+- [x] **Jest excludes `e2e/`** via `testPathIgnorePatterns` so the
+  unit-test stack doesn't trip on Playwright's node-only globals.
+  Full mobile Jest suite still at **34 passing**.
+
+**Phase 9: Developer-experience lens — done.** All four shipped
+items (9.1–9.4) plus the deferred reproducible-build verification
+that needs `diffoscope` for the next attempt — captured in
+[`claude/dx-tooling`](#)'s revert commit, which records the
+investigator-friendly diagnostic context.
 
 ---
 
