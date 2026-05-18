@@ -643,6 +643,63 @@ target per-fsops session isolation (engine refactor), a real
 total-memory pool model (only if a multi-tenant deploy hits the
 worst-case sizing), and per-tool scopes on the JWT.
 
+### Phase 11: Production hardening — in progress
+*Objective: Work the Production-hardening lens — the last remaining
+lens from the missing-features review. Operator-facing observability,
+deployment automation, and the docs that turn the orchestrator from
+"runs on a box" into "operable in production by someone who didn't
+write it."*
+
+#### 11.1 Observability + IaC + ops docs — done
+- [x] **Grafana dashboard** at
+  [`monitoring/grafana-dashboard.json`](./monitoring/grafana-dashboard.json)
+  — 10 panels covering the SLO surface area: active WS conns,
+  connect-rate by outcome, sandbox p50/p95/p99, middleware turn
+  rate + latency, per-tool GitHub MCP rate, rate-limit retries,
+  inbound rejection reasons, session-event throughput by kind.
+  Import via the UI (uid `nomaddev-overview`) or
+  provision-as-config.
+- [x] **Prometheus alert rules** at
+  [`monitoring/alertmanager-rules.yml`](./monitoring/alertmanager-rules.yml)
+  — 7 rules across three groups (availability, capacity,
+  security). Every rule binds to a metric already exported from
+  `internal/metrics`; no new instrumentation required.
+- [x] **Tailscale ACL example** at
+  [`infra/tailscale/acl-example.hujson`](./infra/tailscale/acl-example.hujson)
+  — default-deny tailnet policy with two invariants: the
+  `nomaddev-users` group reaches `:8080`, only
+  `nomaddev-admins` can shell into the host. Tagged
+  `tag:nomaddev-server`. Test stanzas pin the invariants so the
+  admin console refuses to publish a broken policy.
+- [x] **Cloud-init template** at
+  [`infra/cloud-init/nomaddev-bootstrap.yaml`](./infra/cloud-init/nomaddev-bootstrap.yaml)
+  — drop into a fresh Ubuntu 24.04 VPS at provision time and the
+  orchestrator is up + on the tailnet without an SSH session.
+  Pairs with the Tailscale ACL above. Templates JWT secret,
+  Tailscale auth key, and Gemini API key from cloud-provider
+  user-data substitution.
+- [x] **Data-handling / privacy doc** at
+  [`docs/privacy.md`](./docs/privacy.md) — inventories every
+  piece of data the orchestrator touches: what's persisted, where,
+  for how long, what leaves the host (Gemini, GitHub, Tailscale),
+  audit-trail content, wire redaction limits, retention policy
+  summary, and a wipe-everything recipe.
+- [x] **Single-node disclaimer + log-rotation guidance** added to
+  [`docs/operations.md`](./docs/operations.md#single-node-only-phase-11-doc).
+  Captures the supported-deploy posture explicitly (no
+  active-active, no failover, hub state is in-process), sketches
+  what a real HA shape would need (shared DBs + stateless hub +
+  network-attached audit), and ships a `/etc/logrotate.d/nomaddev`
+  recipe for the file-backend audit log using `copytruncate`.
+
+**Remaining Phase-11 follow-up:** OpenTelemetry tracing. Wire
+`go.opentelemetry.io/otel` spans at the user.intent → translator →
+dispatcher → runner boundaries with a configurable OTLP exporter
+endpoint. Own PR because it brings a meaningful module-graph
+expansion (otel/otel-sdk/otel-otlp packages) and instrumentation
+threading; the doc + config items in this PR don't need any of
+that to be useful.
+
 ---
 
 ## 🚀 Running the orchestrator
