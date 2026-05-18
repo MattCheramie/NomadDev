@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/mattcheramie/nomaddev/internal/audit"
 	"github.com/mattcheramie/nomaddev/internal/event"
 	"github.com/mattcheramie/nomaddev/internal/hub"
 	"github.com/mattcheramie/nomaddev/internal/metrics"
@@ -142,12 +143,36 @@ func classifyApprovalErr(err error) (string, string) {
 
 // routeApproval is invoked from dispatch for incoming tool.approval.granted
 // and tool.approval.denied envelopes. The router forwards the result to the
-// Approver keyed on the correlation_id (= the approval.request envelope id).
-func (s *Server) routeApproval(env event.Envelope, granted bool) {
+// Approver keyed on the correlation_id (= the approval.request envelope id)
+// and emits a structured audit event so SIEMs can build "who approved what
+// when" reports without parsing the per-session replay buffer.
+func (s *Server) routeApproval(env event.Envelope, client *hub.Client, granted bool) {
 	if s.mw == nil || env.CorrelationID == "" {
 		return
 	}
 	s.mw.Approver.Signal(env.CorrelationID, granted)
+
+	kind := audit.KindApprovalDeny
+	outcome := audit.OutcomeDeny
+	if granted {
+		kind = audit.KindApprovalGrant
+		outcome = audit.OutcomeOK
+	}
+	ev := audit.Event{
+		Kind: kind, Outcome: outcome,
+		Sub: client.Sub, Sid: client.SID,
+		Extras: map[string]any{"approval_id": env.CorrelationID},
+	}
+	// Best-effort: capture the user-supplied reason on denials if the
+	// client sent one. Unmarshal failures are silent — audit must not
+	// block on a malformed payload.
+	if !granted {
+		var p event.ToolApprovalDeniedPayload
+		if err := env.UnmarshalPayload(&p); err == nil && p.Reason != "" {
+			ev.Message = p.Reason
+		}
+	}
+	s.audit.Log(context.Background(), ev)
 }
 
 // runExec drives the runner channel for one request, fanning chunks into

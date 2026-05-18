@@ -10,6 +10,7 @@ import (
 
 	"github.com/gorilla/websocket"
 
+	"github.com/mattcheramie/nomaddev/internal/audit"
 	"github.com/mattcheramie/nomaddev/internal/auth"
 	"github.com/mattcheramie/nomaddev/internal/config"
 	"github.com/mattcheramie/nomaddev/internal/hub"
@@ -29,6 +30,7 @@ type Server struct {
 	verifier  *auth.Verifier
 	issuer    *auth.IssuerSigner  // nil disables /auth/refresh
 	revoker   auth.RevocationList // nil disables /auth/revoke and revocation checks
+	audit     audit.Sink          // nil falls back to audit.NoopSink at use sites
 	runner    sandbox.Runner      // may be nil — see handleCommandRequest
 	mw        *middleware.Service // may be nil — see handleUserIntent
 	sem       chan struct{}       // optional cap on concurrent execs; nil = unlimited
@@ -44,6 +46,9 @@ type Server struct {
 type Options struct {
 	Issuer  *auth.IssuerSigner
 	Revoker auth.RevocationList
+	// Audit is the structured security-event sink. nil is equivalent
+	// to audit.NoopSink — every audit.Log call becomes a no-op.
+	Audit audit.Sink
 }
 
 // New constructs a Server. The HTTP server is built but not started. runner
@@ -73,6 +78,7 @@ func NewWithOptions(
 		verifier: v,
 		issuer:   opts.Issuer,
 		revoker:  opts.Revoker,
+		audit:    coalesceAudit(opts.Audit),
 		runner:   runner,
 		mw:       mw,
 		upgrader: websocket.Upgrader{
@@ -132,4 +138,14 @@ func (s *Server) Shutdown(ctx context.Context) error {
 func (s *Server) healthHandler(w http.ResponseWriter, _ *http.Request) {
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write([]byte(`{"status":"ok"}`))
+}
+
+// coalesceAudit returns the supplied Sink or a NoopSink if nil. Every
+// audit call site goes through s.audit.Log directly so they don't have
+// to nil-check.
+func coalesceAudit(s audit.Sink) audit.Sink {
+	if s == nil {
+		return audit.NoopSink{}
+	}
+	return s
 }

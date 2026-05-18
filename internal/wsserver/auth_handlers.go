@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/mattcheramie/nomaddev/internal/audit"
 	"github.com/mattcheramie/nomaddev/internal/auth"
 	"github.com/mattcheramie/nomaddev/internal/metrics"
 )
@@ -91,6 +92,10 @@ func (s *Server) refreshHandler(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("Cache-Control", "no-store")
 	metrics.WSConnectsTotal.WithLabelValues("refresh_ok").Inc()
+	s.audit.Log(r.Context(), audit.Event{
+		Kind: audit.KindAuthRefresh, Outcome: audit.OutcomeOK,
+		Sub: claims.Sub, Sid: claims.Sid, Remote: r.RemoteAddr, JTI: claims.ID,
+	})
 	_ = json.NewEncoder(w).Encode(resp)
 }
 
@@ -142,6 +147,11 @@ func (s *Server) revokeHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	s.log.Info("auth: token revoked",
 		"jti", claims.ID, "sub", claims.Sub, "sid", claims.Sid, "kind", claims.Kind)
+	s.audit.Log(r.Context(), audit.Event{
+		Kind: audit.KindAuthRevoke, Outcome: audit.OutcomeOK,
+		Sub: claims.Sub, Sid: claims.Sid, Remote: r.RemoteAddr, JTI: claims.ID,
+		Extras: map[string]any{"token_kind": claims.Kind},
+	})
 	w.WriteHeader(http.StatusNoContent)
 }
 

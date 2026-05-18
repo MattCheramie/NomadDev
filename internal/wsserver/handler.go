@@ -5,6 +5,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/mattcheramie/nomaddev/internal/audit"
 	"github.com/mattcheramie/nomaddev/internal/event"
 	"github.com/mattcheramie/nomaddev/internal/metrics"
 )
@@ -16,6 +17,10 @@ func (s *Server) wsHandler(w http.ResponseWriter, r *http.Request) {
 	if token == "" {
 		s.log.Warn("ws: missing token", "remote", r.RemoteAddr)
 		metrics.WSConnectsTotal.WithLabelValues("unauthorized").Inc()
+		s.audit.Log(r.Context(), audit.Event{
+			Kind: audit.KindWSAuthFailed, Outcome: audit.OutcomeError,
+			Remote: r.RemoteAddr, Message: "missing token",
+		})
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
 		return
 	}
@@ -23,6 +28,10 @@ func (s *Server) wsHandler(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		s.log.Warn("ws: token rejected", "remote", r.RemoteAddr, "err", err)
 		metrics.WSConnectsTotal.WithLabelValues("unauthorized").Inc()
+		s.audit.Log(r.Context(), audit.Event{
+			Kind: audit.KindWSAuthFailed, Outcome: audit.OutcomeError,
+			Remote: r.RemoteAddr, Message: err.Error(),
+		})
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
 		return
 	}
@@ -46,6 +55,10 @@ func (s *Server) wsHandler(w http.ResponseWriter, r *http.Request) {
 		"remote", r.RemoteAddr,
 	)
 	logger.Info("ws: connected")
+	s.audit.Log(r.Context(), audit.Event{
+		Kind: audit.KindWSConnect, Outcome: audit.OutcomeOK,
+		Sub: claims.Sub, Sid: claims.Sid, Remote: r.RemoteAddr, JTI: claims.ID,
+	})
 
 	sess := s.sessions.GetOrCreate(claims.Sid)
 	sess.Touch(time.Now().UTC())

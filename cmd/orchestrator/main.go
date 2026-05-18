@@ -15,6 +15,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/mattcheramie/nomaddev/internal/audit"
 	"github.com/mattcheramie/nomaddev/internal/auth"
 	"github.com/mattcheramie/nomaddev/internal/config"
 	"github.com/mattcheramie/nomaddev/internal/fsops"
@@ -76,6 +77,17 @@ func run(listenOverride string) error {
 
 	sessions := buildSessionStore(rootCtx, cfg, logger)
 
+	auditSink, err := audit.Open(cfg.Audit.Backend, cfg.Audit.Path, logger)
+	if err != nil {
+		return fmt.Errorf("audit: %w", err)
+	}
+	defer func() {
+		if err := auditSink.Close(); err != nil {
+			logger.Warn("orchestrator: audit close", "err", err)
+		}
+	}()
+	logger.Info("orchestrator: audit", "backend", cfg.Audit.Backend, "path", cfg.Audit.Path)
+
 	revoker := buildRevocationList(rootCtx, cfg, logger)
 	defer func() {
 		if err := revoker.Close(); err != nil {
@@ -131,6 +143,7 @@ func run(listenOverride string) error {
 	srv := wsserver.NewWithOptions(cfg, logger, h, sessions, verifier, runner, mw, wsserver.Options{
 		Issuer:  issuer,
 		Revoker: revoker,
+		Audit:   auditSink,
 	})
 	logger.Info("orchestrator: auth",
 		"access_ttl", cfg.Auth.AccessTTL,
