@@ -37,9 +37,9 @@ var destructiveVerbs = []string{
 // with one of the destructive verbs but still mutate state. Kept in sync with
 // the upstream catalogue.
 var destructiveExact = map[string]struct{}{
-	"sub_issue_write":             {},
-	"issue_write":                 {},
-	"pull_request_review_write":   {},
+	"sub_issue_write":           {},
+	"issue_write":               {},
+	"pull_request_review_write": {},
 }
 
 // IsDestructiveTool reports whether the named tool mutates remote state.

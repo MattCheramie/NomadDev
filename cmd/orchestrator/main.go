@@ -103,7 +103,11 @@ func run(listenOverride string) error {
 		return fmt.Errorf("github: %w", err)
 	}
 	if ghClose != nil {
-		defer ghClose()
+		defer func() {
+			if err := ghClose(); err != nil {
+				logger.Warn("orchestrator: github backend close", "err", err)
+			}
+		}()
 	}
 
 	mw, err := buildMiddleware(rootCtx, cfg, runner, gh, ghTools, ghDestructive)
@@ -286,10 +290,10 @@ func buildMiddleware(
 			MemoryBytes: cfg.Sandbox.Memory,
 			PidsLimit:   cfg.Sandbox.PidsLimit,
 		},
-		GateDirectCommands:    cfg.Approval.GateDirectCommands,
-		Sandbox:               runner,
-		FSOps:                 fs,
-		History:               store,
+		GateDirectCommands:      cfg.Approval.GateDirectCommands,
+		Sandbox:                 runner,
+		FSOps:                   fs,
+		History:                 store,
 		ApprovalRequiredTools:   cfg.Approval.RequiredTools,
 		ApprovalAutoGrant:       cfg.Approval.AutoGrant,
 		ApprovalTimeout:         cfg.Approval.Timeout,
