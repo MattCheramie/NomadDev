@@ -28,9 +28,15 @@ binary on the releases page has full GitHub support compiled in. You still
 need to install `github-mcp-server` on the host PATH separately:
 
 ```sh
-# On the deploy host, alongside the orchestrator binary:
-ARCH=$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/')
-curl -fsSL "https://github.com/github/github-mcp-server/releases/latest/download/github-mcp-server_Linux_${ARCH}.tar.gz" \
+# On the deploy host, alongside the orchestrator binary. Note the
+# upstream's release uses x86_64 (not amd64) in the asset name; arm64
+# stays arm64.
+case "$(uname -m)" in
+    x86_64)  GHMCP_ARCH=x86_64 ;;
+    aarch64) GHMCP_ARCH=arm64 ;;
+    *)       GHMCP_ARCH=$(uname -m) ;;
+esac
+curl -fsSL "https://github.com/github/github-mcp-server/releases/latest/download/github-mcp-server_Linux_${GHMCP_ARCH}.tar.gz" \
   | sudo tar -xz -C /usr/local/bin github-mcp-server
 sudo chmod +x /usr/local/bin/github-mcp-server
 ```

@@ -135,7 +135,15 @@ if [[ "${NEED_GHMCP}" == "yes" ]]; then
     if [[ -x "${GHMCP_BIN_DST}" ]]; then
         note "github-mcp-server already installed at ${GHMCP_BIN_DST}"
     else
-        GHMCP_ASSET="github-mcp-server_Linux_${ARCH}.tar.gz"
+        # Upstream's GoReleaser maps amd64 → x86_64 in the asset name;
+        # arm64 stays arm64. Keep the local ARCH var (used in the
+        # orchestrator-binary download earlier in this script) untouched.
+        case "${ARCH}" in
+            amd64) GHMCP_ARCH="x86_64" ;;
+            arm64) GHMCP_ARCH="arm64" ;;
+            *) GHMCP_ARCH="${ARCH}" ;;
+        esac
+        GHMCP_ASSET="github-mcp-server_Linux_${GHMCP_ARCH}.tar.gz"
         GHMCP_URL="https://github.com/github/github-mcp-server/releases/download/${GHMCP_VERSION}/${GHMCP_ASSET}"
         note "downloading github-mcp-server ${GHMCP_VERSION} from ${GHMCP_URL}"
         tmpdir="$(mktemp -d)"
