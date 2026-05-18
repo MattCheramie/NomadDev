@@ -209,6 +209,7 @@ func buildGitHub(ctx context.Context, cfg *config.Config, logger *slog.Logger) (
 		Host:         cfg.GitHub.Host,
 		LockdownMode: cfg.GitHub.LockdownMode,
 		StartTimeout: cfg.GitHub.StartTimeout,
+		MaxArgBytes:  cfg.GitHub.MaxArgBytes,
 	})
 	if err != nil {
 		return nil, nil, nil, nil, err

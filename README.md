@@ -154,6 +154,19 @@ same way it drives shell scripts and files, with the same approval gate.*
 - [x] `quickstart-systemd.sh` auto-installs `github-mcp-server` when
   `NOMADDEV_GITHUB_TOKEN` is configured — single-command deploy for
   the systemd path matches the Docker path.
+- [x] Pre-flight argument size cap (`NOMADDEV_GITHUB_MAX_ARG_BYTES`,
+  default 256 KiB) — an LLM emitting a 100 MB blob is rejected as
+  `SandboxErrBadRequest` before the stdio pipe sees it.
+- [x] Sensitive-arg redaction in the `command.request` /
+  `tool.approval.request` wire envelopes — values for keys matching
+  `token` / `password` / `secret` / `auth` / `api_key` /
+  `credential` / etc. are masked on the wire (display only; dispatch
+  still gets the originals). Long strings truncated to 4 KiB.
+- [x] Upstream API drift CI guard
+  ([`.github/workflows/upstream-drift.yml`](./.github/workflows/upstream-drift.yml))
+  runs a weekly + on-PR smoke against the latest `github-mcp-server`
+  release so breaking changes surface before we bump the pinned
+  version in the Dockerfile.
 
 See [`docs/github.md`](./docs/github.md) for setup, PAT scopes,
 troubleshooting, and the auth-extension seam.

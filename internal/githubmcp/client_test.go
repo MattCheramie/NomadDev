@@ -197,6 +197,26 @@ func TestRespawn_CooldownEnforced(t *testing.T) {
 	}
 }
 
+// TestErrorChunkBadRequest_ShapeAndWrap: the helper that builds the
+// oversized-args rejection wraps sandbox.ErrBadRequest so wsserver's
+// classifyExit routes the chunk to event.SandboxErrBadRequest (not the
+// generic Internal bucket). Round-trips through the chunk channel like a
+// real exit frame.
+func TestErrorChunkBadRequest_ShapeAndWrap(t *testing.T) {
+	c := &Client{logger: slog.Default()}
+	ch := c.errorChunkBadRequest("arguments exceed cap (1000 > 128)")
+	chunk := <-ch
+	if chunk.Stream != sandbox.StreamExit {
+		t.Fatalf("stream = %q, want exit", chunk.Stream)
+	}
+	if !errors.Is(chunk.Err, sandbox.ErrBadRequest) {
+		t.Fatalf("Err missing ErrBadRequest wrap: %v", chunk.Err)
+	}
+	if !strings.Contains(chunk.Err.Error(), "exceed cap") {
+		t.Errorf("Err does not carry the cap message: %v", chunk.Err)
+	}
+}
+
 // TestRespawn_FirstCallNotCooldownThrottled: a Client that has never
 // restarted must allow respawn(). Construction-error path is fine — we're
 // just asserting we got past the cooldown gate.

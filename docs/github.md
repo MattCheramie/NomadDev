@@ -80,6 +80,7 @@ single switch that turns the integration on.
 | `NOMADDEV_GITHUB_LOCKDOWN` | `false` | Upstream's public-repo content guard. |
 | `NOMADDEV_GITHUB_START_TIMEOUT` | `15s` | Cap on the MCP initialize + tools/list handshake. |
 | `NOMADDEV_SANDBOX_DEFAULT_TIMEOUT` | `30s` | Per-call cap on the upstream MCP round-trip (shared with the sandbox `execute_script` timeout). Hung GitHub calls surface as `event.SandboxErrTimeout` and the assistant turn ends gracefully. |
+| `NOMADDEV_GITHUB_MAX_ARG_BYTES` | `262144` (256 KiB) | Pre-flight cap on a single tool's JSON-marshaled arguments. Defends the stdio pipe against an LLM-emitted 100 MB blob; rejection surfaces as `SandboxErrBadRequest` before the subprocess sees the payload. Set to 0 to disable. |
 
 The orchestrator logs the wired-up tool count at startup:
 
@@ -159,6 +160,44 @@ instantly distinguishes an approval that touches GitHub state from one that
 runs locally. Other than the badge the card is identical to the
 sandbox/fsops approval flow — same tool/args/reason layout, same approve
 and deny actions, same countdown.
+
+### Argument redaction on the wire
+
+Both the `command.request` and `tool.approval.request` envelopes carry
+**redacted** args to the client. Keys whose name (case-insensitive)
+contains `token`, `password`, `secret`, `auth`, `api_key`, `credential`,
+`private_key`, `client_secret`, `bearer`, `pat`, or `x-api-key` have
+their values replaced with `[REDACTED]`. String values longer than 4 KiB
+are truncated for display with a trailing `… (N bytes truncated for
+display)` marker. The dispatch path always sees the original args — only
+what's shown on the approval card and command log is redacted.
+
+This is defense-in-depth. Today's upstream tools take credentials via
+env (`GITHUB_PERSONAL_ACCESS_TOKEN`), not args, so the redaction layer
+mostly applies to custom backends; it's enabled unconditionally so the
+behavior matches whether the operator deploys a vanilla integration or
+extends it.
+
+## Upstream API drift guard
+
+A scheduled CI workflow (`.github/workflows/upstream-drift.yml`) re-runs a
+focused smoke against the **latest** `github-mcp-server` release every
+Monday and on every PR that touches `internal/githubmcp/` or the
+Dockerfile pin. The smoke installs the latest upstream binary, spawns
+it with a placeholder PAT, calls `tools/list`, and asserts the adapter's
+invariants:
+
+1. catalogue is non-empty,
+2. every `Tool.InputSchema` round-trips through `ConvertSchema`,
+3. at least one tool is gated as destructive,
+4. no `get_*` / `list_*` / `search_*` / `*_read` tool is reported destructive.
+
+When the workflow fails, the diagnostic in the log names the broken
+invariant. The fix is either bumping `GITHUB_MCP_VERSION` in the
+Dockerfile + `quickstart-systemd.sh` (if the new upstream is desirable),
+or pinning to the previous known-good (if it isn't) — never just
+ignoring the signal. Manual re-run: workflow_dispatch from the Actions
+tab.
 
 ## Subprocess supervision
 
