@@ -54,6 +54,14 @@ The Docker runner's defaults are intentionally paranoid:
   `tool="execute_script"` with `args.script` (and optional `args.shell`).
   Anything else returns `sandbox_bad_request` immediately without touching
   the engine.
+- **Image digest pinning**. `NOMADDEV_SANDBOX_IMAGE` accepts a
+  digest-pinned ref (`alpine:3.20@sha256:…`). When pinned, Docker
+  verifies the digest at pull time AND the runner re-inspects the local
+  image before every exec and refuses to start the container if
+  `RepoDigests` no longer matches — this catches a host-local
+  `docker tag` smuggling a different manifest under the configured name.
+  Set `NOMADDEV_SANDBOX_REQUIRE_DIGEST=true` to hard-fail at boot on a
+  tag-only ref (recommended for production).
 
 ## Resource limits
 

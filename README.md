@@ -189,10 +189,14 @@ troubleshooting, and the auth-extension seam. The GitHub MCP
 integration is 100% feature-complete; future work tracks upstream
 catalogue growth, not capability gaps.
 
-### Phase 8: Auth hardening — access/refresh + revocation — done
-*Objective: Close the "stolen JWT is good until expiry" gap and stop
-forcing mobile users to re-onboard every time their access token
-rolls.*
+### Phase 8: Security hardening — in progress
+*Objective: Work the prioritized top-10 from the missing-features
+review at `/root/.claude/plans/review-this-repository-and-delegated-moon.md`.
+Each numbered subsection ships independently.*
+
+#### 8.1 Auth — access/refresh + revocation — done
+*Closes the "stolen JWT is good until expiry" gap and stops forcing
+mobile users to re-onboard every time their access token rolls.*
 - [x] **Two token kinds.** Tokens carry a `kind` claim:
   `access` (short-lived, presented at `/ws`) or `refresh` (long-lived,
   only valid at `POST /auth/refresh`). Defaults: access `1h`, refresh
@@ -220,6 +224,33 @@ rolls.*
 
 See [`docs/auth.md`](./docs/auth.md) for the full claim shape,
 endpoint contracts, and revocation backend notes.
+
+#### 8.2 Sandbox image digest pinning — done
+*Closes the supply-chain hole where a compromised registry could
+repoint `alpine:3.20` at a malicious manifest between deploys.*
+- [x] `NOMADDEV_SANDBOX_IMAGE` accepts a content-addressed ref
+  (`alpine:3.20@sha256:…`). Docker enforces the digest at pull time;
+  the runner additionally re-inspects the local image before every
+  exec and refuses to start the container if `RepoDigests` no longer
+  contains the expected digest — catches a host-local `docker tag`
+  attack that would otherwise bypass pull verification.
+- [x] `NOMADDEV_SANDBOX_REQUIRE_DIGEST=true` hard-fails at boot on a
+  tag-only image so a misconfigured production deploy can't silently
+  fall back to the unpinned path. Default `false` for back-compat.
+- [x] Parser is shared across builds (no `-tags docker` needed for
+  the validation tests) and emits a structured warning when the
+  configured image is unpinned, so operators see the recommendation
+  in the startup log.
+
+See [`docs/sandbox.md`](./docs/sandbox.md#threat-model) for the
+verification flow and threat-model rationale.
+
+**Remaining top-10:** WS body size cap + per-connection rate limit
+(8.3), SBOM/cosign/Trivy in releases (8.4), audit log split from
+replay buffer (8.5), wired biometric approval (8.6), SQLite
+integrity check + migration framework (8.7), `/healthz` dependency
+probes + Compose healthcheck (8.8), GitHub rate-limit
+awareness/retry (8.9), and automated `session.db` backups (8.10).
 
 ---
 

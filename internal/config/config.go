@@ -63,6 +63,11 @@ type SandboxConfig struct {
 	PidsLimit      int64         // HostConfig.PidsLimit; 0 = unset
 	ReadOnlyRootfs bool
 	PreferRunsc    bool
+	// RequireDigest, when true, refuses to start if Image lacks an
+	// `@sha256:...` suffix. Defends against a tag-race where a
+	// compromised registry repoints a tag at a malicious manifest.
+	// Default false for back-compat; flip to true in production.
+	RequireDigest bool
 }
 
 // MiddlewareConfig governs the Phase 4 NLP middleware that translates
@@ -184,6 +189,7 @@ func Load() (*Config, error) {
 			PidsLimit:      envInt64("NOMADDEV_SANDBOX_PIDS_LIMIT", 256),
 			ReadOnlyRootfs: envBool("NOMADDEV_SANDBOX_READONLY_ROOTFS", true),
 			PreferRunsc:    envBool("NOMADDEV_SANDBOX_PREFER_RUNSC", true),
+			RequireDigest:  envBool("NOMADDEV_SANDBOX_REQUIRE_DIGEST", false),
 		},
 		Middleware: MiddlewareConfig{
 			Runtime:          envOr("NOMADDEV_MIDDLEWARE_RUNTIME", "mock"),

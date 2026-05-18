@@ -13,6 +13,7 @@ func newDockerRunner(ctx context.Context, c FactoryConfig) (Runner, error) {
 		ReadonlyRoot:   c.ReadonlyRoot,
 		Network:        c.Network,
 		PreferRunsc:    c.PreferRunsc,
+		RequireDigest:  c.RequireDigest,
 		Logger:         c.Logger,
 	})
 }
