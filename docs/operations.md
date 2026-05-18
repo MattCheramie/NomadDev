@@ -172,6 +172,87 @@ against the bind-mounted `nomaddev-data` volume:
 image, OR running the script from a small sidecar — both out of
 scope for this phase; the systemd path is the recommended deploy.)
 
+### Single-node only (Phase 11 doc)
+
+NomadDev is **explicitly a single-node deployment** today. Two
+orchestrator processes sharing the same Tailscale IP, SQLite
+stores, or session-replay state is **not supported** — the
+state is kept in-process maps + local SQLite, with no
+cross-instance coordination.
+
+What this means in practice:
+
+- **No active-active.** Don't run two orchestrators behind a
+  load balancer pointing at the same `/var/lib/nomaddev`. SQLite
+  locking will fight you and the in-memory hub state will fork.
+- **No active-passive failover.** The session-replay buffer and
+  approval-pending state live in RAM; killing the active node
+  loses both. A standby would need to rehydrate from `sessions.db`
+  and pick up new pending approvals from scratch, which we don't
+  ship.
+- **High-availability** in this project's vocabulary means
+  "operator restarts the systemd unit quickly" — the Phase 8.7
+  startup integrity check + Phase 8.8 `/readyz` probe + Phase
+  8.10 daily backup are the recovery primitives. Restoring from
+  a snapshot takes seconds.
+
+If your deployment requires real HA, the orchestrator's
+in-process state is the obstacle. The natural shape would be:
+
+1. Move `sessions.db` / `history.db` / `revocations.db` to a
+   shared backend (Postgres, distributed SQLite via Litestream).
+2. Make the hub stateless (no in-memory pending-approval map; move
+   to the shared backend with a cross-instance pub/sub).
+3. Make the audit sink network-attached (Loki, syslog over the
+   tailnet).
+
+That's a meaningful refactor; the
+[missing-features review](https://github.com/MattCheramie/NomadDev/issues)
+captures it as a long-tail item. Single-node + restart-fast is
+the supported posture until then.
+
+### Log rotation (Phase 11 doc)
+
+The orchestrator's stdout + stderr go to systemd's journal; the
+`audit.log` file (when `NOMADDEV_AUDIT_BACKEND=file`) is the only
+plain-text log surface that grows on disk unbounded.
+
+journald handles the systemd-side rotation automatically — see
+`man journald.conf` for `SystemMaxUse=`, `SystemKeepFree=`,
+`RuntimeMaxUse=`. The defaults (~4 GiB cap) are usually fine on
+a real VPS.
+
+The audit log needs `logrotate`. Drop the following at
+`/etc/logrotate.d/nomaddev`:
+
+```
+/var/lib/nomaddev/audit.log {
+    daily
+    rotate 30
+    compress
+    delaycompress
+    missingok
+    notifempty
+    create 0600 nomaddev nomaddev
+    # SIGHUP would tell the orchestrator to reopen the file. We
+    # don't ship a SIGHUP handler today (Phase 11 doc), so
+    # `copytruncate` is the simpler path: rotate the rotated
+    # file, truncate the live one, the orchestrator keeps writing
+    # to the same fd. Loses the in-flight buffer (typically
+    # < 1 KiB) but doesn't need code changes.
+    copytruncate
+}
+```
+
+`logrotate` runs daily by default via the `/etc/cron.daily/logrotate`
+hook on Ubuntu / Debian — no additional cron entry needed. Verify
+with `sudo logrotate -d /etc/logrotate.d/nomaddev` (dry run).
+
+A future Phase will add a SIGHUP-reopen handler so `copytruncate`
+isn't necessary; tracked in
+[`docs/adr/0001-record-architecture-decisions.md`](./adr/0001-record-architecture-decisions.md)
+as a candidate ADR-2.
+
 ## Release process
 
 Releases are tag-driven:
