@@ -345,6 +345,65 @@ a `user.command{reset_history}` envelope. The server calls
 sqlite3 /var/lib/nomaddev/history.db "DELETE FROM turns WHERE sid = '<sid>';"
 ```
 
+### History summarization compactor
+A background goroutine ("compactor") opt-in via
+`NOMADDEV_HISTORY_SUMMARY_ENABLED` walks every session on a tick and,
+once the cumulative word count of `role IN ('user','assistant')` rows
+exceeds `WordThreshold`, asks an external HTTP endpoint to summarize
+the oldest 50 % of those rows. The transaction deletes the originals
+and inserts one `role = 'system.summary'` row at the smallest freed
+`turn_idx` so chronological order is preserved. `tool_call` /
+`tool_result` rows are never touched.
+
+This is **purely additive**: no schema change, no migration bump, no
+new file. The Phase 8.7 contract (forward-only, `user_version`-gated
+migrations — see above) is preserved; the new role is just data in
+the existing `role TEXT` column. See
+[`docs/middleware.md`](./middleware.md#background-summarization-compactor)
+for the architecture.
+
+Configure via env vars (defaults shown):
+
+| Var | Default | Notes |
+| --- | --- | --- |
+| `NOMADDEV_HISTORY_SUMMARY_ENABLED`        | `false`     | Master switch. SQLite backend only. |
+| `NOMADDEV_HISTORY_SUMMARY_URL`            | *(unset)*   | `POST` target. Compactor stays inert if empty even when enabled. |
+| `NOMADDEV_HISTORY_SUMMARY_AUTH_HEADER`    | *(unset)*   | Optional `Authorization` header (e.g. `Bearer …`). |
+| `NOMADDEV_HISTORY_SUMMARY_WORD_THRESHOLD` | `15000`     | Whitespace-split word count across the session's user + assistant turns. Not LLM tokens. |
+| `NOMADDEV_HISTORY_SUMMARY_INTERVAL`       | `5m`        | Tick period. Each tick visits every session in `turns`. |
+| `NOMADDEV_HISTORY_SUMMARY_TIMEOUT`        | `30s`       | Per-HTTP-call timeout. |
+
+Wire shape (request body the orchestrator sends):
+
+```json
+[
+  {"role": "user", "text": "...", "ts": 1737000000000000000},
+  {"role": "assistant", "text": "...", "ts": 1737000000100000000}
+]
+```
+
+Wire shape (response the orchestrator expects):
+
+```json
+{"summary": "concise paraphrase of the conversation so far"}
+```
+
+Any non-2xx response, decode error, or empty `summary` aborts the
+transaction — the rows stay put and the next tick retries. The
+compactor logs `history: compacted session sid=… turns_collapsed=N`
+on success and `history: compactor sid=… err=…` on failure.
+
+To inspect the effect on a live database:
+
+```sh
+sqlite3 /var/lib/nomaddev/history.db \
+  "SELECT turn_idx, role FROM turns WHERE sid = '<sid>' ORDER BY turn_idx;"
+```
+
+A successful compaction shows one `system.summary` row at the smallest
+`turn_idx` and gaps where the originals were. Subsequent `Append`
+calls continue past `MAX(turn_idx)+1` and never reuse those gaps.
+
 ### Resizing replay buffers
 `NOMADDEV_SESSION_BUFFER_SIZE` (count) and `NOMADDEV_SESSION_MAX_BYTES`
 (bytes) cap the in-memory window. The SQLite write-through trim keeps at
