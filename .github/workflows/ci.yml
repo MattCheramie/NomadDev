@@ -175,6 +175,107 @@ jobs:
           severity: 'HIGH,CRITICAL'
           vuln-type: 'os,library'
 
+  mobile-e2e:
+    name: mobile (E2E)
+    # End-to-end smoke against a real orchestrator. Builds the SPA +
+    # orchestrator binary, starts it with the mock translator and
+    # auto-grant approvals, mints a JWT, and drives Playwright through
+    # the onboarding-to-first-turn path. The same code path operators
+    # hit on a phone — fragment-based deep link, fragment-stripped on
+    # first paint, WS handshake, mock assistant reply.
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: mobile/package-lock.json
+      - name: install mobile deps
+        working-directory: mobile
+        run: npm ci
+      - name: install playwright (chromium)
+        working-directory: mobile
+        run: npx playwright install --with-deps chromium
+      - name: build SPA + orchestrator
+        # build-full chains build-mobile (expo export → dist/) and
+        # build (go build with the embedded SPA). The resulting
+        # orchestrator binary serves the SPA at / on whatever it
+        # binds to.
+        run: make build-full
+      - name: start orchestrator (mock translator + auto-grant)
+        env:
+          NOMADDEV_JWT_SECRET: e2e-test-secret-that-is-definitely-long-enough-32-bytes
+          NOMADDEV_MIDDLEWARE_RUNTIME: mock
+          NOMADDEV_APPROVAL_AUTO_GRANT: 'true'
+          NOMADDEV_HISTORY_BACKEND: memory
+          NOMADDEV_SESSION_BACKEND: memory
+          NOMADDEV_SANDBOX_RUNTIME: mock
+          NOMADDEV_AUTH_REVOCATION_BACKEND: memory
+          NOMADDEV_AUDIT_BACKEND: stderr
+          # The default workspace path /var/lib/nomaddev/work isn't
+          # writable on a stock GitHub-hosted runner; the middleware
+          # builder MkdirAll's it and fails silently in the background
+          # process if we don't override. RUNNER_TEMP is always
+          # writable and ephemeral.
+          NOMADDEV_SANDBOX_WORKSPACE_DIR: ${{ runner.temp }}/nomaddev-work
+        run: |
+          ./bin/orchestrator -listen 127.0.0.1:8080 > orchestrator.log 2>&1 &
+          echo $! > orchestrator.pid
+          # Wait for /healthz to come up — gives the binary a fair
+          # window to bind before Playwright starts hitting it.
+          for _ in $(seq 1 30); do
+            if curl -fsS -o /dev/null http://127.0.0.1:8080/healthz; then
+              echo "orchestrator is up"
+              break
+            fi
+            sleep 0.5
+          done
+          # If /healthz still isn't responding, dump the orchestrator
+          # log so the failure mode is visible — silent-background-exit
+          # is what we hit on the first CI run.
+          if ! curl -fsS http://127.0.0.1:8080/healthz; then
+            echo "::error::orchestrator failed to bind; recent log:"
+            tail -50 orchestrator.log || true
+            exit 1
+          fi
+      - name: mint JWT for the test
+        id: jwt
+        env:
+          NOMADDEV_JWT_SECRET: e2e-test-secret-that-is-definitely-long-enough-32-bytes
+        run: |
+          token=$(go run ./scripts/gen-jwt -sub e2e -sid sess-e2e -ttl 5m)
+          # Mask the token so it doesn't appear in workflow logs.
+          echo "::add-mask::$token"
+          echo "token=$token" >> "$GITHUB_OUTPUT"
+      - name: run Playwright
+        working-directory: mobile
+        env:
+          PLAYWRIGHT_BASE_URL: http://127.0.0.1:8080
+          E2E_TOKEN: ${{ steps.jwt.outputs.token }}
+          E2E_SID: sess-e2e
+        run: npm run e2e
+      - name: stop orchestrator
+        if: always()
+        run: |
+          if [ -f orchestrator.pid ]; then
+            kill "$(cat orchestrator.pid)" 2>/dev/null || true
+          fi
+      - name: upload Playwright report
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report
+          path: |
+            mobile/playwright-report/
+            mobile/test-results/
+          retention-days: 7
+
   govulncheck:
     name: govulncheck
     # Catches known Go-module vulnerabilities (golang.org/x/vuln) before
