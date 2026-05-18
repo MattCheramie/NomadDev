@@ -123,8 +123,14 @@ jobs:
       # Phase 8.4: fail the build on HIGH/CRITICAL CVEs in the image
       # we're about to ship. Trivy reads the image we just loaded into
       # the local Docker daemon; no push or registry access required.
+      #
+      # Pinned by commit SHA (not tag) because aquasecurity/trivy-action
+      # was the target of a tag-hijack supply-chain attack in March 2026
+      # affecting many pre-v0.35.0 tags. SHA pinning is GitHub's
+      # recommended discipline for any third-party action; this one
+      # earns it twice. SHA = v0.36.0.
       - name: vulnerability scan (Trivy)
-        uses: aquasecurity/trivy-action@0.28.0
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25
         with:
           image-ref: nomaddev/orchestrator:ci
           format: table
