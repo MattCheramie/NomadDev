@@ -865,13 +865,41 @@ the sandbox / GitHub MCP tool.
 See [`docs/webauthn.md`](./docs/webauthn.md) for the operator
 workflow, threat model, and SPA-side integration sketch.
 
-**Remaining Phase-12 follow-ups:** mobile-side WebAuthn UI
-(Settings "Register key" + login "Sign in with key" — the SPA
-calls `navigator.credentials.create/get`; server is ready);
-pool-style memory quota (only if a multi-tenant deploy hits the
-worst-case sizing — documented sizing approach in
-`docs/sandbox.md` covers the same blast radius); mobile native
-build (Expo EAS — separate infra setup).
+#### 12.4 WebAuthn — mobile SPA UI — done
+- [x] **New `mobile/src/wire/webauthn.ts`** wraps the four server
+  endpoints with a `registerSecurityKey(...)` /
+  `signInWithSecurityKey(...)` pair. Owns the base64url ↔
+  ArrayBuffer conversion the W3C API requires for `challenge`,
+  `user.id`, `excludeCredentials[].id`, `allowCredentials[].id`,
+  plus the W3C-shaped attestation / assertion JSON the server's
+  go-webauthn parser expects on finish.
+- [x] **Settings screen** gains a "Register security key" button
+  with an optional label input. The button is gated on
+  `isWebAuthnAvailable()` — present only when the page is loaded
+  over HTTPS or http://localhost (matches the WebAuthn spec
+  requirement and the docs/webauthn.md prerequisite).
+- [x] **Onboard screen** gains a "Sign in with security key" path
+  alongside the existing JWT-paste flow. On success the returned
+  JWT pair lands in the same `setCredentials(url, token)` slot,
+  so the WS client picks up immediately.
+- [x] **Probe-resistant error passthrough.** When the server
+  returns its deliberately-opaque "no security key registered for
+  that account" 401, the SPA surfaces the server message verbatim
+  rather than inventing a clearer "user not found" string —
+  preserves the threat model end-to-end.
+- [x] **16 new unit tests** (`mobile/src/__tests__/webauthn.test.ts`)
+  pin the base64url roundtrip, option-decoding (creation +
+  request), attestation / assertion serialization, the
+  isWebAuthnAvailable feature gate, and full register / login
+  ceremonies with mocked `fetch` + `navigator.credentials`.
+  Browser-side `navigator.credentials.create/get` is end-to-end
+  covered by Playwright's virtual authenticator when the real
+  ceremony is wired into the E2E (future follow-up).
+
+**Remaining Phase-12 follow-ups:** pool-style memory quota (only
+if a multi-tenant deploy hits the worst-case sizing — documented
+sizing approach in `docs/sandbox.md` covers the same blast
+radius); mobile native build (Expo EAS — separate infra setup).
 
 ---
 

@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import { ScrollView, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native';
 import { useStore } from '@/state/store';
 import { ErrorRow } from '@/components/ErrorRow';
 import { useWSClient } from '@/wire/context';
@@ -8,6 +8,7 @@ import {
   UserCommandResetHistory,
   newEnvelope,
 } from '@/wire/envelope';
+import { isWebAuthnAvailable, registerSecurityKey } from '@/wire/webauthn';
 
 export function SettingsScreen() {
   const serverUrl = useStore((s) => s.serverUrl);
@@ -15,11 +16,16 @@ export function SettingsScreen() {
   const wsStatus = useStore((s) => s.wsStatus);
   const lastEventId = useStore((s) => s.lastEventId);
   const lastError = useStore((s) => s.lastError);
+  const token = useStore((s) => s.token);
   const clearCredentials = useStore((s) => s.clearCredentials);
   const resetLocal = useStore((s) => s.reset);
 
   const client = useWSClient();
   const [outboxLen, setOutboxLen] = useState<number>(client?.outboxLength() ?? 0);
+
+  const [keyLabel, setKeyLabel] = useState<string>('');
+  const [keyStatus, setKeyStatus] = useState<{ kind: 'idle' | 'busy' | 'ok' | 'err'; msg?: string }>({ kind: 'idle' });
+  const webauthnReady = isWebAuthnAvailable();
 
   // Poll the outbox count. It mutates inside WSClient, so the component needs
   // an explicit refresh — the existing wsStatus subscription doesn't fire on
@@ -42,6 +48,25 @@ export function SettingsScreen() {
     client.send(env);
     // Clear the local feed immediately; the server's ack will fire-and-forget.
     resetLocal();
+  }
+
+  async function onRegisterSecurityKey() {
+    if (!serverUrl || !token) {
+      setKeyStatus({ kind: 'err', msg: 'No active session.' });
+      return;
+    }
+    setKeyStatus({ kind: 'busy' });
+    const res = await registerSecurityKey({
+      serverUrl,
+      accessToken: token,
+      displayName: keyLabel.trim() || undefined,
+    });
+    if (res.ok) {
+      setKeyStatus({ kind: 'ok', msg: 'Security key registered.' });
+      setKeyLabel('');
+    } else {
+      setKeyStatus({ kind: 'err', msg: res.error });
+    }
   }
 
   return (
@@ -72,6 +97,49 @@ export function SettingsScreen() {
         <Text style={styles.actionButtonText}>Reset history (server + local)</Text>
       </TouchableOpacity>
 
+      <View style={styles.section}>
+        <Text style={styles.sectionTitle}>Security key</Text>
+        {webauthnReady ? (
+          <>
+            <Text style={styles.help}>
+              Register a hardware key (YubiKey, platform authenticator, passkey) bound
+              to this account. Requires HTTPS or http://localhost.
+            </Text>
+            <TextInput
+              accessibilityLabel="security-key-label"
+              value={keyLabel}
+              onChangeText={setKeyLabel}
+              placeholder="Label (e.g. matt@laptop)"
+              autoCapitalize="none"
+              autoCorrect={false}
+              style={styles.input}
+            />
+            <TouchableOpacity
+              onPress={onRegisterSecurityKey}
+              disabled={keyStatus.kind === 'busy'}
+              style={[styles.actionButton, keyStatus.kind === 'busy' && styles.disabledButton]}
+              accessibilityRole="button"
+              accessibilityLabel="register-security-key-button"
+            >
+              <Text style={styles.actionButtonText}>
+                {keyStatus.kind === 'busy' ? 'Touch your security key…' : 'Register security key'}
+              </Text>
+            </TouchableOpacity>
+            {keyStatus.kind === 'ok' && keyStatus.msg && (
+              <Text style={styles.successText}>{keyStatus.msg}</Text>
+            )}
+            {keyStatus.kind === 'err' && keyStatus.msg && (
+              <Text style={styles.errorText}>{keyStatus.msg}</Text>
+            )}
+          </>
+        ) : (
+          <Text style={styles.help}>
+            WebAuthn requires an HTTPS origin (or http://localhost). Front the
+            orchestrator with a TLS reverse proxy to enable security keys.
+          </Text>
+        )}
+      </View>
+
       <TouchableOpacity
         onPress={clearCredentials}
         style={styles.signOutButton}
@@ -98,11 +166,22 @@ const styles = StyleSheet.create({
   row: { borderBottomWidth: 1, borderBottomColor: '#2a3242', paddingVertical: 10 },
   label: { color: '#9aa4b2', fontSize: 12 },
   value: { color: '#e6edf3', fontFamily: 'Menlo, Consolas, monospace' as any, fontSize: 14, marginTop: 4 },
+  section: { marginTop: 24, gap: 8 },
+  sectionTitle: { color: '#e6edf3', fontSize: 16, fontWeight: '600' as const },
+  help: { color: '#9aa4b2', fontSize: 12 },
+  input: {
+    borderWidth: 1, borderColor: '#2a3242', borderRadius: 8,
+    paddingHorizontal: 12, paddingVertical: 10, color: '#e6edf3',
+    backgroundColor: '#161b22',
+  },
   actionButton: {
     marginTop: 12, paddingVertical: 12, paddingHorizontal: 20,
     backgroundColor: '#1f6feb', borderRadius: 8, alignItems: 'center',
   },
   actionButtonText: { color: 'white', fontWeight: '600' as '600' },
+  disabledButton: { opacity: 0.6 },
+  successText: { color: '#7ee787', marginTop: 4 },
+  errorText: { color: '#f87171', marginTop: 4 },
   signOutButton: {
     marginTop: 24, paddingVertical: 12, paddingHorizontal: 20,
     backgroundColor: '#dc2626', borderRadius: 8, alignItems: 'center',

@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { ScrollView, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native';
 import { useStore } from '@/state/store';
+import { isWebAuthnAvailable, signInWithSecurityKey } from '@/wire/webauthn';
 
 // JWT validation: three base64url segments separated by '.'. Loose enough that
 // a typo'd token still produces a clear server-side error if it gets through.
@@ -12,6 +13,9 @@ export function OnboardScreen() {
   const [url, setUrl] = useState('');
   const [token, setToken] = useState('');
   const [err, setErr] = useState<string | null>(null);
+  const [sub, setSub] = useState('');
+  const [keyStatus, setKeyStatus] = useState<{ kind: 'idle' | 'busy' | 'err'; msg?: string }>({ kind: 'idle' });
+  const webauthnReady = isWebAuthnAvailable();
 
   // On web, also try to populate from the URL fragment in case the user is
   // landing here without the App boot logic having seen the hash.
@@ -33,6 +37,27 @@ export function OnboardScreen() {
     if (!JWT_RE.test(t)) return setErr('Token does not look like a JWT (three base64 segments).');
     setErr(null);
     setCredentials(u, t);
+  };
+
+  const submitWebAuthn = async () => {
+    const u = url.trim();
+    const s = sub.trim();
+    if (!u) {
+      setKeyStatus({ kind: 'err', msg: 'Server URL is required.' });
+      return;
+    }
+    if (!s) {
+      setKeyStatus({ kind: 'err', msg: 'Enter the operator (sub) name.' });
+      return;
+    }
+    setKeyStatus({ kind: 'busy' });
+    const res = await signInWithSecurityKey({ serverUrl: u, sub: s });
+    if (res.ok) {
+      setCredentials(u, res.accessToken);
+      setKeyStatus({ kind: 'idle' });
+    } else {
+      setKeyStatus({ kind: 'err', msg: res.error });
+    }
   };
 
   return (
@@ -80,6 +105,40 @@ export function OnboardScreen() {
         {' -sub you -sid sess-1 -ttl 1h -out qr.png'}
       </Text>
       <Text style={styles.help}>Then scan the QR or copy the URL it prints.</Text>
+
+      {webauthnReady && (
+        <View style={styles.altBox}>
+          <Text style={styles.altTitle}>Or sign in with a security key</Text>
+          <Text style={styles.help}>
+            Identify yourself and touch your registered key. Requires a
+            previously-enrolled credential (see Settings → Register security key).
+          </Text>
+          <Text style={styles.label}>Operator</Text>
+          <TextInput
+            accessibilityLabel="webauthn-sub"
+            value={sub}
+            onChangeText={setSub}
+            placeholder="matt"
+            autoCapitalize="none"
+            autoCorrect={false}
+            style={styles.input}
+          />
+          <TouchableOpacity
+            onPress={submitWebAuthn}
+            disabled={keyStatus.kind === 'busy'}
+            style={[styles.altButton, keyStatus.kind === 'busy' && styles.disabledButton]}
+            accessibilityRole="button"
+            accessibilityLabel="webauthn-sign-in-button"
+          >
+            <Text style={styles.buttonText}>
+              {keyStatus.kind === 'busy' ? 'Touch your security key…' : 'Sign in with security key'}
+            </Text>
+          </TouchableOpacity>
+          {keyStatus.kind === 'err' && keyStatus.msg && (
+            <Text style={styles.error}>{keyStatus.msg}</Text>
+          )}
+        </View>
+      )}
     </ScrollView>
   );
 }
@@ -106,4 +165,14 @@ const styles = StyleSheet.create({
     fontFamily: 'Menlo, Consolas, monospace' as any, fontSize: 12,
     backgroundColor: '#0d1117', color: '#7ee787', padding: 12, borderRadius: 6,
   },
+  altBox: {
+    marginTop: 24, paddingTop: 16,
+    borderTopWidth: 1, borderTopColor: '#2a3242', gap: 8,
+  },
+  altTitle: { color: '#e6edf3', fontSize: 14, fontWeight: '600' as const },
+  altButton: {
+    marginTop: 8, paddingVertical: 12, paddingHorizontal: 20,
+    backgroundColor: '#1f6feb', borderRadius: 8, alignItems: 'center',
+  },
+  disabledButton: { opacity: 0.6 },
 });
