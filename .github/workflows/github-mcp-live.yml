@@ -1,0 +1,68 @@
+name: GitHub MCP live smoke
+
+# Drives the TestLive_* suite in internal/githubmcp against a real
+# github-mcp-server subprocess + a real GitHub API. Catches regressions
+# the upstream-drift workflow (which uses a placeholder token and only
+# calls tools/list) can't reach — for example, encodeResult handling of
+# real CallToolResult content blocks, or the arg-size cap firing on a
+# real payload.
+#
+# Gated by a repository secret (GITHUB_MCP_LIVE_TOKEN) so forks and PRs
+# from external contributors can never accidentally hit our sandbox repo
+# with someone else's PAT. When the secret is unset, the job exits clean
+# with a "skipped" log message.
+
+on:
+  # Manual: re-run from the Actions tab when investigating something.
+  workflow_dispatch:
+  # Weekly: same cadence as upstream-drift so we notice live failures
+  # within a week even without active development.
+  schedule:
+    - cron: '15 6 * * 1'  # Mondays 06:15 UTC, 15 min after upstream-drift
+
+permissions:
+  contents: read
+
+jobs:
+  live:
+    name: TestLive_* against real GitHub API
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: skip when secret unset
+        id: gate
+        env:
+          TOKEN: ${{ secrets.GITHUB_MCP_LIVE_TOKEN }}
+        run: |
+          if [ -z "${TOKEN}" ]; then
+            echo "GITHUB_MCP_LIVE_TOKEN secret not configured; skipping live smoke."
+            echo "live=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "live=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: install github-mcp-server (matches Dockerfile pin)
+        if: steps.gate.outputs.live == 'true'
+        run: |
+          # Pin matches Dockerfile's GITHUB_MCP_VERSION so the live suite
+          # exercises the same upstream version that ships in the GHCR
+          # image. Drift detection lives in upstream-drift.yml; this job
+          # is about "the integration works against a real API at the
+          # pinned version".
+          go install github.com/github/github-mcp-server/cmd/github-mcp-server@v1.0.4
+          GOBIN_PATH="$(go env GOPATH)/bin/github-mcp-server"
+          sudo ln -sf "${GOBIN_PATH}" /usr/local/bin/github-mcp-server
+          /usr/local/bin/github-mcp-server --version || true
+
+      - name: TestLive_*
+        if: steps.gate.outputs.live == 'true'
+        env:
+          NOMADDEV_GITHUB_TOKEN: ${{ secrets.GITHUB_MCP_LIVE_TOKEN }}
+        run: |
+          go test -tags github -race -count=1 -run TestLive -v \
+            ./internal/githubmcp/...

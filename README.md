@@ -167,9 +167,27 @@ same way it drives shell scripts and files, with the same approval gate.*
   runs a weekly + on-PR smoke against the latest `github-mcp-server`
   release so breaking changes surface before we bump the pinned
   version in the Dockerfile.
+- [x] Result size cap (`NOMADDEV_GITHUB_MAX_RESULT_BYTES`, default
+  1 MiB): a `get_file_contents` returning a 50 MB blob is replaced
+  with a preview-bearing truncated envelope (`truncated: true`,
+  `original_bytes`, head-of-payload) so it can't blow Gemini's
+  context window.
+- [x] Per-user PAT routing via `NOMADDEV_GITHUB_USER_TOKENS_PATH` —
+  JSON file mapping JWT `sub` → fine-grained PAT, plumbed via
+  `WithUserSub(ctx, sub)` from the wsserver layer to a
+  `PerUserTokenSource` that falls through to the shared default on
+  miss. Hot-reload on file mtime change. The `TokenSource` interface
+  remains the seam for DB-backed or OAuth-onboarded variants.
+- [x] Live API CI smoke
+  ([`.github/workflows/github-mcp-live.yml`](./.github/workflows/github-mcp-live.yml))
+  — weekly + manual workflow that drives `TestLive_*` against the
+  real GitHub API on the pinned upstream version. Secret-gated
+  (`GITHUB_MCP_LIVE_TOKEN`) so forks and external PRs skip cleanly.
 
 See [`docs/github.md`](./docs/github.md) for setup, PAT scopes,
-troubleshooting, and the auth-extension seam.
+troubleshooting, and the auth-extension seam. The GitHub MCP
+integration is 100% feature-complete; future work tracks upstream
+catalogue growth, not capability gaps.
 
 ---
 

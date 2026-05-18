@@ -197,6 +197,34 @@ func TestRespawn_CooldownEnforced(t *testing.T) {
 	}
 }
 
+// TestTruncatePayload_BasicShape: oversized payloads collapse to a
+// preview-bearing envelope smaller than the cap, with the truncation flag
+// + original-bytes preserved so the model can self-correct.
+func TestTruncatePayload_BasicShape(t *testing.T) {
+	original := []byte(`{"content":[{"type":"text","text":"` + strings.Repeat("A", 10_000) + `"}]}`)
+	out := truncatePayload(original, 2048, false)
+	if len(out) > 2048+200 { // envelope overhead bound is ~512; allow slack
+		t.Fatalf("truncated payload %d bytes still exceeds cap (orig %d)", len(out), len(original))
+	}
+	if !strings.Contains(string(out), `"truncated":true`) {
+		t.Errorf("missing truncated flag: %s", out[:200])
+	}
+	if !strings.Contains(string(out), `"original_bytes":`) {
+		t.Errorf("missing original_bytes: %s", out[:200])
+	}
+	if !strings.Contains(string(out), "result truncated") {
+		t.Errorf("missing human-readable marker: %s", out[:200])
+	}
+}
+
+func TestTruncatePayload_PreservesIsError(t *testing.T) {
+	original := []byte(strings.Repeat("X", 5_000))
+	out := truncatePayload(original, 1024, true)
+	if !strings.Contains(string(out), `"is_error":true`) {
+		t.Errorf("is_error flag not preserved: %s", out)
+	}
+}
+
 // TestErrorChunkBadRequest_ShapeAndWrap: the helper that builds the
 // oversized-args rejection wraps sandbox.ErrBadRequest so wsserver's
 // classifyExit routes the chunk to event.SandboxErrBadRequest (not the

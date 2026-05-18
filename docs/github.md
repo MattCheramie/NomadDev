@@ -87,6 +87,8 @@ single switch that turns the integration on.
 | `NOMADDEV_GITHUB_START_TIMEOUT` | `15s` | Cap on the MCP initialize + tools/list handshake. |
 | `NOMADDEV_SANDBOX_DEFAULT_TIMEOUT` | `30s` | Per-call cap on the upstream MCP round-trip (shared with the sandbox `execute_script` timeout). Hung GitHub calls surface as `event.SandboxErrTimeout` and the assistant turn ends gracefully. |
 | `NOMADDEV_GITHUB_MAX_ARG_BYTES` | `262144` (256 KiB) | Pre-flight cap on a single tool's JSON-marshaled arguments. Defends the stdio pipe against an LLM-emitted 100 MB blob; rejection surfaces as `SandboxErrBadRequest` before the subprocess sees the payload. Set to 0 to disable. |
+| `NOMADDEV_GITHUB_MAX_RESULT_BYTES` | `1048576` (1 MiB) | Cap on the JSON payload returned to the model. A `get_file_contents` against a giant blob is replaced with a preview-bearing envelope (`truncated: true`, `original_bytes`, head-of-payload) so the model can self-correct (typically by narrowing pagination or path). Set to 0 to disable. |
+| `NOMADDEV_GITHUB_USER_TOKENS_PATH` | (empty) | JSON file mapping JWT `sub` → fine-grained PAT for per-user credential routing. When unset, every user shares the single `NOMADDEV_GITHUB_TOKEN`. Per-user entries fall through to the shared token on miss. File is re-read on mtime change so rotation is "edit, no restart." See [Per-user PAT](#per-user-pat) below. |
 
 The orchestrator logs the wired-up tool count at startup:
 
@@ -125,6 +127,35 @@ Token rotation: the `EnvTokenSource` re-reads `NOMADDEV_GITHUB_TOKEN` on
 every tool call, so rotating the env var + re-execing the orchestrator
 (via systemd's `systemctl restart nomaddev` or `docker compose restart`)
 picks the new value up with no extra cache to flush.
+
+## Per-user PAT
+
+Multi-tenant deploys can issue each authenticated user their own PAT
+instead of sharing a single one. Set `NOMADDEV_GITHUB_USER_TOKENS_PATH`
+to a JSON file:
+
+```json
+{
+  "alice": "github_pat_alice...",
+  "bob":   "github_pat_bob...",
+  "ops":   "github_pat_shared_for_automation..."
+}
+```
+
+Keys are the JWT `sub` claim from `/healthz`'s issued tokens. The
+orchestrator plumbs `sub` into the dispatch context, so each tool call
+resolves the right credential without any per-tenant code changes.
+
+Behavior:
+- **Hit**: the matched PAT is used for the upstream subprocess `env`.
+- **Miss** (sub not in file): falls through to `NOMADDEV_GITHUB_TOKEN`
+  — the operator can keep a shared default for non-onboarded users or
+  leave the env unset to deny those calls outright.
+- **Rotation**: the file is `stat`-checked on every call and re-parsed
+  when `mtime` changes. Edit the JSON, no restart needed.
+- **Storage**: file-based today; the `TokenSource` interface
+  (`internal/githubmcp/token.go`) is the seam for DB-backed or
+  OAuth-onboarded variants without changing dispatcher code.
 
 ## Approval policy
 
@@ -183,6 +214,20 @@ env (`GITHUB_PERSONAL_ACCESS_TOKEN`), not args, so the redaction layer
 mostly applies to custom backends; it's enabled unconditionally so the
 behavior matches whether the operator deploys a vanilla integration or
 extends it.
+
+## Live API CI smoke
+
+In addition to the upstream-drift workflow (placeholder token,
+tools/list only), there's an opt-in
+[`github-mcp-live`](../.github/workflows/github-mcp-live.yml) workflow
+that runs the full `TestLive_*` suite against the real GitHub API on
+the pinned upstream version. Gated by a `GITHUB_MCP_LIVE_TOKEN`
+repository secret; skips cleanly when the secret is unset, so forks
+and external PRs never hit our sandbox repo.
+
+Triggers: weekly (Mondays 06:15 UTC) + `workflow_dispatch`. The local
+equivalent for developers is `make test-github-live` with
+`NOMADDEV_GITHUB_TOKEN` exported.
 
 ## Upstream API drift guard
 

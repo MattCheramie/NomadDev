@@ -457,6 +457,14 @@ func (c *Client) Call(ctx context.Context, call middleware.ToolCall, opts middle
 		return c.errorChunk(marshalErr.Error()), nil
 	}
 
+	// Cap the payload before it hits the assistant turn. A get_file_contents
+	// returning a 50 MB blob would blow Gemini's context window; we replace
+	// the oversized envelope with a truncated one the model can still
+	// parse + understand was capped.
+	if c.opts.MaxResultBytes > 0 && len(payload) > c.opts.MaxResultBytes {
+		payload = truncatePayload(payload, c.opts.MaxResultBytes, result.IsError)
+	}
+
 	exitCode := 0
 	if result.IsError {
 		exitCode = 1
@@ -466,6 +474,65 @@ func (c *Client) Call(ctx context.Context, call middleware.ToolCall, opts middle
 	ch <- sandbox.ExecChunk{Stream: sandbox.StreamExit, ExitCode: exitCode}
 	close(ch)
 	return ch, nil
+}
+
+// truncatePayload replaces an oversized encodeResult JSON with a smaller
+// envelope that preserves a head-of-payload preview, the IsError flag, and
+// machine-readable truncation metadata so the model can self-correct
+// (typically by narrowing its request — e.g., asking for a smaller page or
+// a specific path range).
+//
+// We deliberately don't try to walk the original JSON to selectively shrink
+// text blocks: that's complex, error-prone, and the model already handles
+// "<truncated>" markers correctly when it sees them. A single text block
+// with the head bytes + bytes-omitted count is both simpler and more
+// informative.
+func truncatePayload(payload []byte, maxBytes int, wasError bool) []byte {
+	// Reserve ~512 B for the envelope wrapper so the preview fits inside
+	// maxBytes after re-marshaling.
+	const envelopeOverhead = 512
+	previewMax := maxBytes - envelopeOverhead
+	if previewMax < 256 {
+		previewMax = 256
+	}
+	preview := string(payload)
+	if len(preview) > previewMax {
+		preview = preview[:previewMax]
+	}
+	envelope := struct {
+		Content []map[string]any `json:"content"`
+		IsError bool             `json:"is_error,omitempty"`
+
+		// Machine-readable truncation metadata. The model's tool-result
+		// parser sees these as extra fields and ignores them; an operator
+		// reading the assistant turn for debugging sees the cap.
+		Truncated     bool `json:"truncated"`
+		OriginalBytes int  `json:"original_bytes"`
+		PreviewBytes  int  `json:"preview_bytes"`
+	}{
+		Content: []map[string]any{
+			{
+				"type": "text",
+				"text": fmt.Sprintf(
+					"[githubmcp: result truncated — original %d bytes, preview %d bytes; "+
+						"retry with a narrower query (smaller page, specific path) for "+
+						"a complete response]\n\n%s",
+					len(payload), len(preview), preview,
+				),
+			},
+		},
+		IsError:       wasError,
+		Truncated:     true,
+		OriginalBytes: len(payload),
+		PreviewBytes:  len(preview),
+	}
+	out, err := json.Marshal(envelope)
+	if err != nil {
+		// Last-resort fallback: a minimal text block. Should never trip
+		// since the envelope shape is JSON-marshal-safe by construction.
+		return []byte(`{"content":[{"type":"text","text":"[githubmcp: result truncated and re-marshal failed]"}],"truncated":true}`)
+	}
+	return out
 }
 
 // errorChunk wraps a free-text error in the chunk channel shape the wsserver
