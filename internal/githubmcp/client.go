@@ -240,7 +240,12 @@ func (c *Client) ListTools(_ context.Context) ([]middleware.ToolSpec, error) {
 // Call implements Caller. Strips the github_ prefix, calls the upstream
 // tool, and returns the JSON result as a single stdout ExecChunk + terminal
 // exit chunk so the wsserver layer can reuse its existing emission path.
-func (c *Client) Call(ctx context.Context, call middleware.ToolCall, _ middleware.DispatchOptions) (<-chan sandbox.ExecChunk, error) {
+//
+// opts.Timeout, when > 0, derives a child context that caps the upstream
+// MCP CallTool round-trip. classifyExit() in wsserver maps the resulting
+// context.DeadlineExceeded into event.SandboxErrTimeout so the assistant
+// turn sees a graceful timeout instead of hanging on a stuck remote API.
+func (c *Client) Call(ctx context.Context, call middleware.ToolCall, opts middleware.DispatchOptions) (<-chan sandbox.ExecChunk, error) {
 	c.callMu.Lock()
 	defer c.callMu.Unlock()
 
@@ -248,12 +253,24 @@ func (c *Client) Call(ctx context.Context, call middleware.ToolCall, _ middlewar
 		return nil, fmt.Errorf("%w: github session not open", sandbox.ErrBadRequest)
 	}
 
+	callCtx := ctx
+	if opts.Timeout > 0 {
+		var cancel context.CancelFunc
+		callCtx, cancel = context.WithTimeout(ctx, opts.Timeout)
+		defer cancel()
+	}
+
 	bare := UnprefixedName(call.Tool)
-	result, err := c.session.CallTool(ctx, &mcp.CallToolParams{
+	result, err := c.session.CallTool(callCtx, &mcp.CallToolParams{
 		Name:      bare,
 		Arguments: call.Args,
 	})
 	if err != nil {
+		// Surface a context.DeadlineExceeded / context.Canceled cleanly so
+		// classifyExit maps it to the right event-layer code.
+		if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
+			return c.contextErrorChunk(err), nil
+		}
 		return c.errorChunk(err.Error()), nil
 	}
 
@@ -283,6 +300,16 @@ func (c *Client) errorChunk(msg string) <-chan sandbox.ExecChunk {
 		Stream: sandbox.StreamExit,
 		Err:    fmt.Errorf("githubmcp: %s", msg),
 	}
+	close(ch)
+	return ch
+}
+
+// contextErrorChunk preserves the original context error (DeadlineExceeded
+// or Canceled) so wsserver's classifyExit() routes it to SandboxErrTimeout
+// or SandboxErrCanceled instead of the generic Internal bucket.
+func (c *Client) contextErrorChunk(err error) <-chan sandbox.ExecChunk {
+	ch := make(chan sandbox.ExecChunk, 2)
+	ch <- sandbox.ExecChunk{Stream: sandbox.StreamExit, Err: err}
 	close(ch)
 	return ch
 }
