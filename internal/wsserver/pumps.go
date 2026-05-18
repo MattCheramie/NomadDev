@@ -1,12 +1,16 @@
 package wsserver
 
 import (
+	"context"
 	"errors"
 	"log/slog"
 	"strings"
 	"time"
 
 	"github.com/gorilla/websocket"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
 	"golang.org/x/time/rate"
 
 	"github.com/mattcheramie/nomaddev/internal/auth"
@@ -210,6 +214,22 @@ func (s *Server) dispatch(
 	sess *session.Session,
 	logger *slog.Logger,
 ) {
+	// Phase 11.2: one root span per inbound envelope. No-op when
+	// tracing is disabled (otel.Tracer returns a noopTracer). The
+	// span surfaces type / sub / sid as attributes so a collector
+	// can filter by tool or operator without sampling-tax on
+	// quiet envelopes (a single tracer Start is ~tens of ns when
+	// the noop provider is installed).
+	tracer := otel.Tracer("nomaddev/wsserver")
+	_, span := tracer.Start(context.Background(), "ws.dispatch."+env.Type,
+		trace.WithAttributes(
+			attribute.String("envelope.type", env.Type),
+			attribute.String("session.sub", client.Sub),
+			attribute.String("session.sid", client.SID),
+		),
+	)
+	defer span.End()
+
 	switch env.Type {
 	case event.EventClientHello:
 		var p event.ClientHelloPayload

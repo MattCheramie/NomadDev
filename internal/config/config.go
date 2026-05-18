@@ -15,6 +15,17 @@ import (
 	nlog "github.com/mattcheramie/nomaddev/internal/log"
 )
 
+// TracingConfig governs the OpenTelemetry exporter wiring. Tracing is
+// off by default — spans are a no-op until Enabled is true.
+type TracingConfig struct {
+	Enabled        bool
+	Endpoint       string  // OTLP/HTTP collector URL
+	ServiceName    string  // resource attr; default "nomaddev-orchestrator"
+	ServiceVersion string  // resource attr; default the main.version build tag
+	SampleRatio    float64 // 0.0–1.0; default 1.0 (sample everything)
+	Insecure       bool    // plain-HTTP collector (Tailscale-fronted deploys)
+}
+
 // AuditConfig governs the structured audit-log sink, which is separate
 // from the per-session replay buffer. Backend selects where security
 // events (ws connects, auth failures, token refresh/revoke, approval
@@ -165,6 +176,7 @@ type Config struct {
 	LogLevel       slog.Level
 	Auth           AuthConfig
 	Audit          AuditConfig
+	Tracing        TracingConfig
 	Session        SessionConfig
 	Sandbox        SandboxConfig
 	Middleware     MiddlewareConfig
@@ -221,6 +233,14 @@ func Load() (*Config, error) {
 		Audit: AuditConfig{
 			Backend: envOr("NOMADDEV_AUDIT_BACKEND", "stderr"),
 			Path:    envOr("NOMADDEV_AUDIT_PATH", "/var/lib/nomaddev/audit.log"),
+		},
+		Tracing: TracingConfig{
+			Enabled:        envBool("NOMADDEV_OTEL_ENABLED", false),
+			Endpoint:       os.Getenv("NOMADDEV_OTEL_OTLP_ENDPOINT"),
+			ServiceName:    envOr("NOMADDEV_OTEL_SERVICE_NAME", "nomaddev-orchestrator"),
+			ServiceVersion: os.Getenv("NOMADDEV_OTEL_SERVICE_VERSION"),
+			SampleRatio:    envFloat("NOMADDEV_OTEL_SAMPLE_RATIO", 1.0),
+			Insecure:       envBool("NOMADDEV_OTEL_INSECURE", true),
 		},
 		Auth: AuthConfig{
 			AccessTTL:  envDuration("NOMADDEV_AUTH_ACCESS_TTL", time.Hour),
