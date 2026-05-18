@@ -189,6 +189,38 @@ troubleshooting, and the auth-extension seam. The GitHub MCP
 integration is 100% feature-complete; future work tracks upstream
 catalogue growth, not capability gaps.
 
+### Phase 8: Auth hardening — access/refresh + revocation — done
+*Objective: Close the "stolen JWT is good until expiry" gap and stop
+forcing mobile users to re-onboard every time their access token
+rolls.*
+- [x] **Two token kinds.** Tokens carry a `kind` claim:
+  `access` (short-lived, presented at `/ws`) or `refresh` (long-lived,
+  only valid at `POST /auth/refresh`). Defaults: access `1h`, refresh
+  `720h` (30 days). Tokens minted before Phase 8 (no `kind` claim) are
+  accepted as `access` for back-compat.
+- [x] **`POST /auth/refresh`.** Mobile clients exchange a refresh token
+  for a fresh `(access, refresh)` pair. The presented refresh JTI is
+  rotated into the revocation list so it can never be replayed.
+  Accepts the token in the `Authorization` header, a JSON body, or a
+  form field.
+- [x] **`POST /auth/revoke`.** Authenticated revocation endpoint —
+  the caller's own token (access or refresh) is added to the
+  revocation list. Idempotent (204 either time). A leaked token can
+  now be killed before it expires naturally.
+- [x] **JTI revocation list with three backends:**
+  `sqlite` (durable across restarts, default — file at
+  `NOMADDEV_AUTH_REVOCATION_PATH`), `memory` (lost on restart),
+  `none` (pre-Phase-8 behavior). A janitor goroutine prunes entries
+  whose `exp` has passed.
+- [x] **`gen-jwt -kind {access|refresh|pair}`** for issuing the new
+  token shapes; `pair` emits both as JSON for piping into onboarding.
+- [x] **`/ws` enforces `kind=access`.** Refresh tokens presented at
+  `/ws` are rejected with 401 before upgrade — defense in depth
+  against accidental or malicious replay.
+
+See [`docs/auth.md`](./docs/auth.md) for the full claim shape,
+endpoint contracts, and revocation backend notes.
+
 ---
 
 ## 🚀 Running the orchestrator
@@ -204,6 +236,24 @@ In another shell, mint a token and connect:
 ```sh
 TOKEN="$(go run ./scripts/gen-jwt -sub matt -sid sess-1 -ttl 1h)"
 ./bin/wsclient -url ws://127.0.0.1:8080/ws -token "$TOKEN" -send ping
+```
+
+For the Phase 8 access/refresh flow, mint both at once and use the
+refresh endpoint to rotate the access token without re-running
+`gen-jwt`:
+
+```sh
+PAIR="$(go run ./scripts/gen-jwt -kind pair -sub matt -sid sess-1)"
+ACCESS="$(echo "$PAIR" | jq -r .access_token)"
+REFRESH="$(echo "$PAIR" | jq -r .refresh_token)"
+
+# Use ACCESS at /ws (above). Later, exchange REFRESH for a new pair:
+curl -sS -X POST http://127.0.0.1:8080/auth/refresh \
+    -H "Authorization: Bearer $REFRESH" | jq .
+
+# Revoke a token before it expires naturally:
+curl -sS -X POST http://127.0.0.1:8080/auth/revoke \
+    -H "Authorization: Bearer $ACCESS" -o /dev/null -w '%{http_code}\n'
 ```
 
 Drive the Phase 3 sandbox runner end-to-end against the mock backend:

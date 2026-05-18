@@ -15,6 +15,28 @@ import (
 	nlog "github.com/mattcheramie/nomaddev/internal/log"
 )
 
+// AuthConfig governs JWT token lifetimes and the revocation list. The
+// revocation list lets operators revoke a leaked JWT before it expires
+// naturally; refresh tokens let mobile clients keep a long-lived
+// re-auth credential without exposing it to /ws on every connect.
+//
+// Backwards-compatible defaults: AccessTTL=1h (same as the previous
+// single-ttl behavior) and Revocation.Backend="sqlite" (matches the
+// session-store default so a fresh deploy gets durable revocations
+// without any extra config).
+type AuthConfig struct {
+	AccessTTL  time.Duration // NOMADDEV_AUTH_ACCESS_TTL
+	RefreshTTL time.Duration // NOMADDEV_AUTH_REFRESH_TTL
+	Revocation RevocationConfig
+}
+
+// RevocationConfig selects the backing store for the JTI revocation list.
+type RevocationConfig struct {
+	Backend         string        // "none" | "memory" | "sqlite"
+	Path            string        // SQLite file path when Backend == "sqlite"
+	JanitorInterval time.Duration // how often to drop expired entries
+}
+
 // SessionConfig caps the per-session ring buffer used for reconnect replay,
 // and controls how often idle sessions are reaped. Backend selects between
 // the in-memory store (loses bookmarks on restart) and the SQLite-backed
@@ -103,6 +125,7 @@ type Config struct {
 	ListenAddr   string
 	JWTSecret    []byte
 	LogLevel     slog.Level
+	Auth         AuthConfig
 	Session      SessionConfig
 	Sandbox      SandboxConfig
 	Middleware   MiddlewareConfig
@@ -132,6 +155,15 @@ func Load() (*Config, error) {
 		ListenAddr: envOr("NOMADDEV_LISTEN_ADDR", ":8080"),
 		JWTSecret:  secret,
 		LogLevel:   nlog.ParseLevel(envOr("NOMADDEV_LOG_LEVEL", "info")),
+		Auth: AuthConfig{
+			AccessTTL:  envDuration("NOMADDEV_AUTH_ACCESS_TTL", time.Hour),
+			RefreshTTL: envDuration("NOMADDEV_AUTH_REFRESH_TTL", 30*24*time.Hour),
+			Revocation: RevocationConfig{
+				Backend:         envOr("NOMADDEV_AUTH_REVOCATION_BACKEND", "sqlite"),
+				Path:            envOr("NOMADDEV_AUTH_REVOCATION_PATH", "/var/lib/nomaddev/revocations.db"),
+				JanitorInterval: envDuration("NOMADDEV_AUTH_REVOCATION_JANITOR_INTERVAL", 5*time.Minute),
+			},
+		},
 		Session: SessionConfig{
 			Backend:         envOr("NOMADDEV_SESSION_BACKEND", "sqlite"),
 			Path:            envOr("NOMADDEV_SESSION_PATH", "/var/lib/nomaddev/sessions.db"),

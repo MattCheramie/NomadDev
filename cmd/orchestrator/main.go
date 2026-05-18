@@ -76,7 +76,14 @@ func run(listenOverride string) error {
 
 	sessions := buildSessionStore(rootCtx, cfg, logger)
 
-	verifier := auth.NewVerifier(cfg.JWTSecret)
+	revoker := buildRevocationList(rootCtx, cfg, logger)
+	defer func() {
+		if err := revoker.Close(); err != nil {
+			logger.Warn("orchestrator: revocation close", "err", err)
+		}
+	}()
+	verifier := auth.NewVerifierWithRevocation(cfg.JWTSecret, revoker)
+	issuer := auth.NewIssuerWithTTLs(cfg.JWTSecret, cfg.Auth.AccessTTL, cfg.Auth.RefreshTTL)
 
 	runner, err := sandbox.NewRunner(rootCtx, sandbox.FactoryConfig{
 		Runtime:        cfg.Sandbox.Runtime,
@@ -120,7 +127,15 @@ func run(listenOverride string) error {
 		"github_tools", len(ghTools),
 	)
 
-	srv := wsserver.New(cfg, logger, h, sessions, verifier, runner, mw)
+	srv := wsserver.NewWithOptions(cfg, logger, h, sessions, verifier, runner, mw, wsserver.Options{
+		Issuer:  issuer,
+		Revoker: revoker,
+	})
+	logger.Info("orchestrator: auth",
+		"access_ttl", cfg.Auth.AccessTTL,
+		"refresh_ttl", cfg.Auth.RefreshTTL,
+		"revocation_backend", cfg.Auth.Revocation.Backend,
+	)
 
 	srvErr := make(chan error, 1)
 	go func() {
@@ -183,6 +198,44 @@ func buildSessionStore(ctx context.Context, cfg *config.Config, logger *slog.Log
 		mem := session.NewMemoryStore(cfg.Session.BufferSize, cfg.Session.MaxBytes)
 		go mem.RunJanitor(ctx, cfg.Session.JanitorInterval, cfg.Session.IdleTTL, logger)
 		return mem
+	}
+}
+
+// buildRevocationList wires the JWT revocation list per cfg.Auth.Revocation.
+// SQLite is the durable default; memory survives only until the next
+// restart; none disables revocation entirely (back-compat with deploys
+// that pre-date this feature).
+func buildRevocationList(ctx context.Context, cfg *config.Config, logger *slog.Logger) auth.RevocationList {
+	switch cfg.Auth.Revocation.Backend {
+	case "none":
+		return auth.NoopRevocationList{}
+	case "memory":
+		mem := auth.NewMemoryRevocationList()
+		go mem.RunJanitor(ctx, cfg.Auth.Revocation.JanitorInterval, logger)
+		return mem
+	case "", "sqlite":
+		path := cfg.Auth.Revocation.Path
+		if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+			logger.Warn("auth: cannot create revocation dir, falling back to memory",
+				"path", path, "err", err)
+			mem := auth.NewMemoryRevocationList()
+			go mem.RunJanitor(ctx, cfg.Auth.Revocation.JanitorInterval, logger)
+			return mem
+		}
+		sq, err := auth.NewSQLiteRevocationList(path, logger)
+		if err != nil {
+			logger.Warn("auth: sqlite revocation open failed, falling back to memory",
+				"path", path, "err", err)
+			mem := auth.NewMemoryRevocationList()
+			go mem.RunJanitor(ctx, cfg.Auth.Revocation.JanitorInterval, logger)
+			return mem
+		}
+		go sq.RunJanitor(ctx, cfg.Auth.Revocation.JanitorInterval)
+		return sq
+	default:
+		logger.Warn("auth: unknown revocation backend, disabling",
+			"backend", cfg.Auth.Revocation.Backend)
+		return auth.NoopRevocationList{}
 	}
 }
 
