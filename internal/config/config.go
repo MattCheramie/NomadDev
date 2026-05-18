@@ -80,6 +80,21 @@ type SPAConfig struct {
 	Dir     string // NOMADDEV_SPA_DIR, default "" → use embed
 }
 
+// GitHubConfig governs the GitHub MCP backend. When Token is empty the
+// integration is skipped entirely — the orchestrator boots without any
+// github_* tools and the dispatcher routes them to a not-configured error.
+// Operators opt in by setting NOMADDEV_GITHUB_TOKEN; everything else has a
+// safe default.
+type GitHubConfig struct {
+	Token        string        // NOMADDEV_GITHUB_TOKEN (fine-grained PAT recommended)
+	BinaryPath   string        // NOMADDEV_GITHUB_MCP_BIN, default "" → look up "github-mcp-server" on PATH
+	Toolsets     []string      // NOMADDEV_GITHUB_TOOLSETS (default ["all"])
+	ReadOnly     bool          // NOMADDEV_GITHUB_READ_ONLY (default false; approval gate is primary)
+	Host         string        // NOMADDEV_GITHUB_HOST (default ""; set for GitHub Enterprise Server)
+	LockdownMode bool          // NOMADDEV_GITHUB_LOCKDOWN (default false)
+	StartTimeout time.Duration // NOMADDEV_GITHUB_START_TIMEOUT (how long to wait for initialize handshake)
+}
+
 // Config is the full set of knobs the orchestrator reads at startup.
 type Config struct {
 	ListenAddr   string
@@ -91,6 +106,7 @@ type Config struct {
 	History      HistoryConfig
 	Approval     ApprovalConfig
 	SPA          SPAConfig
+	GitHub       GitHubConfig
 	ReadTimeout  time.Duration
 	WriteTimeout time.Duration
 	PingInterval time.Duration
@@ -158,6 +174,15 @@ func Load() (*Config, error) {
 		SPA: SPAConfig{
 			Enabled: envBool("NOMADDEV_SPA_ENABLED", true),
 			Dir:     os.Getenv("NOMADDEV_SPA_DIR"),
+		},
+		GitHub: GitHubConfig{
+			Token:        os.Getenv("NOMADDEV_GITHUB_TOKEN"),
+			BinaryPath:   os.Getenv("NOMADDEV_GITHUB_MCP_BIN"),
+			Toolsets:     envCSV("NOMADDEV_GITHUB_TOOLSETS", []string{"all"}),
+			ReadOnly:     envBool("NOMADDEV_GITHUB_READ_ONLY", false),
+			Host:         os.Getenv("NOMADDEV_GITHUB_HOST"),
+			LockdownMode: envBool("NOMADDEV_GITHUB_LOCKDOWN", false),
+			StartTimeout: envDuration("NOMADDEV_GITHUB_START_TIMEOUT", 15*time.Second),
 		},
 		ReadTimeout:  envDuration("NOMADDEV_READ_TIMEOUT", 60*time.Second),
 		WriteTimeout: envDuration("NOMADDEV_WRITE_TIMEOUT", 10*time.Second),

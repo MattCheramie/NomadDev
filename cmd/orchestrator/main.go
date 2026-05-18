@@ -11,12 +11,14 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 
 	"github.com/mattcheramie/nomaddev/internal/auth"
 	"github.com/mattcheramie/nomaddev/internal/config"
 	"github.com/mattcheramie/nomaddev/internal/fsops"
+	"github.com/mattcheramie/nomaddev/internal/githubmcp"
 	"github.com/mattcheramie/nomaddev/internal/history"
 	"github.com/mattcheramie/nomaddev/internal/hub"
 	nlog "github.com/mattcheramie/nomaddev/internal/log"
@@ -96,13 +98,26 @@ func run(listenOverride string) error {
 	}
 	logger.Info("orchestrator: sandbox runner", "runtime", cfg.Sandbox.Runtime, "configured", runner != nil)
 
-	mw, err := buildMiddleware(rootCtx, cfg, runner)
+	gh, ghTools, ghDestructive, ghClose, err := buildGitHub(rootCtx, cfg, logger)
+	if err != nil {
+		return fmt.Errorf("github: %w", err)
+	}
+	if ghClose != nil {
+		defer func() {
+			if err := ghClose(); err != nil {
+				logger.Warn("orchestrator: github backend close", "err", err)
+			}
+		}()
+	}
+
+	mw, err := buildMiddleware(rootCtx, cfg, runner, gh, ghTools, ghDestructive)
 	if err != nil {
 		return fmt.Errorf("middleware: %w", err)
 	}
 	logger.Info("orchestrator: middleware",
 		"runtime", cfg.Middleware.Runtime, "history_backend", cfg.History.Backend,
 		"configured", mw != nil,
+		"github_tools", len(ghTools),
 	)
 
 	srv := wsserver.New(cfg, logger, h, sessions, verifier, runner, mw)
@@ -171,11 +186,55 @@ func buildSessionStore(ctx context.Context, cfg *config.Config, logger *slog.Log
 	}
 }
 
+// buildGitHub constructs the GitHub MCP backend. Returns (nil, nil, nil, nil,
+// nil) when no token is configured — the orchestrator boots without GitHub
+// tools. The returned close func, when non-nil, must be deferred so the
+// subprocess shuts down cleanly on SIGTERM.
+//
+// The build-tagless stub returns ErrNotBuilt; we treat that as a hard error
+// only when a token IS configured (operator clearly wants the feature but
+// shipped the wrong binary). Token-unset + ErrNotBuilt is a silent no-op so
+// default builds keep working.
+func buildGitHub(ctx context.Context, cfg *config.Config, logger *slog.Logger) (
+	middleware.GitHubCaller, []middleware.ToolSpec, func(string) bool, func() error, error,
+) {
+	if cfg.GitHub.Token == "" {
+		return nil, nil, nil, nil, nil
+	}
+	client, err := githubmcp.New(ctx, githubmcp.Options{
+		Token:        githubmcp.EnvTokenSource{Var: "NOMADDEV_GITHUB_TOKEN"},
+		BinaryPath:   cfg.GitHub.BinaryPath,
+		Toolsets:     cfg.GitHub.Toolsets,
+		ReadOnly:     cfg.GitHub.ReadOnly,
+		Host:         cfg.GitHub.Host,
+		LockdownMode: cfg.GitHub.LockdownMode,
+		StartTimeout: cfg.GitHub.StartTimeout,
+	})
+	if err != nil {
+		return nil, nil, nil, nil, err
+	}
+	tools, err := client.ListTools(ctx)
+	if err != nil {
+		_ = client.Close()
+		return nil, nil, nil, nil, err
+	}
+	logger.Info("orchestrator: github backend ready",
+		"tools", len(tools),
+		"toolsets", strings.Join(cfg.GitHub.Toolsets, ","),
+		"read_only", cfg.GitHub.ReadOnly,
+		"host", cfg.GitHub.Host,
+	)
+	return client, tools, client.IsDestructive, client.Close, nil
+}
+
 // buildMiddleware constructs the Phase 4 NLP middleware service from config.
 // Returns (nil, nil) when Runtime == "none". History and fsops are wired in
 // regardless of translator runtime so the smoke path (mock translator + auto
 // approval) is exercisable end-to-end.
-func buildMiddleware(ctx context.Context, cfg *config.Config, runner sandbox.Runner) (*middleware.Service, error) {
+func buildMiddleware(
+	ctx context.Context, cfg *config.Config, runner sandbox.Runner,
+	gh middleware.GitHubCaller, ghTools []middleware.ToolSpec, ghDestructive func(string) bool,
+) (*middleware.Service, error) {
 	if cfg.Middleware.Runtime == "" || cfg.Middleware.Runtime == middleware.RuntimeNone {
 		return nil, nil
 	}
@@ -231,12 +290,15 @@ func buildMiddleware(ctx context.Context, cfg *config.Config, runner sandbox.Run
 			MemoryBytes: cfg.Sandbox.Memory,
 			PidsLimit:   cfg.Sandbox.PidsLimit,
 		},
-		GateDirectCommands:    cfg.Approval.GateDirectCommands,
-		Sandbox:               runner,
-		FSOps:                 fs,
-		History:               store,
-		ApprovalRequiredTools: cfg.Approval.RequiredTools,
-		ApprovalAutoGrant:     cfg.Approval.AutoGrant,
-		ApprovalTimeout:       cfg.Approval.Timeout,
+		GateDirectCommands:      cfg.Approval.GateDirectCommands,
+		Sandbox:                 runner,
+		FSOps:                   fs,
+		History:                 store,
+		ApprovalRequiredTools:   cfg.Approval.RequiredTools,
+		ApprovalAutoGrant:       cfg.Approval.AutoGrant,
+		ApprovalTimeout:         cfg.Approval.Timeout,
+		GitHub:                  gh,
+		GitHubTools:             ghTools,
+		IsDestructiveGitHubTool: ghDestructive,
 	})
 }

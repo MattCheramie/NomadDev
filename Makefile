@@ -9,7 +9,7 @@ SPA_DIST := internal/wsserver/dist
 # otherwise discover and try to test.
 GO_PACKAGES = $(shell go list ./... | grep -v '/mobile/node_modules/')
 
-.PHONY: build build-docker build-gemini build-all run test test-race test-docker test-gemini \
+.PHONY: build build-docker build-gemini build-github build-all run test test-race test-docker test-gemini test-github \
         lint fmt vet tidy clean ci \
         build-mobile build-full dev-mobile clean-mobile test-mobile \
         docker-image docker-up docker-down quickstart-docker quickstart-systemd \
@@ -30,8 +30,13 @@ build-gemini:
 	go build -o $(BIN_DIR)/wsclient ./cmd/wsclient
 	go build -o $(BIN_DIR)/sandbox ./cmd/sandbox
 
+build-github:
+	go build -tags github -o $(BIN_DIR)/orchestrator ./cmd/orchestrator
+	go build -o $(BIN_DIR)/wsclient ./cmd/wsclient
+	go build -o $(BIN_DIR)/sandbox ./cmd/sandbox
+
 build-all:
-	go build -tags "docker gemini" -o $(BIN_DIR)/orchestrator ./cmd/orchestrator
+	go build -tags "docker gemini github" -o $(BIN_DIR)/orchestrator ./cmd/orchestrator
 	go build -tags docker -o $(BIN_DIR)/sandbox ./cmd/sandbox
 	go build -o $(BIN_DIR)/wsclient ./cmd/wsclient
 
@@ -57,6 +62,9 @@ test-docker:
 
 test-gemini:
 	go test -tags gemini -race -count=1 ./internal/middleware/...
+
+test-github:
+	go test -tags github -race -count=1 ./internal/githubmcp/...
 
 run: build
 	./$(BIN_DIR)/orchestrator

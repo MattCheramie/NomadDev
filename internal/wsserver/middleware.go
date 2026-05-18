@@ -102,7 +102,7 @@ func (s *Server) runIntent(
 		UserText:     p.Text,
 		History:      win,
 		SystemPrompt: s.mw.Config.SystemPrompt,
-		Tools:        middleware.DefaultTools(),
+		Tools:        s.mw.AvailableTools(),
 	}
 	eventsCh, resume, err := s.mw.Translator.Stream(ctx, in)
 	if err != nil {

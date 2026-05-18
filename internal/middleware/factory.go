@@ -46,6 +46,15 @@ type FactoryConfig struct {
 	ApprovalAutoGrant     bool
 	ApprovalTimeout       time.Duration
 
+	// GitHub MCP backend (optional). When GitHub is non-nil, dispatcher
+	// routes any github_* tool call here; GitHubTools is appended to the
+	// per-turn tool catalogue Gemini sees; and every tool name for which
+	// IsDestructiveGitHubTool returns true is auto-added to the approval
+	// allowlist so the existing gate intercepts mutations.
+	GitHub                  GitHubCaller
+	GitHubTools             []ToolSpec
+	IsDestructiveGitHubTool func(name string) bool
+
 	Logger *slog.Logger
 }
 
@@ -75,12 +84,28 @@ func NewService(ctx context.Context, c FactoryConfig) (*Service, error) {
 
 	approver := NewPolicyApprover(c.ApprovalRequiredTools, c.ApprovalAutoGrant, c.ApprovalTimeout)
 	dispatcher := NewCompositeDispatcher(c.Sandbox, c.FSOps)
+	tools := DefaultTools()
+
+	if c.GitHub != nil {
+		dispatcher.GitHub = c.GitHub
+		tools = append(tools, c.GitHubTools...)
+		if c.IsDestructiveGitHubTool != nil {
+			extra := make([]string, 0, len(c.GitHubTools))
+			for _, t := range c.GitHubTools {
+				if c.IsDestructiveGitHubTool(t.Name) {
+					extra = append(extra, t.Name)
+				}
+			}
+			approver.AddRequired(extra...)
+		}
+	}
 
 	return &Service{
 		Translator: tr,
 		Dispatcher: dispatcher,
 		Approver:   approver,
 		History:    c.History,
+		Tools:      tools,
 		Config: RuntimeConfig{
 			SystemPrompt:       c.SystemPrompt,
 			WindowTurns:        c.WindowTurns,

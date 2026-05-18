@@ -112,3 +112,46 @@ func TestApprover_LateSignalDropped(t *testing.T) {
 	// Signal arriving after cancel must not panic and must not leak state.
 	p.Signal("req-late", true)
 }
+
+func TestApprover_AddRequired_DynamicAddsGate(t *testing.T) {
+	p := NewPolicyApprover(nil, false, time.Second)
+
+	// Before AddRequired: github_* tool passes through.
+	if req, _ := p.RequiresApproval("github_create_pull_request", nil); req {
+		t.Fatal("github_create_pull_request gated before AddRequired")
+	}
+
+	p.AddRequired("github_create_pull_request", "github_create_issue")
+
+	// After AddRequired: gating engages, with the github-specific reason.
+	req, reason := p.RequiresApproval("github_create_pull_request", nil)
+	if !req {
+		t.Fatal("github_create_pull_request not gated after AddRequired")
+	}
+	if reason != "mutates GitHub state" {
+		t.Errorf("reason = %q, want %q", reason, "mutates GitHub state")
+	}
+
+	// Empty / repeat additions are no-ops.
+	p.AddRequired()
+	p.AddRequired("", "github_create_issue")
+	if req, _ := p.RequiresApproval("github_create_issue", nil); !req {
+		t.Fatal("github_create_issue not gated")
+	}
+}
+
+func TestApprover_AddRequired_Concurrent(t *testing.T) {
+	// Race-detector smoke: AddRequired + RequiresApproval from many goroutines.
+	p := NewPolicyApprover(nil, false, time.Second)
+	done := make(chan struct{})
+	go func() {
+		for i := 0; i < 100; i++ {
+			p.AddRequired("github_create_issue")
+		}
+		close(done)
+	}()
+	for i := 0; i < 100; i++ {
+		_, _ = p.RequiresApproval("github_create_issue", nil)
+	}
+	<-done
+}
