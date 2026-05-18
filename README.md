@@ -136,6 +136,14 @@ same way it drives shell scripts and files, with the same approval gate.*
 - [x] Opt-in live round-trip test (`make test-github-live`) that drives
   the real upstream binary; CI skips silently when the PAT env var and
   binary aren't present.
+- [x] Production deploy paths: GHCR Docker image bundles a pinned
+  `github-mcp-server` so `docker compose up` works with no extra
+  install; release-workflow binaries built with `-tags "gemini github"`
+  so `.tar.gz` downloads from the releases page have the integration
+  compiled in.
+- [x] Per-call timeout honored: `DispatchOptions.Timeout` caps the
+  upstream MCP round-trip so a hung GitHub request surfaces as
+  `SandboxErrTimeout` instead of hanging the turn.
 
 See [`docs/github.md`](./docs/github.md) for setup, PAT scopes,
 troubleshooting, and the auth-extension seam.

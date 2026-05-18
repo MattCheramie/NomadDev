@@ -11,20 +11,38 @@ surfaces the same human-in-the-loop card the user sees for
 ## Build & install
 
 The integration is gated by the `github` build tag and requires the upstream
-`github-mcp-server` binary on PATH (or pointed at via env var):
+`github-mcp-server` binary on PATH (or pointed at via env var).
+
+### Docker / GHCR deploy (the released image)
+
+The `ghcr.io/mattcheramie/nomaddev:vX.Y.Z` image bundles both binaries —
+no extra install step. Set `NOMADDEV_GITHUB_TOKEN` in `.env`, restart the
+container, and the integration is live. The upstream version pinned in the
+image is set by the `GITHUB_MCP_VERSION` build arg in
+[`Dockerfile`](../Dockerfile); bumping it is a one-line PR.
+
+### Released binaries (systemd / bare-metal deploy)
+
+The release workflow builds with `-tags "gemini github"`, so the orchestrator
+binary on the releases page has full GitHub support compiled in. You still
+need to install `github-mcp-server` on the host PATH separately:
 
 ```sh
-# 1. Install the upstream binary.
-go install github.com/github/github-mcp-server/cmd/github-mcp-server@latest
-# (or download a release binary from
-#  https://github.com/github/github-mcp-server/releases)
+# On the deploy host, alongside the orchestrator binary:
+ARCH=$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/')
+curl -fsSL "https://github.com/github/github-mcp-server/releases/latest/download/github-mcp-server_Linux_${ARCH}.tar.gz" \
+  | sudo tar -xz -C /usr/local/bin github-mcp-server
+sudo chmod +x /usr/local/bin/github-mcp-server
+```
 
-# 2. Build the orchestrator with the github tag.
-make build-github
-#   → bin/orchestrator with the subprocess-based MCP client compiled in.
+(or `go install github.com/github/github-mcp-server/cmd/github-mcp-server@latest`
+if Go is already present on the host).
 
-# Combine tags as needed:
-make build-all   # docker + gemini + github
+### Building from source
+
+```sh
+make build-github          # bin/orchestrator with the integration compiled in
+make build-all             # docker + gemini + github all enabled
 ```
 
 A binary built **without** `-tags github` is a no-op for GitHub features: the
@@ -61,6 +79,7 @@ single switch that turns the integration on.
 | `NOMADDEV_GITHUB_HOST` | (empty) | API base URL. Set for GitHub Enterprise Server. |
 | `NOMADDEV_GITHUB_LOCKDOWN` | `false` | Upstream's public-repo content guard. |
 | `NOMADDEV_GITHUB_START_TIMEOUT` | `15s` | Cap on the MCP initialize + tools/list handshake. |
+| `NOMADDEV_SANDBOX_DEFAULT_TIMEOUT` | `30s` | Per-call cap on the upstream MCP round-trip (shared with the sandbox `execute_script` timeout). Hung GitHub calls surface as `event.SandboxErrTimeout` and the assistant turn ends gracefully. |
 
 The orchestrator logs the wired-up tool count at startup:
 

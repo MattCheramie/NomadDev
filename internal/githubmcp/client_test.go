@@ -4,8 +4,12 @@ package githubmcp
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
+
+	"github.com/mattcheramie/nomaddev/internal/middleware"
+	"github.com/mattcheramie/nomaddev/internal/sandbox"
 )
 
 // TestResolveBinary_NotFound surfaces the operator-facing error message when
@@ -108,4 +112,48 @@ func contains(haystack, needle string) bool {
 		}
 	}
 	return false
+}
+
+// TestContextErrorChunk_PreservesSentinel checks the bridge from context
+// errors back to the wsserver's classifyExit. The contract: the original
+// error must round-trip through ExecChunk.Err so errors.Is(deadlineExceeded)
+// downstream maps to event.SandboxErrTimeout instead of the generic Internal
+// bucket. Drives the Call() timeout fix.
+func TestContextErrorChunk_PreservesSentinel(t *testing.T) {
+	c := &Client{}
+
+	ch := c.contextErrorChunk(context.DeadlineExceeded)
+	chunk := <-ch
+	if chunk.Stream != sandbox.StreamExit {
+		t.Errorf("stream = %q, want exit", chunk.Stream)
+	}
+	if !errors.Is(chunk.Err, context.DeadlineExceeded) {
+		t.Errorf("Err lost DeadlineExceeded sentinel: %v", chunk.Err)
+	}
+
+	ch = c.contextErrorChunk(context.Canceled)
+	chunk = <-ch
+	if !errors.Is(chunk.Err, context.Canceled) {
+		t.Errorf("Err lost Canceled sentinel: %v", chunk.Err)
+	}
+}
+
+// TestCall_NilSession_ReturnsBadRequest covers the early-return path when
+// Call fires against a Client whose session never opened (e.g., New failed
+// partway and a buggy caller held the half-built struct). The dispatcher
+// surfaces this as a bad-request rather than a panic.
+func TestCall_NilSession_ReturnsBadRequest(t *testing.T) {
+	c := &Client{}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+
+	// Won't lock-block because session==nil short-circuits before touching
+	// callMu — but we still acquire it.
+	_, err := c.Call(ctx, middleware.ToolCall{Tool: "github_get_me"}, middleware.DispatchOptions{})
+	if err == nil {
+		t.Fatal("want error when session is nil")
+	}
+	if !errors.Is(err, sandbox.ErrBadRequest) {
+		t.Errorf("err = %v, want ErrBadRequest", err)
+	}
 }
