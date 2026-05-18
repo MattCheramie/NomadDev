@@ -67,7 +67,7 @@ func (c *CompositeDispatcher) Dispatch(ctx context.Context, call ToolCall, opts 
 			Limits:     opts.SandboxLimits,
 			SessionID:  opts.SessionID,
 		})
-	case ToolReadFile, ToolListDir, ToolWritePatch:
+	case ToolReadFile, ToolListDir, ToolWritePatch, ToolApplyCodePatch:
 		if c.FSOps == nil {
 			return nil, fmt.Errorf("%w: fsops engine not configured", sandbox.ErrBadRequest)
 		}

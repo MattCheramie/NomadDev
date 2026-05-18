@@ -3,6 +3,7 @@ package middleware
 import (
 	"time"
 
+	"github.com/mattcheramie/nomaddev/internal/fsops"
 	"github.com/mattcheramie/nomaddev/internal/history"
 	"github.com/mattcheramie/nomaddev/internal/sandbox"
 )
@@ -18,7 +19,12 @@ type Service struct {
 	// Tools is the per-turn catalogue exposed to the translator. Built by
 	// NewService as DefaultTools() plus any GitHub MCP tools the factory was
 	// handed; the wsserver layer assigns this directly into TurnInput.Tools.
-	Tools  []ToolSpec
+	Tools []ToolSpec
+	// FSOps is the same engine the CompositeDispatcher uses; exposed here so
+	// the wsserver approval pipeline can call PreviewApplyCodePatch before it
+	// builds the tool.approval.request envelope. Optional; nil when the
+	// orchestrator is wired without an fsops backend.
+	FSOps  *fsops.Engine
 	Config RuntimeConfig
 }
 

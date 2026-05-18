@@ -119,6 +119,15 @@ func (s *Server) gateDirectCommand(
 	if !required {
 		return true
 	}
+	// Same dry-run hook the middleware-driven path runs: render any tool-
+	// specific preview (apply_code_patch unified diff) before sending the
+	// approval card. A preview error means the args can't produce a valid
+	// edit (e.g. ambiguous search_string), so fast-fail without prompting.
+	preview, perr := s.buildApprovalPreview(ctx, p.Tool, p.Args)
+	if perr != nil {
+		s.emitResult(sess, client, reqID, time.Now(), -1, event.SandboxErrBadRequest, perr.Error())
+		return false
+	}
 	approvalID := event.NewID()
 	s.mw.Approver.Register(approvalID)
 	defer s.mw.Approver.Cancel(approvalID)
@@ -132,6 +141,7 @@ func (s *Server) gateDirectCommand(
 		Reason:           reason,
 		PendingCommandID: reqID,
 		TimeoutMs:        timeoutMs,
+		Preview:          preview,
 	})
 	if err == nil {
 		// Re-stamp the envelope id so the client can correlate the grant/deny
@@ -148,6 +158,27 @@ func (s *Server) gateDirectCommand(
 	code, msg := classifyApprovalErr(awaitErr)
 	s.emitResult(sess, client, reqID, time.Now(), -1, code, msg)
 	return false
+}
+
+// buildApprovalPreview returns the tool-specific dry-run payload to attach
+// to a tool.approval.request envelope, or nil for tools that don't carry one.
+// Errors here are validation errors (e.g. apply_code_patch's search anchor
+// doesn't match exactly once) and are surfaced to the caller as fast-fail
+// command.result events — the operator is never asked to approve a call
+// that can't succeed.
+func (s *Server) buildApprovalPreview(ctx context.Context, tool string, args map[string]any) (map[string]any, error) {
+	if tool != middleware.ToolApplyCodePatch || s.mw == nil || s.mw.FSOps == nil {
+		return nil, nil
+	}
+	pv, err := s.mw.FSOps.PreviewApplyCodePatch(ctx, args)
+	if err != nil {
+		return nil, err
+	}
+	return map[string]any{
+		"path":         pv.Path,
+		"line_number":  pv.LineNumber,
+		"unified_diff": pv.UnifiedDiff,
+	}, nil
 }
 
 // classifyApprovalErr maps the Approver sentinels to event-layer codes.

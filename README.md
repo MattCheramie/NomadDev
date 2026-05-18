@@ -66,7 +66,7 @@ and how to switch between the mock and Docker runners.
 ### Phase 4: NLP Function Middleware — done
 *Objective: Standardize natural language into actionable system commands.*
 - [x] Integrate the Gemini API via Google AI Studio.
-- [x] Define JSON schemas for core system tools (e.g., `execute_script`, `read_file`, `write_patch`).
+- [x] Define JSON schemas for core system tools (e.g., `execute_script`, `read_file`, `write_patch`, `apply_code_patch`).
 - [x] Build the loop that receives user intent, queries the LLM, and captures the resulting Function Call.
 - [x] Map the generated Function Calls directly to the Go Sandbox Runner from Phase 3.
 - [x] Format execution results back into JSON for the LLM to interpret.

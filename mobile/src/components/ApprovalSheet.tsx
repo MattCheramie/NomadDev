@@ -53,6 +53,16 @@ export function ApprovalSheet({
               <Text style={styles.value}>{request.reason}</Text>
             </>
           ) : null}
+          {request.preview ? (
+            <>
+              <Text style={styles.label}>
+                Diff preview <Text style={styles.previewLoc}>{request.preview.path}:{request.preview.line_number}</Text>
+              </Text>
+              <View style={styles.code} accessibilityLabel="diff-preview">
+                <DiffLines text={request.preview.unified_diff} />
+              </View>
+            </>
+          ) : null}
           <Text style={styles.label}>Args</Text>
           <Text style={styles.code} selectable>{JSON.stringify(request.args, null, 2)}</Text>
           <Text style={styles.countdown}>Time left: {seconds}s</Text>
@@ -110,6 +120,37 @@ export function ApprovalSheet({
   );
 }
 
+// DiffLines renders a unified-diff string with per-line colorisation: `+`
+// added lines are green, `-` removed lines are red, header/hunk lines are
+// muted, and context lines pick up the surrounding code colour. Kept inline
+// in this file because it's only used by the ApprovalSheet preview block.
+function DiffLines({ text }: { text: string }) {
+  const lines = text.split('\n');
+  // Drop the trivial trailing empty entry left by split() when text ends with \n.
+  if (lines.length > 0 && lines[lines.length - 1] === '') {
+    lines.pop();
+  }
+  return (
+    <>
+      {lines.map((line, i) => {
+        let color = '#e6edf3';
+        if (line.startsWith('+++') || line.startsWith('---') || line.startsWith('@@')) {
+          color = '#9aa4b2';
+        } else if (line.startsWith('+')) {
+          color = '#7ee787';
+        } else if (line.startsWith('-')) {
+          color = '#ff7b72';
+        }
+        return (
+          <Text key={i} selectable style={[styles.diffLine, { color }]}>
+            {line}
+          </Text>
+        );
+      })}
+    </>
+  );
+}
+
 const styles = StyleSheet.create({
   scrim: { flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'flex-end' },
   sheet: {
@@ -138,6 +179,12 @@ const styles = StyleSheet.create({
   code: {
     color: '#7ee787', fontFamily: 'Menlo, Consolas, monospace' as any, fontSize: 12,
     backgroundColor: '#161b22', padding: 8, borderRadius: 6,
+  },
+  previewLoc: {
+    color: '#7ee787', fontFamily: 'Menlo, Consolas, monospace' as any, fontSize: 12,
+  },
+  diffLine: {
+    fontFamily: 'Menlo, Consolas, monospace' as any, fontSize: 12,
   },
   countdown: { color: '#fbbf24', marginTop: 8, marginBottom: 8 },
   input: {

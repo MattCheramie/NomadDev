@@ -106,6 +106,7 @@ func NewService(ctx context.Context, c FactoryConfig) (*Service, error) {
 		Approver:   approver,
 		History:    c.History,
 		Tools:      tools,
+		FSOps:      c.FSOps,
 		Config: RuntimeConfig{
 			SystemPrompt:       c.SystemPrompt,
 			WindowTurns:        c.WindowTurns,
