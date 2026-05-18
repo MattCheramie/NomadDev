@@ -1,0 +1,31 @@
+[Unit]
+Description=NomadDev SQLite snapshot
+Documentation=https://github.com/MattCheramie/NomadDev/blob/main/docs/operations.md
+# Run after the orchestrator so the live DBs exist. The backup uses
+# the SQLite online-backup API so the orchestrator can keep serving.
+After=nomaddev-orchestrator.service
+
+[Service]
+Type=oneshot
+User=nomaddev
+Group=nomaddev
+ExecStart=/usr/local/bin/nomaddev-backup
+
+# Same hardening profile as the orchestrator unit. ReadWritePaths
+# covers /var/lib/nomaddev so the script can write to
+# /var/lib/nomaddev/backups (the default destination). Operators who
+# override NOMADDEV_BACKUP_DIR must add their override path here.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictNamespaces=true
+RestrictRealtime=true
+LockPersonality=true
+SystemCallArchitectures=native
+ReadWritePaths=/var/lib/nomaddev
+StandardOutput=journal
+StandardError=journal

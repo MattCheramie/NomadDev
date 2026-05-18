@@ -29,8 +29,13 @@ DATA_DIR="/var/lib/nomaddev"
 ENV_DIR="/etc/nomaddev"
 ENV_FILE="${ENV_DIR}/env"
 BIN_DST="/usr/local/bin/orchestrator"
+BACKUP_BIN_DST="/usr/local/bin/nomaddev-backup"
 UNIT_SRC="${REPO_ROOT}/infra/systemd/nomaddev-orchestrator.service"
 UNIT_DST="/etc/systemd/system/nomaddev-orchestrator.service"
+BACKUP_SVC_SRC="${REPO_ROOT}/infra/systemd/nomaddev-backup.service"
+BACKUP_SVC_DST="/etc/systemd/system/nomaddev-backup.service"
+BACKUP_TIMER_SRC="${REPO_ROOT}/infra/systemd/nomaddev-backup.timer"
+BACKUP_TIMER_DST="/etc/systemd/system/nomaddev-backup.timer"
 
 RELEASE="${1:-${NOMADDEV_RELEASE:-latest}}"
 REPO="${NOMADDEV_REPO:-MattCheramie/NomadDev}"
@@ -163,11 +168,35 @@ else
     note "NOMADDEV_GITHUB_TOKEN unset — skipping github-mcp-server install"
 fi
 
+# ---------------------------------------------------------------- backups
+# Daily SQLite snapshot via the systemd timer. sqlite3 is the only
+# runtime dep; install it if missing so the timer can fire without
+# operator intervention on the first day.
+if ! command -v sqlite3 >/dev/null 2>&1; then
+    if command -v apt-get >/dev/null 2>&1; then
+        note "installing sqlite3 for the backup timer"
+        DEBIAN_FRONTEND=noninteractive apt-get update -qq
+        DEBIAN_FRONTEND=noninteractive apt-get install -y -qq sqlite3
+    else
+        note "WARNING: sqlite3 not found and no apt-get available — install it manually"
+        note "         or the daily backup timer will fail silently"
+    fi
+fi
+note "installing ${BACKUP_BIN_DST}"
+install -m 0755 -o root -g root "${REPO_ROOT}/infra/scripts/nomaddev-backup.sh" "${BACKUP_BIN_DST}"
+
 # ---------------------------------------------------------------- systemd
 note "installing unit ${UNIT_DST}"
 install -m 0644 -o root -g root "${UNIT_SRC}" "${UNIT_DST}"
+note "installing backup service + timer"
+install -m 0644 -o root -g root "${BACKUP_SVC_SRC}" "${BACKUP_SVC_DST}"
+install -m 0644 -o root -g root "${BACKUP_TIMER_SRC}" "${BACKUP_TIMER_DST}"
 systemctl daemon-reload
 systemctl enable --now nomaddev-orchestrator.service
+# Timer enables the daily oneshot run; on first install we don't
+# `--now` it because the orchestrator may not have created its DBs yet.
+systemctl enable nomaddev-backup.timer
+systemctl start nomaddev-backup.timer
 
 # Give it a moment to bind.
 note "waiting for /healthz"
@@ -205,7 +234,10 @@ cat <<EOF
   systemctl status:  systemctl status nomaddev-orchestrator
   logs:              journalctl -u nomaddev-orchestrator -f
   Healthz:           http://127.0.0.1:8080/healthz
+  Readyz:            http://127.0.0.1:8080/readyz
   Metrics:           http://127.0.0.1:8080/metrics
+  Backups:           systemctl list-timers nomaddev-backup.timer
+                     (daily snapshots → ${DATA_DIR}/backups, 14d retention)
 EOF
 
 if [[ -n "${TAILNET_IP}" ]]; then

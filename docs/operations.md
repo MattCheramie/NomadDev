@@ -119,6 +119,59 @@ http://127.0.0.1:8080/readyz` (or call the binary with
 readiness-based restart semantics on top of liveness. The default
 unit relies on the process being alive (Type=simple).
 
+### Automated SQLite backups (Phase 8.10)
+
+The systemd quickstart installs a daily `nomaddev-backup.timer` that
+takes online snapshots of every SQLite store (`sessions.db`,
+`history.db`, the revocation DB) via `sqlite3 .backup`, verifies each
+snapshot with `PRAGMA integrity_check`, gzip-compresses it, and prunes
+archives older than the retention threshold.
+
+```sh
+# Inspect timer state + last run / next run.
+systemctl list-timers nomaddev-backup.timer
+systemctl status nomaddev-backup.service
+
+# Run an out-of-cycle backup right now.
+sudo systemctl start nomaddev-backup.service
+
+# Override default location / retention via /etc/nomaddev/env or a
+# drop-in for nomaddev-backup.service.
+# NOMADDEV_DATA_DIR=/var/lib/nomaddev              # source dir
+# NOMADDEV_BACKUP_DIR=/mnt/nomaddev/backups        # default ${DATA_DIR}/backups
+# NOMADDEV_BACKUP_RETENTION_DAYS=14                # default 14
+```
+
+Snapshots land as `sessions.<UTC-timestamp>.db.gz`,
+`history.<UTC-timestamp>.db.gz`, etc. The integrity check runs *before*
+gzip, so a corrupt source DB fails the timer rather than poisoning the
+archive directory.
+
+To restore a snapshot:
+
+```sh
+# Stop the orchestrator first — the restore is a file swap.
+sudo systemctl stop nomaddev-orchestrator
+cd /var/lib/nomaddev
+sudo -u nomaddev gzip -dk backups/sessions.20260518T030000Z.db.gz
+sudo mv sessions.db sessions.db.bad
+sudo -u nomaddev mv backups/sessions.20260518T030000Z.db sessions.db
+sudo systemctl start nomaddev-orchestrator
+# The orchestrator's startup integrity_check (Phase 8.7) will catch
+# any inconsistency in the restored file.
+```
+
+Docker / Compose users can run the same script from a host cron job
+against the bind-mounted `nomaddev-data` volume:
+
+```cron
+17 3 * * *  docker exec nomaddev-orchestrator nomaddev-backup || true
+```
+
+(Requires bundling the script + `sqlite3` into the orchestrator
+image, OR running the script from a small sidecar — both out of
+scope for this phase; the systemd path is the recommended deploy.)
+
 ## Release process
 
 Releases are tag-driven:
