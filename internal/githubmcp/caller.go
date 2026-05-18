@@ -69,4 +69,12 @@ type Options struct {
 	// inherits the parent context's deadline (or never times out if it
 	// has none).
 	StartTimeout time.Duration
+
+	// MaxArgBytes caps a single tool call's JSON-marshaled arguments before
+	// they're handed to the upstream MCP subprocess. Zero (the explicit
+	// "no limit" value) disables the check. A misbehaving LLM trying to
+	// stuff a 100 MB blob into a github_create_pull_request body is
+	// rejected with sandbox.ErrBadRequest before the subprocess sees it,
+	// so a runaway prompt doesn't OOM the stdio pipe.
+	MaxArgBytes int
 }

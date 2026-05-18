@@ -384,6 +384,23 @@ func (c *Client) Call(ctx context.Context, call middleware.ToolCall, opts middle
 		return nil, fmt.Errorf("%w: github session not open", sandbox.ErrBadRequest)
 	}
 
+	// Enforce the arg-size cap before any context / subprocess work — a
+	// misbehaving LLM that emits a 100 MB blob shouldn't OOM the stdio
+	// pipe. The check is symmetric with sandbox.ToolExecuteScript's 64 KiB
+	// script cap; the larger default here (256 KiB) reflects that GitHub
+	// payloads legitimately carry larger bodies (PR descriptions, commit
+	// messages with diffs).
+	if c.opts.MaxArgBytes > 0 {
+		if argBytes, mErr := json.Marshal(call.Args); mErr == nil {
+			if len(argBytes) > c.opts.MaxArgBytes {
+				return c.errorChunkBadRequest(fmt.Sprintf(
+					"arguments exceed cap (%d bytes > %d; raise NOMADDEV_GITHUB_MAX_ARG_BYTES to allow)",
+					len(argBytes), c.opts.MaxArgBytes,
+				)), nil
+			}
+		}
+	}
+
 	callCtx := ctx
 	if opts.Timeout > 0 {
 		var cancel context.CancelFunc
@@ -471,6 +488,20 @@ func (c *Client) errorChunk(msg string) <-chan sandbox.ExecChunk {
 func (c *Client) contextErrorChunk(err error) <-chan sandbox.ExecChunk {
 	ch := make(chan sandbox.ExecChunk, 2)
 	ch <- sandbox.ExecChunk{Stream: sandbox.StreamExit, Err: err}
+	close(ch)
+	return ch
+}
+
+// errorChunkBadRequest wraps a free-text error with sandbox.ErrBadRequest so
+// classifyExit routes it to event.SandboxErrBadRequest. Used for pre-flight
+// argument validation (arg-size cap, future arg-shape checks) where the
+// fault lies with the caller, not the subprocess.
+func (c *Client) errorChunkBadRequest(msg string) <-chan sandbox.ExecChunk {
+	ch := make(chan sandbox.ExecChunk, 2)
+	ch <- sandbox.ExecChunk{
+		Stream: sandbox.StreamExit,
+		Err:    fmt.Errorf("%w: githubmcp: %s", sandbox.ErrBadRequest, msg),
+	}
 	close(ch)
 	return ch
 }

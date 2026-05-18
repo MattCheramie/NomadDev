@@ -1,0 +1,68 @@
+name: GitHub MCP upstream drift
+
+# Catches breaking changes in the upstream github-mcp-server before they
+# ship in a release-day Dockerfile bump. The adapter assumes:
+#   - tools/list returns a non-empty Tool slice
+#   - each Tool.InputSchema marshals to JSON our ConvertSchema accepts
+#   - destructive tools have either DestructiveHint or a verb-prefixed name
+#
+# When the upstream changes any of these, this workflow fails and surfaces
+# the diagnostic in the run log so we can pin a known-good version (or
+# update the adapter) before the next release.
+
+on:
+  # Weekly: Mondays 06:00 UTC.
+  schedule:
+    - cron: '0 6 * * 1'
+  # On-demand: manually re-run from the Actions tab.
+  workflow_dispatch:
+  # On PRs that touch the adapter or its build args, run immediately so
+  # the change-author sees the drift signal in their PR checks.
+  pull_request:
+    paths:
+      - 'internal/githubmcp/**'
+      - 'Dockerfile'
+      - 'go.mod'
+      - 'go.sum'
+      - '.github/workflows/upstream-drift.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  drift:
+    name: tools/list smoke against latest github-mcp-server
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: install latest github-mcp-server
+        # Explicitly not version-pinned — the whole point of this job is
+        # to detect drift in the latest release. The Dockerfile and
+        # quickstart-systemd.sh stay on their pinned version.
+        #
+        # `go install ...@latest` sidesteps the upstream's GoReleaser
+        # asset-naming convention (which uses `x86_64` not `amd64`) and
+        # works on any arch the runner happens to be. The CI runner
+        # already has Go set up by setup-go above, so this is cheap.
+        run: |
+          go install github.com/github/github-mcp-server/cmd/github-mcp-server@latest
+          # GOBIN may not be on PATH yet — symlink to /usr/local/bin so
+          # resolveBinary() finds it without env tweaks.
+          GOBIN_PATH="$(go env GOPATH)/bin/github-mcp-server"
+          sudo ln -sf "${GOBIN_PATH}" /usr/local/bin/github-mcp-server
+          /usr/local/bin/github-mcp-server --version || true
+
+      - name: tools/list drift smoke
+        # No real GitHub API hit — the upstream's tools/list returns its
+        # static catalogue without ever calling the API. A placeholder
+        # token is enough.
+        env:
+          NOMADDEV_GITHUB_TOKEN: ghp_drift_smoke_placeholder
+        run: |
+          go test -tags github -race -count=1 -run TestUpstreamDrift \
+            -v ./internal/githubmcp/...

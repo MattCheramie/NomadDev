@@ -93,6 +93,7 @@ type GitHubConfig struct {
 	Host         string        // NOMADDEV_GITHUB_HOST (default ""; set for GitHub Enterprise Server)
 	LockdownMode bool          // NOMADDEV_GITHUB_LOCKDOWN (default false)
 	StartTimeout time.Duration // NOMADDEV_GITHUB_START_TIMEOUT (how long to wait for initialize handshake)
+	MaxArgBytes  int           // NOMADDEV_GITHUB_MAX_ARG_BYTES (cap on a single tool's JSON-marshaled args; 0 = unlimited, default 256 KiB)
 }
 
 // Config is the full set of knobs the orchestrator reads at startup.
@@ -183,6 +184,7 @@ func Load() (*Config, error) {
 			Host:         os.Getenv("NOMADDEV_GITHUB_HOST"),
 			LockdownMode: envBool("NOMADDEV_GITHUB_LOCKDOWN", false),
 			StartTimeout: envDuration("NOMADDEV_GITHUB_START_TIMEOUT", 15*time.Second),
+			MaxArgBytes:  envInt("NOMADDEV_GITHUB_MAX_ARG_BYTES", 256*1024),
 		},
 		ReadTimeout:  envDuration("NOMADDEV_READ_TIMEOUT", 60*time.Second),
 		WriteTimeout: envDuration("NOMADDEV_WRITE_TIMEOUT", 10*time.Second),

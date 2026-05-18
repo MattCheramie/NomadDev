@@ -101,9 +101,11 @@ func (s *Server) gateDirectCommand(
 	defer s.mw.Approver.Cancel(approvalID)
 
 	timeoutMs := int(s.cfg.Approval.Timeout / time.Millisecond)
+	// Args are redacted on the wire (sensitive keys masked, long strings
+	// truncated). The dispatch path still sees the original p.Args.
 	reqEnv, err := event.NewReply(event.EventToolApprovalRequest, reqID, event.ToolApprovalRequestPayload{
 		Tool:             p.Tool,
-		Args:             p.Args,
+		Args:             event.RedactArgs(p.Args),
 		Reason:           reason,
 		PendingCommandID: reqID,
 		TimeoutMs:        timeoutMs,

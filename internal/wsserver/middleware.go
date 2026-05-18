@@ -237,9 +237,12 @@ func (s *Server) runToolCall(
 	// 1. Mint the orchestrator-side command.request envelope. We send it
 	//    BEFORE the approval round-trip so the wire has a durable record of
 	//    "we considered running this" even when the user denies.
+	//    Args are redacted on the wire (sensitive keys masked, long
+	//    strings truncated for display); call.Args still carries the
+	//    originals into the dispatch path below.
 	cmdEnv, _ := event.NewReply(event.EventCommandRequest, intentID, event.CommandRequestPayload{
 		Tool: call.Tool,
-		Args: call.Args,
+		Args: event.RedactArgs(call.Args),
 	})
 	s.bufferAndSend(sess, client, cmdEnv)
 
@@ -260,9 +263,13 @@ func (s *Server) runToolCall(
 		defer s.mw.Approver.Cancel(approvalID)
 
 		timeoutMs := int(s.cfg.Approval.Timeout / time.Millisecond)
+		// Approval card sees redacted args (sensitive keys masked, long
+		// strings truncated) — the human approves intent + tool name, not
+		// the exact byte content of a 50 KB PR body. The originals stay
+		// in call.Args for the post-grant dispatch.
 		reqEnv, _ := event.NewReply(event.EventToolApprovalRequest, cmdEnv.ID, event.ToolApprovalRequestPayload{
 			Tool:             call.Tool,
-			Args:             call.Args,
+			Args:             event.RedactArgs(call.Args),
 			Reason:           reason,
 			PendingCommandID: cmdEnv.ID,
 			TimeoutMs:        timeoutMs,
