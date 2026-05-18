@@ -15,31 +15,77 @@ function makeRequest(overrides: Partial<ApprovalRequest> = {}): ApprovalRequest 
 }
 
 test('renders the tool name, args, and reason', () => {
-  const { getByLabelText, getByText } = render(
+  const { getByLabelText, getByText, getAllByText } = render(
     <ApprovalSheet request={makeRequest()} onApprove={() => undefined} onDeny={() => undefined} />,
   );
   // Sheet is mounted.
   getByLabelText('approval-sheet');
-  // Tool name is visible.
-  getByText('execute_script');
+  // Tool name appears at least twice: once in the value row, once in
+  // the typed-confirmation hint.
+  expect(getAllByText('execute_script').length).toBeGreaterThanOrEqual(2);
   // Reason is visible.
   getByText('middleware-flagged');
   // Pretty-printed args contain the shell entry.
   expect(getByLabelText('approval-sheet')).toBeTruthy();
 });
 
-test('Approve invokes onApprove without a deny reason', () => {
+test('Approve is blocked until the tool name is typed (default mode)', () => {
   const onApprove = jest.fn();
   const onDeny = jest.fn();
   const { getByLabelText } = render(
     <ApprovalSheet request={makeRequest()} onApprove={onApprove} onDeny={onDeny} />,
   );
+  // Pressing the button before typing should be a no-op (button disabled).
+  fireEvent.press(getByLabelText('approve-button'));
+  expect(onApprove).not.toHaveBeenCalled();
+
+  // Once the tool name is typed (case-insensitive), the press lands.
+  fireEvent.changeText(getByLabelText('approve-confirmation'), 'EXECUTE_SCRIPT');
   fireEvent.press(getByLabelText('approve-button'));
   expect(onApprove).toHaveBeenCalledTimes(1);
   expect(onDeny).not.toHaveBeenCalled();
 });
 
-test('Deny forwards the typed reason', () => {
+test('Approve fires immediately when typed-confirmation is disabled', () => {
+  const onApprove = jest.fn();
+  const onDeny = jest.fn();
+  const { getByLabelText, queryByLabelText } = render(
+    <ApprovalSheet
+      request={makeRequest()}
+      onApprove={onApprove}
+      onDeny={onDeny}
+      requireTypedConfirmation={false}
+    />,
+  );
+  // The confirmation field should not be present.
+  expect(queryByLabelText('approve-confirmation')).toBeNull();
+  fireEvent.press(getByLabelText('approve-button'));
+  expect(onApprove).toHaveBeenCalledTimes(1);
+  expect(onDeny).not.toHaveBeenCalled();
+});
+
+test('Approve disabled state reports as accessibility state', () => {
+  const { getByLabelText } = render(
+    <ApprovalSheet request={makeRequest()} onApprove={() => undefined} onDeny={() => undefined} />,
+  );
+  const btn = getByLabelText('approve-button');
+  expect(btn.props.accessibilityState?.disabled).toBe(true);
+
+  fireEvent.changeText(getByLabelText('approve-confirmation'), 'execute_script');
+  expect(btn.props.accessibilityState?.disabled).toBe(false);
+});
+
+test('Wrong typed text leaves Approve disabled', () => {
+  const onApprove = jest.fn();
+  const { getByLabelText } = render(
+    <ApprovalSheet request={makeRequest()} onApprove={onApprove} onDeny={() => undefined} />,
+  );
+  fireEvent.changeText(getByLabelText('approve-confirmation'), 'execute_scriptt'); // typo
+  fireEvent.press(getByLabelText('approve-button'));
+  expect(onApprove).not.toHaveBeenCalled();
+});
+
+test('Deny forwards the typed reason without requiring confirmation', () => {
   const onApprove = jest.fn();
   const onDeny = jest.fn();
   const { getByLabelText } = render(
@@ -52,7 +98,7 @@ test('Deny forwards the typed reason', () => {
 });
 
 test('shows the GITHUB badge for github_* tools', () => {
-  const { getByLabelText, getByText } = render(
+  const { getByLabelText, getByText, getAllByText } = render(
     <ApprovalSheet
       request={makeRequest({ tool: 'github_create_pull_request' })}
       onApprove={() => undefined}
@@ -61,7 +107,8 @@ test('shows the GITHUB badge for github_* tools', () => {
   );
   getByLabelText('github-badge');
   getByText('GITHUB');
-  getByText('github_create_pull_request');
+  // Tool name appears in the value row and in the confirmation hint.
+  expect(getAllByText('github_create_pull_request').length).toBeGreaterThanOrEqual(2);
 });
 
 test('does not show the GITHUB badge for non-github tools', () => {
