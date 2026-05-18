@@ -110,14 +110,13 @@ instead (mode 0o700, created on first use). The SID is sanitized
 to a path-safe identifier (alphanumerics, `-_.`, capped at 64
 bytes) before joining; `..` traversal is collapsed to `__`.
 
-**Known limitation.** The `fsops` engine (read_file / write_patch
-/ list_dir) still operates on the unscoped root. Per-fsops
-isolation is a separate plumb-through that's deferred to a later
-phase because the engine is a Service-level singleton today. For
-single-operator deploys this is a non-issue; multi-tenant
-operators should treat the per-session sandbox isolation as
-defense-in-depth on top of per-user PAT scoping (see
-`docs/github.md`) rather than a complete isolation boundary.
+**Phase 12.2:** `fsops` (read_file / write_patch / list_dir) now
+honors the same `NOMADDEV_SANDBOX_PER_SESSION_WORKSPACE` flag —
+sandbox and fsops isolate in lockstep. The middleware dispatcher
+attaches the calling session id via `fsops.WithSessionID(ctx, sid)`
+before invoking `Engine.Run`; the engine routes paths through
+`<root>/<sanitized-sid>/` (created at 0o700 on first use). The
+known limitation noted in Phase 10.2 is closed.
 
 ### User-namespace remapping (Phase 10 doc)
 
