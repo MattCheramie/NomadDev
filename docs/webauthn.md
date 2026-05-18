@@ -46,6 +46,18 @@ origin's hostname.
 | `POST /auth/webauthn/login/begin`     | none | Body: `{"sub":"<operator>"}` — returns options for `navigator.credentials.get` |
 | `POST /auth/webauthn/login/finish`    | `X-WebAuthn-Session-Token`   | Verifies the assertion, returns a fresh JWT pair |
 
+## Built-in SPA flow
+
+The shipped Control Hub UI (`/settings`) drives the ceremonies via
+`mobile/src/wire/webauthn.ts`. When the page is served from a
+secure context, the Settings screen surfaces a **Register security
+key** button; the Onboard screen offers **Sign in with security
+key** as an alternative to pasting a JWT. The helpers cover the
+base64url ↔ ArrayBuffer dance the W3C API requires, so application
+code only calls `registerSecurityKey(...)` / `signInWithSecurityKey(...)`.
+
+If you're building a different client, the lower-level flow is:
+
 ## Registering a security key
 
 The operator must already be signed in (JWT minted via `gen-jwt`
