@@ -1,0 +1,137 @@
+# Prometheus alerting rules for NomadDev.
+#
+# Drop into your Prometheus rule_files glob, or merge into a larger
+# rules file. Every rule binds to a metric the orchestrator already
+# exports (see internal/metrics/metrics.go) so there's no extra
+# instrumentation to ship.
+#
+# Severity levels follow the StepSecurity convention:
+#   - page: wake someone up (data loss, hard outage)
+#   - ticket: file a ticket within the SLA (degradation, capacity)
+#   - info: dashboard-only context (no human action expected)
+groups:
+  - name: nomaddev-availability
+    interval: 30s
+    rules:
+      - alert: NomadDevDown
+        # Prometheus's `up` metric flips to 0 when a scrape fails.
+        # 5m gives the orchestrator the systemd-unit restart window
+        # to recover from a SIGTERM-then-bounce.
+        expr: up{job="nomaddev"} == 0
+        for: 5m
+        labels:
+          severity: page
+        annotations:
+          summary: "NomadDev orchestrator is unreachable"
+          description: |
+            Scrape target {{ $labels.instance }} has been down for >5m.
+            Check `systemctl status nomaddev-orchestrator` and
+            `journalctl -u nomaddev-orchestrator -n 200` on the host.
+
+      - alert: NomadDevReadyzDegraded
+        # /readyz reports per-dependency state via the
+        # nomaddev_ws_active_connections gauge is the closest
+        # always-present canary; in practice prom probes /readyz
+        # directly and surfaces probe_success.
+        expr: probe_success{job="nomaddev-readyz"} == 0
+        for: 2m
+        labels:
+          severity: ticket
+        annotations:
+          summary: "NomadDev /readyz is reporting degraded"
+          description: |
+            One or more configured SQLite stores is failing its
+            PingContext probe. Inspect orchestrator stderr / journal
+            and the contents of /var/lib/nomaddev/*.db.
+
+  - name: nomaddev-capacity
+    interval: 30s
+    rules:
+      - alert: NomadDevSandboxSaturated
+        # Saturation: every sandbox slot in use for >2m. Increases
+        # latency for every new command.request because the
+        # MaxConcurrent semaphore is non-blocking — overflow returns
+        # SandboxErrUnavailable to the caller.
+        expr: |
+          rate(nomaddev_sandbox_runs_total{outcome="unavailable"}[5m]) > 0.1
+        for: 2m
+        labels:
+          severity: ticket
+        annotations:
+          summary: "Sandbox runner is rejecting > 0.1/s of new runs"
+          description: |
+            The sandbox MaxConcurrent semaphore is full and
+            returning SandboxErrUnavailable. Either bump
+            NOMADDEV_SANDBOX_MAX_CONCURRENT or scale up the host
+            (see docs/sandbox.md sizing table).
+
+      - alert: NomadDevMiddlewareTurnLatencyHigh
+        # p95 turn latency > 30s for 5m. Usually means Gemini is
+        # slow or the tool catalogue has a hot tool with a long
+        # round trip.
+        expr: |
+          histogram_quantile(0.95, rate(nomaddev_middleware_turn_seconds_bucket[5m])) > 30
+        for: 5m
+        labels:
+          severity: info
+        annotations:
+          summary: "Middleware turn p95 > 30s"
+          description: |
+            Either the Gemini API is degraded or a tool in the
+            catalogue is taking > 30s p95. Cross-check
+            nomaddev_github_call_seconds (if GitHub is enabled)
+            and the Gemini status page.
+
+  - name: nomaddev-security
+    interval: 30s
+    rules:
+      - alert: NomadDevAuthFailureSpike
+        # > 1/s rejected /ws connects for 5m. Could be a misconfigured
+        # client; could be a credential-stuffing probe. Either way an
+        # operator wants to know.
+        expr: |
+          rate(nomaddev_ws_connects_total{result="unauthorized"}[5m]) > 1
+        for: 5m
+        labels:
+          severity: ticket
+        annotations:
+          summary: "Sustained /ws auth-failure rate > 1/s"
+          description: |
+            Recent JWTs are being rejected at /ws faster than
+            normal. Audit-log lines with kind=ws.auth_failed
+            carry the remote addr — start there.
+
+      - alert: NomadDevRateLimitBlocking
+        # The per-conn rate limiter (Phase 8.3) is rejecting frames.
+        # Low rate is fine (operator hit a burst); sustained means
+        # the threshold is too tight OR a client is buggy / hostile.
+        expr: |
+          rate(nomaddev_ws_inbound_rejected_total{reason="rate_limited"}[5m]) > 2
+        for: 10m
+        labels:
+          severity: info
+        annotations:
+          summary: "Per-conn rate limit rejecting > 2 frames/s sustained"
+          description: |
+            Either NOMADDEV_WS_RATE_LIMIT is set too tight for the
+            mobile client's normal cadence, or a client (or
+            attacker) is spamming /ws.
+
+      - alert: NomadDevGitHubRateLimitGaveUp
+        # The GitHub rate-limit retry (Phase 8.9) exhausted its
+        # budget — the turn surfaced the upstream's message to the
+        # model rather than recovering. Operator-visible: the model
+        # may now reply with a confusing "I couldn't reach GitHub".
+        expr: |
+          increase(nomaddev_github_rate_limit_retries_total{outcome="gave_up"}[15m]) > 0
+        for: 1m
+        labels:
+          severity: ticket
+        annotations:
+          summary: "GitHub rate-limit retry budget exhausted"
+          description: |
+            One or more github_* tool calls in the last 15min ran
+            out of retries against a GitHub primary/secondary rate
+            limit. Either bump NOMADDEV_GITHUB_RATE_LIMIT_RETRIES,
+            scope the PAT down, or wait for the upstream window
+            to reset.

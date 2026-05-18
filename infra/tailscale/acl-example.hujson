@@ -1,0 +1,84 @@
+// Example Tailscale ACL for a NomadDev deployment.
+//
+// Drop this into the Tailscale admin console
+// (https://login.tailscale.com/admin/acls) for a tailnet that hosts
+// the orchestrator. Adjust group memberships and tag scoping to your
+// org; the comments call out every place a real deploy needs to
+// substitute its own identities.
+//
+// Threat model captured by this ACL:
+//   - Only members of `group:nomaddev-users` can reach the
+//     orchestrator's :8080 listener. Everyone else on the tailnet
+//     (or hostile devices the operator hasn't yet revoked) sees
+//     "host unreachable" at the network layer, not a 401 at /ws.
+//   - The orchestrator host itself is tagged `tag:nomaddev-server`
+//     so revoking its key doesn't drop the operator's other
+//     devices.
+//   - SSH access to the orchestrator host is locked to a separate
+//     admin group, so a compromised user device can't pivot to
+//     shell on the host.
+{
+  // Group membership — replace with real Tailscale account emails.
+  "groups": {
+    "group:nomaddev-admins": ["admin@example.com"],
+    "group:nomaddev-users":  ["admin@example.com", "matt@example.com"]
+  },
+
+  // Host roles. The orchestrator VM gets `tag:nomaddev-server` at
+  // provision time via `tailscale up --advertise-tags=tag:nomaddev-server`.
+  "tagOwners": {
+    "tag:nomaddev-server": ["group:nomaddev-admins"]
+  },
+
+  // ACL rules. Default-deny: anything not explicitly listed is
+  // unreachable. ACL evaluation is "first match wins".
+  "acls": [
+    // Phones / laptops in the users group reach the orchestrator's
+    // :8080 (HTTP + WS). Tailscale ports (41641/udp) are managed
+    // automatically; we only express the application port here.
+    {
+      "action": "accept",
+      "src":    ["group:nomaddev-users"],
+      "dst":    ["tag:nomaddev-server:8080"]
+    },
+
+    // Admin SSH to the orchestrator host. Lock to the admin group;
+    // never to the broader user group. Operators with `tailscale ssh`
+    // configured pair this with a Tailscale SSH policy block (below).
+    {
+      "action": "accept",
+      "src":    ["group:nomaddev-admins"],
+      "dst":    ["tag:nomaddev-server:22"]
+    }
+  ],
+
+  // Tailscale SSH — admins can shell into the orchestrator without
+  // any port-22 exposure outside the tailnet. The `check` mode
+  // requires the source user to re-authenticate via the Tailscale
+  // client every 12 hours.
+  "ssh": [
+    {
+      "action":   "check",
+      "src":      ["group:nomaddev-admins"],
+      "dst":      ["tag:nomaddev-server"],
+      "users":    ["root", "nomaddev"],
+      "checkPeriod": "12h"
+    }
+  ],
+
+  // Tests — paste a test rig here when modifying the ACL so the
+  // admin console refuses to publish a broken policy. These two
+  // pin the "users-can-reach-app" and "users-cannot-shell-host"
+  // invariants the rest of this file is built around.
+  "tests": [
+    {
+      "src":    "matt@example.com",
+      "accept": ["tag:nomaddev-server:8080"],
+      "deny":   ["tag:nomaddev-server:22"]
+    },
+    {
+      "src":    "admin@example.com",
+      "accept": ["tag:nomaddev-server:8080", "tag:nomaddev-server:22"]
+    }
+  ]
+}

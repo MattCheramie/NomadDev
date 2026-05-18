@@ -1,0 +1,99 @@
+{
+  "annotations": {"list": []},
+  "description": "NomadDev orchestrator SLO + capacity dashboard. Bind every panel to the orchestrator's Prometheus exposition at /metrics.",
+  "editable": true,
+  "panels": [
+    {
+      "type": "stat",
+      "title": "Active WS connections",
+      "id": 1,
+      "gridPos": {"x": 0, "y": 0, "w": 6, "h": 4},
+      "targets": [{"expr": "nomaddev_ws_active_connections", "refId": "A"}],
+      "fieldConfig": {"defaults": {"color": {"mode": "thresholds"}, "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}, {"color": "yellow", "value": 50}, {"color": "red", "value": 200}]}}}
+    },
+    {
+      "type": "stat",
+      "title": "WS connects (5m)",
+      "id": 2,
+      "gridPos": {"x": 6, "y": 0, "w": 6, "h": 4},
+      "targets": [{"expr": "sum by (result) (rate(nomaddev_ws_connects_total[5m]))", "legendFormat": "{{result}}", "refId": "A"}]
+    },
+    {
+      "type": "timeseries",
+      "title": "Sandbox runs / sec by outcome",
+      "id": 3,
+      "gridPos": {"x": 0, "y": 4, "w": 12, "h": 8},
+      "targets": [{"expr": "sum by (outcome) (rate(nomaddev_sandbox_runs_total[5m]))", "legendFormat": "{{outcome}}", "refId": "A"}]
+    },
+    {
+      "type": "timeseries",
+      "title": "Sandbox run latency (p50/p95/p99)",
+      "id": 4,
+      "gridPos": {"x": 12, "y": 4, "w": 12, "h": 8},
+      "targets": [
+        {"expr": "histogram_quantile(0.50, rate(nomaddev_sandbox_run_seconds_bucket[5m]))", "legendFormat": "p50", "refId": "A"},
+        {"expr": "histogram_quantile(0.95, rate(nomaddev_sandbox_run_seconds_bucket[5m]))", "legendFormat": "p95", "refId": "B"},
+        {"expr": "histogram_quantile(0.99, rate(nomaddev_sandbox_run_seconds_bucket[5m]))", "legendFormat": "p99", "refId": "C"}
+      ],
+      "fieldConfig": {"defaults": {"unit": "s"}}
+    },
+    {
+      "type": "timeseries",
+      "title": "Middleware turn rate by outcome",
+      "id": 5,
+      "gridPos": {"x": 0, "y": 12, "w": 12, "h": 8},
+      "targets": [{"expr": "sum by (outcome) (rate(nomaddev_middleware_turns_total[5m]))", "legendFormat": "{{outcome}}", "refId": "A"}]
+    },
+    {
+      "type": "timeseries",
+      "title": "Middleware turn latency (p50/p95/p99)",
+      "id": 6,
+      "gridPos": {"x": 12, "y": 12, "w": 12, "h": 8},
+      "targets": [
+        {"expr": "histogram_quantile(0.50, rate(nomaddev_middleware_turn_seconds_bucket[5m]))", "legendFormat": "p50", "refId": "A"},
+        {"expr": "histogram_quantile(0.95, rate(nomaddev_middleware_turn_seconds_bucket[5m]))", "legendFormat": "p95", "refId": "B"},
+        {"expr": "histogram_quantile(0.99, rate(nomaddev_middleware_turn_seconds_bucket[5m]))", "legendFormat": "p99", "refId": "C"}
+      ],
+      "fieldConfig": {"defaults": {"unit": "s"}}
+    },
+    {
+      "type": "timeseries",
+      "title": "GitHub MCP calls by tool",
+      "id": 7,
+      "gridPos": {"x": 0, "y": 20, "w": 12, "h": 8},
+      "targets": [{"expr": "sum by (tool) (rate(nomaddev_github_calls_total[5m]))", "legendFormat": "{{tool}}", "refId": "A"}]
+    },
+    {
+      "type": "timeseries",
+      "title": "GitHub MCP rate-limit retries",
+      "id": 8,
+      "gridPos": {"x": 12, "y": 20, "w": 12, "h": 8},
+      "targets": [{"expr": "sum by (outcome) (rate(nomaddev_github_rate_limit_retries_total[5m]))", "legendFormat": "{{outcome}}", "refId": "A"}]
+    },
+    {
+      "type": "timeseries",
+      "title": "WS inbound rejections (rate limit + oversize)",
+      "id": 9,
+      "gridPos": {"x": 0, "y": 28, "w": 12, "h": 8},
+      "targets": [{"expr": "sum by (reason) (rate(nomaddev_ws_inbound_rejected_total[5m]))", "legendFormat": "{{reason}}", "refId": "A"}]
+    },
+    {
+      "type": "timeseries",
+      "title": "Session events / sec by kind",
+      "id": 10,
+      "gridPos": {"x": 12, "y": 28, "w": 12, "h": 8},
+      "targets": [{"expr": "sum by (kind) (rate(nomaddev_session_events_total[5m]))", "legendFormat": "{{kind}}", "refId": "A"}]
+    }
+  ],
+  "refresh": "30s",
+  "schemaVersion": 39,
+  "tags": ["nomaddev"],
+  "templating": {"list": []},
+  "time": {"from": "now-1h", "to": "now"},
+  "timepicker": {},
+  "timezone": "browser",
+  "title": "NomadDev orchestrator",
+  "uid": "nomaddev-overview",
+  "version": 1,
+  "weekStart": ""
+}
