@@ -7,10 +7,10 @@ import (
 
 func TestRedactScript_MasksSensitiveAssignments(t *testing.T) {
 	cases := []struct {
-		name     string
-		in       string
-		want     string
-		wantHit  bool
+		name    string
+		in      string
+		want    string
+		wantHit bool
 	}{
 		{
 			name:    "bare assignment",

@@ -124,7 +124,7 @@ func (v *Verifier) parseCtx(ctx context.Context, tokenString string) (*Claims, e
 	// HS256 + issuer + expiration on every attempt — none of those
 	// failure modes get masked by the fallthrough.
 	var (
-		claims *Claims
+		claims  *Claims
 		lastErr error
 	)
 	for _, secret := range v.secrets {

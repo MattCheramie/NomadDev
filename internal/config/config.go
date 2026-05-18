@@ -155,19 +155,19 @@ type Config struct {
 	// NOMADDEV_JWT_PREV_SECRETS in .env.example for the operator
 	// workflow.
 	JWTPrevSecrets [][]byte
-	LogLevel     slog.Level
-	Auth         AuthConfig
-	Audit        AuditConfig
-	Session      SessionConfig
-	Sandbox      SandboxConfig
-	Middleware   MiddlewareConfig
-	History      HistoryConfig
-	Approval     ApprovalConfig
-	SPA          SPAConfig
-	GitHub       GitHubConfig
-	ReadTimeout  time.Duration
-	WriteTimeout time.Duration
-	PingInterval time.Duration
+	LogLevel       slog.Level
+	Auth           AuthConfig
+	Audit          AuditConfig
+	Session        SessionConfig
+	Sandbox        SandboxConfig
+	Middleware     MiddlewareConfig
+	History        HistoryConfig
+	Approval       ApprovalConfig
+	SPA            SPAConfig
+	GitHub         GitHubConfig
+	ReadTimeout    time.Duration
+	WriteTimeout   time.Duration
+	PingInterval   time.Duration
 	// MaxMessageBytes caps the size of inbound WebSocket frames. A
 	// frame larger than this gets a 1009 close from gorilla/websocket
 	// before unmarshal so the orchestrator can't OOM on a hostile or
@@ -210,7 +210,7 @@ func Load() (*Config, error) {
 		ListenAddr:     envOr("NOMADDEV_LISTEN_ADDR", ":8080"),
 		JWTSecret:      secret,
 		JWTPrevSecrets: prev,
-		LogLevel:   nlog.ParseLevel(envOr("NOMADDEV_LOG_LEVEL", "info")),
+		LogLevel:       nlog.ParseLevel(envOr("NOMADDEV_LOG_LEVEL", "info")),
 		Audit: AuditConfig{
 			Backend: envOr("NOMADDEV_AUDIT_BACKEND", "stderr"),
 			Path:    envOr("NOMADDEV_AUDIT_PATH", "/var/lib/nomaddev/audit.log"),
