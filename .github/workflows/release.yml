@@ -6,8 +6,10 @@ on:
       - 'v*'
 
 permissions:
-  contents: write   # gh release create
-  packages: write   # GHCR push
+  contents: write     # gh release create
+  packages: write     # GHCR push
+  id-token: write     # cosign keyless OIDC signing
+  attestations: write # cosign attest
 
 jobs:
   binaries:
@@ -56,6 +58,29 @@ jobs:
           sha256sum "dist/orchestrator-linux-${{ matrix.arch }}" \
             > "dist/orchestrator-linux-${{ matrix.arch }}.sha256"
 
+      # Phase 8.4: supply-chain hygiene for the binary release. Generate
+      # an SPDX SBOM and a keyless cosign signature alongside the bare
+      # binary. Verification command lives in docs/supply-chain.md.
+      - name: generate SBOM (SPDX JSON)
+        uses: anchore/sbom-action@v0
+        with:
+          path: ./dist/orchestrator-linux-${{ matrix.arch }}
+          format: spdx-json
+          output-file: dist/orchestrator-linux-${{ matrix.arch }}.spdx.json
+          upload-artifact: false
+
+      - name: install cosign
+        uses: sigstore/cosign-installer@v3
+
+      - name: sign binary (keyless)
+        env:
+          COSIGN_YES: 'true'
+        run: |
+          cosign sign-blob --yes \
+            --output-signature "dist/orchestrator-linux-${{ matrix.arch }}.sig" \
+            --output-certificate "dist/orchestrator-linux-${{ matrix.arch }}.pem" \
+            "dist/orchestrator-linux-${{ matrix.arch }}"
+
       - name: upload artifacts
         uses: actions/upload-artifact@v4
         with:
@@ -86,12 +111,20 @@ jobs:
             --generate-notes \
             dist/orchestrator-linux-amd64 \
             dist/orchestrator-linux-amd64.sha256 \
+            dist/orchestrator-linux-amd64.spdx.json \
+            dist/orchestrator-linux-amd64.sig \
+            dist/orchestrator-linux-amd64.pem \
             dist/orchestrator-linux-arm64 \
-            dist/orchestrator-linux-arm64.sha256
+            dist/orchestrator-linux-arm64.sha256 \
+            dist/orchestrator-linux-arm64.spdx.json \
+            dist/orchestrator-linux-arm64.sig \
+            dist/orchestrator-linux-arm64.pem
 
   image:
     name: ghcr image (multi-arch)
     runs-on: ubuntu-latest
+    outputs:
+      digest: ${{ steps.build.outputs.digest }}
     steps:
       - uses: actions/checkout@v4
 
@@ -113,6 +146,7 @@ jobs:
           echo "tags=ghcr.io/${{ github.repository }}:${REF},ghcr.io/${{ github.repository }}:latest" >> "$GITHUB_OUTPUT"
 
       - name: build and push
+        id: build
         uses: docker/build-push-action@v6
         with:
           context: .
@@ -124,3 +158,34 @@ jobs:
             VERSION=${{ github.ref_name }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+      # Phase 8.4: sign + SBOM-attest the pushed manifest by digest.
+      # Operators verify with `cosign verify ghcr.io/...@sha256:... \
+      #   --certificate-identity-regexp '...' \
+      #   --certificate-oidc-issuer https://token.actions.githubusercontent.com`.
+      - name: install cosign
+        uses: sigstore/cosign-installer@v3
+
+      - name: generate image SBOM
+        uses: anchore/sbom-action@v0
+        with:
+          image: ghcr.io/${{ github.repository }}@${{ steps.build.outputs.digest }}
+          format: spdx-json
+          output-file: image.spdx.json
+          upload-artifact: false
+
+      - name: sign image (keyless)
+        env:
+          COSIGN_YES: 'true'
+        run: |
+          cosign sign --yes \
+            "ghcr.io/${{ github.repository }}@${{ steps.build.outputs.digest }}"
+
+      - name: attest SBOM
+        env:
+          COSIGN_YES: 'true'
+        run: |
+          cosign attest --yes \
+            --predicate image.spdx.json \
+            --type spdxjson \
+            "ghcr.io/${{ github.repository }}@${{ steps.build.outputs.digest }}"

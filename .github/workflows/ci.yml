@@ -116,6 +116,39 @@ jobs:
           context: .
           file: Dockerfile
           push: false
+          load: true
           tags: nomaddev/orchestrator:ci
           cache-from: type=gha
           cache-to: type=gha,mode=max
+      # Phase 8.4: fail the build on HIGH/CRITICAL CVEs in the image
+      # we're about to ship. Trivy reads the image we just loaded into
+      # the local Docker daemon; no push or registry access required.
+      #
+      # Pinned by commit SHA (not tag) because aquasecurity/trivy-action
+      # was the target of a tag-hijack supply-chain attack in March 2026
+      # affecting many pre-v0.35.0 tags. SHA pinning is GitHub's
+      # recommended discipline for any third-party action; this one
+      # earns it twice. SHA = v0.36.0.
+      - name: vulnerability scan (Trivy)
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25
+        with:
+          image-ref: nomaddev/orchestrator:ci
+          format: table
+          exit-code: '1'
+          ignore-unfixed: true
+          severity: 'HIGH,CRITICAL'
+          vuln-type: 'os,library'
+
+  govulncheck:
+    name: govulncheck
+    # Catches known Go-module vulnerabilities (golang.org/x/vuln) before
+    # they reach a release. Fails the run if any reachable vuln is found.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - run: go install golang.org/x/vuln/cmd/govulncheck@latest
+      - run: govulncheck ./...

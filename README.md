@@ -263,11 +263,32 @@ verification flow and threat-model rationale.
 - [x] Metric `nomaddev_ws_inbound_rejected_total{reason}` for SLO
   dashboards and abuse alerts.
 
-**Remaining top-10:** SBOM/cosign/Trivy in releases (8.4), audit log
-split from replay buffer (8.5), wired biometric approval (8.6),
-SQLite integrity check + migration framework (8.7), `/healthz`
-dependency probes + Compose healthcheck (8.8), GitHub rate-limit
-awareness/retry (8.9), and automated `session.db` backups (8.10).
+#### 8.4 Supply chain — SBOM + cosign + Trivy + govulncheck — done
+*Lets operators verify the binary / image they downloaded was built by
+this repo on a tag push and contains no known HIGH/CRITICAL CVEs.*
+- [x] **Release artifacts now ship SBOMs.** Every binary in the GitHub
+  release has a matching `.spdx.json` (Syft, SPDX-JSON predicate) plus
+  a `.sig` + `.pem` cosign signature pair (keyless via Sigstore Fulcio
+  + Rekor). The container image is signed by digest with `cosign sign`
+  and the SBOM is attached as a `cosign attest --type spdxjson`
+  attestation.
+- [x] **CI fails on supply-chain regressions.** `aquasecurity/trivy-action`
+  scans the production Dockerfile build on every PR and fails on
+  `HIGH`/`CRITICAL` CVEs in OS or Go-library layers (with
+  `ignore-unfixed: true` so we don't block on unpatched upstream CVEs
+  that the SBOM still surfaces downstream). `golang.org/x/vuln`'s
+  `govulncheck` covers reachable vulns in the Go module graph on the
+  same trigger.
+- [x] **Verification is documented.** [`docs/supply-chain.md`](./docs/supply-chain.md)
+  walks through `cosign verify-blob`, `cosign verify`, and
+  `cosign verify-attestation` with the exact
+  `--certificate-identity-regexp` operators should require.
+
+**Remaining top-10:** audit log split from replay buffer (8.5), wired
+biometric approval (8.6), SQLite integrity check + migration
+framework (8.7), `/healthz` dependency probes + Compose healthcheck
+(8.8), GitHub rate-limit awareness/retry (8.9), and automated
+`session.db` backups (8.10).
 
 ---
 
