@@ -10,18 +10,29 @@
 import { useEffect, useRef } from 'react';
 import { useStore } from '@/state/store';
 import { WSClient } from '@/wire/client';
+import { generateTraceparent } from '@/wire/traceparent';
 import * as kv from '@/storage/kv';
 import { KEY_LAST_EVENT_ID, KEY_TOKEN } from '@/storage/keys';
 
-function wsURLFor(serverUrl: string): string {
+function wsURLFor(serverUrl: string, traceparent?: string): string {
   try {
     const u = new URL(serverUrl);
     u.protocol = u.protocol === 'https:' ? 'wss:' : 'ws:';
     u.pathname = '/ws';
     u.search = '';
     u.hash = '';
+    if (traceparent) {
+      // Phase 12.2: browser WS API can't set custom headers on the
+      // upgrade, so the orchestrator (wsHandler) accepts the W3C
+      // trace context as a ?traceparent=… query param. Mobile-side
+      // timing now shares a trace_id with the server-side spans.
+      u.searchParams.set('traceparent', traceparent);
+    }
     return u.toString();
   } catch (_e) {
+    if (traceparent) {
+      return serverUrl + '/ws?traceparent=' + encodeURIComponent(traceparent);
+    }
     return serverUrl + '/ws';
   }
 }
@@ -45,8 +56,9 @@ export function useWebSocket(): { current: WSClient | null } {
     (async () => {
       const seed = await kv.get(KEY_LAST_EVENT_ID);
       if (!alive) return;
+      const traceparent = generateTraceparent();
       const client = new WSClient({
-        url: wsURLFor(serverUrl),
+        url: wsURLFor(serverUrl, traceparent),
         token,
         lastEventId: seed,
       });

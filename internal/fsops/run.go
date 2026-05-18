@@ -152,7 +152,7 @@ func (e *Engine) runReadFile(ctx context.Context, args map[string]any, limits Li
 		maxBytes = hardReadFileMaxBytes
 	}
 
-	resolved, err := e.resolveSafe(path)
+	resolved, err := e.resolveSafe(ctx, path)
 	if err != nil {
 		out <- sandbox.ExecChunk{Stream: sandbox.StreamExit, ExitCode: -1,
 			Err: fmt.Errorf("%w: %v", sandbox.ErrBadRequest, err)}
@@ -236,7 +236,7 @@ func (e *Engine) runListDir(ctx context.Context, args map[string]any, out chan<-
 		depth = maxListDepth
 	}
 
-	resolved, err := e.resolveSafe(path)
+	resolved, err := e.resolveSafe(ctx, path)
 	if err != nil {
 		out <- sandbox.ExecChunk{Stream: sandbox.StreamExit, ExitCode: -1,
 			Err: fmt.Errorf("%w: %v", sandbox.ErrBadRequest, err)}
@@ -375,7 +375,7 @@ func (e *Engine) runWritePatch(ctx context.Context, args map[string]any, limits 
 		return
 	}
 
-	resolved, err := e.resolveSafe(path)
+	resolved, err := e.resolveSafe(ctx, path)
 	if err != nil {
 		out <- sandbox.ExecChunk{Stream: sandbox.StreamExit, ExitCode: -1,
 			Err: fmt.Errorf("%w: %v", sandbox.ErrBadRequest, err)}

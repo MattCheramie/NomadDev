@@ -806,13 +806,36 @@ the sandbox / GitHub MCP tool.
   reproducibility regression doesn't bounce unrelated PRs —
   the artifact is the deliverable.
 
-**Remaining Phase-12 follow-ups:** SPA-side `traceparent` mint
-+ inject (mobile change — pairs with 12.1's query-string fallback);
-per-fsops session isolation (engine refactor — multi-tenant
-strict mode only); pool-style memory quota (only if a multi-tenant
-deploy hits the worst-case sizing); mobile native build (Expo
-EAS — separate infra); WebAuthn behind TLS (significant; needs a
-server-side ceremony + browser API integration).
+#### 12.2 SPA traceparent + per-fsops session isolation — done
+- [x] **SPA-side `traceparent` mint + inject.** New
+  `mobile/src/wire/traceparent.ts` generates a W3C
+  `00-<32hex>-<16hex>-01` value per connection using
+  `crypto.getRandomValues`; the WS URL builder appends it as
+  `?traceparent=…`. Pairs with 12.1's server-side query-string
+  fallback so mobile-side timing shares a `trace_id` with the
+  server-side dispatch spans (Phase 11.2 / 11.4). 3 unit tests
+  pin the W3C format, randomness, and the crypto-required
+  invariant.
+- [x] **Per-fsops session isolation.** Phase 10.2's known
+  limitation (`fsops still operates on the unscoped root`) is
+  now closed. `fsops.Engine` gains a `PerSession` field; the
+  middleware dispatcher attaches the calling SID via
+  `fsops.WithSessionID(ctx, sid)` before invoking
+  `Engine.Run`. `resolveSafe` reads the SID from ctx and routes
+  paths through `<root>/<sanitized-sid>/` (created at 0o700 on
+  first use) when per-session mode is enabled. Reuses the
+  Phase-10.2 `NOMADDEV_SANDBOX_PER_SESSION_WORKSPACE` knob —
+  sandbox + fsops isolate in lockstep. 4 new tests pin:
+  per-SID path separation, empty-SID falls back to shared root,
+  `perSession=false` ignores SID, and `..`-traversal still
+  rejected under the per-SID prefix.
+
+**Remaining Phase-12 follow-ups:** pool-style memory quota
+(only if a multi-tenant deploy hits the worst-case sizing —
+documented sizing approach in `docs/sandbox.md` covers the same
+blast radius); mobile native build (Expo EAS — separate infra
+setup); WebAuthn behind TLS (significant; server-side ceremony
++ browser API integration).
 
 ---
 

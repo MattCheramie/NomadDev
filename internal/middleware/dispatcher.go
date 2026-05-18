@@ -71,7 +71,13 @@ func (c *CompositeDispatcher) Dispatch(ctx context.Context, call ToolCall, opts 
 		if c.FSOps == nil {
 			return nil, fmt.Errorf("%w: fsops engine not configured", sandbox.ErrBadRequest)
 		}
-		return c.FSOps.Run(ctx, fsops.Call{Tool: call.Tool, Args: call.Args}, opts.FSOpsLimits)
+		// Phase 12.2: attach the calling session's id to ctx so the
+		// engine can scope path resolution per SID when its
+		// PerSession knob is on. No-op when SessionID is empty
+		// (legacy callers / cmd/sandbox direct path) or when the
+		// engine isn't in per-session mode.
+		fsCtx := fsops.WithSessionID(ctx, opts.SessionID)
+		return c.FSOps.Run(fsCtx, fsops.Call{Tool: call.Tool, Args: call.Args}, opts.FSOpsLimits)
 	}
 	if strings.HasPrefix(call.Tool, GitHubToolPrefix) {
 		if c.GitHub == nil {

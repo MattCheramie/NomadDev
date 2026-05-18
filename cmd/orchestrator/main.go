@@ -449,7 +449,7 @@ func buildMiddleware(
 	if err := os.MkdirAll(cfg.Sandbox.WorkspaceDir, 0o755); err != nil {
 		return nil, fmt.Errorf("workspace dir: %w", err)
 	}
-	fs, err := fsops.New(cfg.Sandbox.WorkspaceDir)
+	fs, err := fsops.NewWithOptions(cfg.Sandbox.WorkspaceDir, cfg.Sandbox.PerSessionWorkspace)
 	if err != nil {
 		return nil, fmt.Errorf("fsops: %w", err)
 	}
