@@ -116,6 +116,45 @@ install -m 0755 -o root -g root "${tmpbin}" "${BIN_DST}"
 rm -f "${tmpbin}" "${tmpsum}"
 note "installed ${BIN_DST} ($("${BIN_DST}" -version 2>/dev/null || echo dev))"
 
+# ---------------------------------------------------------------- github-mcp-server
+# The orchestrator binary's GitHub MCP integration spawns the upstream
+# github-mcp-server as a subprocess (see docs/github.md). Install it only
+# when the operator has configured a token — keeps the deploy footprint
+# small for users who don't want the feature.
+GHMCP_BIN_DST="/usr/local/bin/github-mcp-server"
+GHMCP_VERSION="${NOMADDEV_GITHUB_MCP_VERSION:-v1.0.4}"
+NEED_GHMCP="no"
+if grep -qE '^NOMADDEV_GITHUB_TOKEN=.+' "${ENV_FILE}" 2>/dev/null; then
+    # Token is set to something non-empty.
+    if ! grep -qE '^NOMADDEV_GITHUB_TOKEN=$' "${ENV_FILE}" 2>/dev/null; then
+        NEED_GHMCP="yes"
+    fi
+fi
+
+if [[ "${NEED_GHMCP}" == "yes" ]]; then
+    if [[ -x "${GHMCP_BIN_DST}" ]]; then
+        note "github-mcp-server already installed at ${GHMCP_BIN_DST}"
+    else
+        GHMCP_ASSET="github-mcp-server_Linux_${ARCH}.tar.gz"
+        GHMCP_URL="https://github.com/github/github-mcp-server/releases/download/${GHMCP_VERSION}/${GHMCP_ASSET}"
+        note "downloading github-mcp-server ${GHMCP_VERSION} from ${GHMCP_URL}"
+        tmpdir="$(mktemp -d)"
+        if curl -fsSL -o "${tmpdir}/${GHMCP_ASSET}" "${GHMCP_URL}"; then
+            tar -xzf "${tmpdir}/${GHMCP_ASSET}" -C "${tmpdir}" github-mcp-server \
+                || fail "could not extract github-mcp-server from ${GHMCP_ASSET}"
+            install -m 0755 -o root -g root "${tmpdir}/github-mcp-server" "${GHMCP_BIN_DST}"
+            note "installed ${GHMCP_BIN_DST}"
+        else
+            note "WARNING: github-mcp-server download failed; the orchestrator will boot but"
+            note "         github_* tools will fail until the binary is installed manually."
+            note "         See docs/github.md for the install snippet."
+        fi
+        rm -rf "${tmpdir}"
+    fi
+else
+    note "NOMADDEV_GITHUB_TOKEN unset — skipping github-mcp-server install"
+fi
+
 # ---------------------------------------------------------------- systemd
 note "installing unit ${UNIT_DST}"
 install -m 0644 -o root -g root "${UNIT_SRC}" "${UNIT_DST}"

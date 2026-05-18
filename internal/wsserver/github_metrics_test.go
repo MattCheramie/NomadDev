@@ -3,6 +3,7 @@ package wsserver
 import (
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/mattcheramie/nomaddev/internal/event"
 	"github.com/mattcheramie/nomaddev/internal/metrics"
@@ -31,8 +32,8 @@ func TestGitHubOutcomeForCode(t *testing.T) {
 
 func TestRecordGitHubCall_IgnoresNonGitHub(t *testing.T) {
 	before := counterValue(t, "github_irrelevant", "ok")
-	recordGitHubCall("execute_script", "")
-	recordGitHubCall("read_file", "")
+	recordGitHubCall("execute_script", "", time.Time{})
+	recordGitHubCall("read_file", "", time.Now())
 	if got := counterValue(t, "github_irrelevant", "ok"); got != before {
 		t.Errorf("non-github tools should not increment the counter")
 	}
@@ -43,9 +44,9 @@ func TestRecordGitHubCall_IncrementsByOutcome(t *testing.T) {
 	startOK := counterValue(t, tool, "ok")
 	startDenied := counterValue(t, tool, "denied")
 
-	recordGitHubCall(tool, "")
-	recordGitHubCall(tool, "")
-	recordGitHubCall(tool, event.SandboxErrUnauthorized)
+	recordGitHubCall(tool, "", time.Time{})
+	recordGitHubCall(tool, "", time.Time{})
+	recordGitHubCall(tool, event.SandboxErrUnauthorized, time.Time{})
 
 	if got := counterValue(t, tool, "ok"); got != startOK+2 {
 		t.Errorf("ok delta = %v, want 2", got-startOK)
@@ -53,6 +54,43 @@ func TestRecordGitHubCall_IncrementsByOutcome(t *testing.T) {
 	if got := counterValue(t, tool, "denied"); got != startDenied+1 {
 		t.Errorf("denied delta = %v, want 1", got-startDenied)
 	}
+}
+
+func TestRecordGitHubCall_LatencyObservedOnlyWhenStartedSet(t *testing.T) {
+	beforeCount := histogramSampleCount(t, "nomaddev_github_call_seconds")
+
+	// Zero time.Time must NOT record latency — used by pre-flight rejections
+	// (bad args, approval denied) where no upstream work happened.
+	recordGitHubCall("github_get_me_test_only", "", time.Time{})
+	if got := histogramSampleCount(t, "nomaddev_github_call_seconds"); got != beforeCount {
+		t.Errorf("zero startedAt should not observe latency: count delta = %d", got-beforeCount)
+	}
+
+	// Real timestamp must observe latency.
+	recordGitHubCall("github_get_me_test_only", "", time.Now().Add(-50*time.Millisecond))
+	if got := histogramSampleCount(t, "nomaddev_github_call_seconds"); got != beforeCount+1 {
+		t.Errorf("non-zero startedAt should observe one sample: count delta = %d", got-beforeCount)
+	}
+}
+
+func histogramSampleCount(t *testing.T, name string) uint64 {
+	t.Helper()
+	mfs, err := metrics.Registry.Gather()
+	if err != nil {
+		t.Fatalf("registry.Gather: %v", err)
+	}
+	for _, mf := range mfs {
+		if mf.GetName() != name {
+			continue
+		}
+		// Unlabeled histogram → one Metric.
+		for _, m := range mf.GetMetric() {
+			if m.GetHistogram() != nil {
+				return m.GetHistogram().GetSampleCount()
+			}
+		}
+	}
+	return 0
 }
 
 // counterValue returns the current value of nomaddev_github_calls_total for

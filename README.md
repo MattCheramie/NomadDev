@@ -144,6 +144,16 @@ same way it drives shell scripts and files, with the same approval gate.*
 - [x] Per-call timeout honored: `DispatchOptions.Timeout` caps the
   upstream MCP round-trip so a hung GitHub request surfaces as
   `SandboxErrTimeout` instead of hanging the turn.
+- [x] Subprocess supervision: a crashed `github-mcp-server` is detected
+  on the next tool call, respawned, and the call retried once.
+  Cooldown-throttled (5 s minimum between attempts) so a flapping
+  upstream binary can't loop.
+- [x] Latency histogram (`nomaddev_github_call_seconds`) for SLO
+  dashboards; bad-args / approval-denied pre-flights are excluded so
+  the histogram tracks only real upstream round-trips.
+- [x] `quickstart-systemd.sh` auto-installs `github-mcp-server` when
+  `NOMADDEV_GITHUB_TOKEN` is configured — single-command deploy for
+  the systemd path matches the Docker path.
 
 See [`docs/github.md`](./docs/github.md) for setup, PAT scopes,
 troubleshooting, and the auth-extension seam.

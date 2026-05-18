@@ -24,6 +24,7 @@ import (
 	"os/exec"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -35,13 +36,35 @@ import (
 // Client is the real GitHub MCP backend. Satisfies Caller and
 // middleware.GitHubCaller.
 type Client struct {
-	logger     *slog.Logger
-	cmd        *exec.Cmd
-	session    *mcp.ClientSession
-	transport  *mcp.CommandTransport
-	tools      []middleware.ToolSpec
-	destrSet   map[string]struct{}
+	// opts is stashed so respawn() can rebuild the subprocess without
+	// re-asking the caller for credentials / toolset config.
+	opts   Options
+	logger *slog.Logger
+
+	// sessionMu protects the mutable subprocess + session fields below.
+	// Held in write mode during spawn/teardown/respawn, read mode during a
+	// CallTool. The MCP SDK handles concurrent CallTool itself; sessionMu
+	// only serializes against restarts.
+	sessionMu sync.RWMutex
+	cmd       *exec.Cmd
+	session   *mcp.ClientSession
+
+	// tools / destrSet are populated once during the first spawn and treated
+	// as immutable thereafter — the upstream catalogue doesn't change at
+	// runtime (we disable --dynamic-toolsets), so respawn doesn't re-fetch
+	// and Gemini's tool list stays stable across a subprocess restart.
+	tools    []middleware.ToolSpec
+	destrSet map[string]struct{}
+
+	// stderrDone is closed when the stderr-pipe goroutine for the current
+	// subprocess exits. Replaced on each spawn.
 	stderrDone chan struct{}
+
+	// lastRestart caps the restart rate. The first restart after a
+	// successful spawn happens immediately; subsequent restarts within
+	// restartCooldown are refused so a panicking subprocess doesn't trigger
+	// an infinite respawn loop. The window resets on a successful Call.
+	lastRestart time.Time
 
 	// callMu serializes CallTool against the single stdio session. The MCP
 	// SDK is JSON-RPC-multiplexed and handles concurrency internally, but
@@ -50,73 +73,171 @@ type Client struct {
 	callMu sync.Mutex
 }
 
+// restartCooldown is the minimum time between subprocess restart attempts.
+// Caps the runaway-respawn worst case to ~12 restarts/minute if the
+// subprocess crashes every time it boots.
+const restartCooldown = 5 * time.Second
+
 // New spawns the github-mcp-server subprocess, completes the MCP initialize
 // handshake, fetches the tool catalogue, and returns a ready-to-use Caller.
+// Errors from the first spawn are returned synchronously so the orchestrator
+// fails its startup if the operator misconfigured the binary or token.
+// Errors from later respawns (after a subprocess crash) surface through Call.
 func New(ctx context.Context, opts Options) (Caller, error) {
 	if opts.Token == nil {
 		return nil, errors.New("githubmcp: Options.Token is required")
 	}
-	token, err := opts.Token.Token(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("githubmcp: token: %w", err)
+	c := &Client{
+		opts:   opts,
+		logger: slog.Default(),
 	}
-
-	bin, err := resolveBinary(opts.BinaryPath)
-	if err != nil {
+	if err := c.spawn(ctx); err != nil {
 		return nil, err
 	}
+	return c, nil
+}
 
-	args := buildArgs(opts)
-	env := buildEnv(token, opts)
+// spawn does the subprocess + MCP session setup. The first call (from New)
+// also fetches the tool catalogue; subsequent calls (from respawn) skip
+// that because the upstream's tools don't change between restarts.
+//
+// Acquires sessionMu in write mode. Callers must not hold any other lock.
+func (c *Client) spawn(ctx context.Context) error {
+	token, err := c.opts.Token.Token(ctx)
+	if err != nil {
+		return fmt.Errorf("githubmcp: token: %w", err)
+	}
 
-	logger := slog.Default()
+	bin, err := resolveBinary(c.opts.BinaryPath)
+	if err != nil {
+		return err
+	}
 
-	// The MCP CommandTransport calls cmd.Start; we hand it a prepared cmd
-	// with env + args set and stderr piped to our logger.
+	args := buildArgs(c.opts)
+	env := buildEnv(token, c.opts)
+
+	// exec.CommandContext + the SDK's CommandTransport.Connect handles
+	// Start(); we just prepare the cmd with env, args, and a stderr pipe.
 	cmd := exec.CommandContext(ctx, bin, args...)
 	cmd.Env = env
 
 	stderr, err := cmd.StderrPipe()
 	if err != nil {
-		return nil, fmt.Errorf("githubmcp: stderr pipe: %w", err)
+		return fmt.Errorf("githubmcp: stderr pipe: %w", err)
 	}
 
 	transport := &mcp.CommandTransport{Command: cmd}
-	client := mcp.NewClient(&mcp.Implementation{
+	mcpClient := mcp.NewClient(&mcp.Implementation{
 		Name:    "nomaddev-orchestrator",
 		Version: "dev",
 	}, nil)
 
-	c := &Client{
-		logger:     logger,
-		cmd:        cmd,
-		transport:  transport,
-		stderrDone: make(chan struct{}),
-	}
-
-	go c.pipeStderr(stderr)
+	stderrDone := make(chan struct{})
+	go c.pipeStderr(stderr, stderrDone)
 
 	startCtx := ctx
-	if opts.StartTimeout > 0 {
+	if c.opts.StartTimeout > 0 {
 		var cancel context.CancelFunc
-		startCtx, cancel = context.WithTimeout(ctx, opts.StartTimeout)
+		startCtx, cancel = context.WithTimeout(ctx, c.opts.StartTimeout)
 		defer cancel()
 	}
 
-	session, err := client.Connect(startCtx, transport, nil)
+	session, err := mcpClient.Connect(startCtx, transport, nil)
 	if err != nil {
-		return nil, fmt.Errorf("githubmcp: connect: %w", err)
+		return fmt.Errorf("githubmcp: connect: %w", err)
 	}
+
+	// First-spawn-only: fetch the tool catalogue. We assume the upstream
+	// doesn't add/remove tools across restarts; --dynamic-toolsets is off.
+	freshTools := c.tools == nil
+	var tools []middleware.ToolSpec
+	var destrSet map[string]struct{}
+	if freshTools {
+		list, listErr := session.ListTools(startCtx, nil)
+		if listErr != nil {
+			_ = session.Close()
+			return fmt.Errorf("githubmcp: list tools: %w", listErr)
+		}
+		tools, destrSet = buildToolList(list.Tools)
+	}
+
+	c.sessionMu.Lock()
+	c.cmd = cmd
 	c.session = session
-
-	list, err := session.ListTools(startCtx, nil)
-	if err != nil {
-		_ = session.Close()
-		return nil, fmt.Errorf("githubmcp: list tools: %w", err)
+	c.stderrDone = stderrDone
+	if freshTools {
+		c.tools = tools
+		c.destrSet = destrSet
 	}
+	c.sessionMu.Unlock()
+	return nil
+}
 
-	c.tools, c.destrSet = buildToolList(list.Tools)
-	return c, nil
+// teardown closes the current session and waits for the stderr goroutine
+// to drain. Safe to call when fields are nil (e.g., after a failed spawn).
+// Caller must hold sessionMu in write mode.
+func (c *Client) teardown() {
+	if c.session != nil {
+		_ = c.session.Close()
+		c.session = nil
+	}
+	if c.stderrDone != nil {
+		select {
+		case <-c.stderrDone:
+		case <-time.After(2 * time.Second):
+			// Subprocess pipe is stuck; not worth blocking restart on.
+		}
+		c.stderrDone = nil
+	}
+	c.cmd = nil
+}
+
+// respawn tears down a dead subprocess and starts a fresh one. Cooldown-
+// throttled so a flapping upstream binary can't trigger an infinite restart
+// loop. Returns an error only when the cooldown was tripped or spawn failed
+// outright; caller decides whether to surface that to the model.
+func (c *Client) respawn(ctx context.Context) error {
+	c.sessionMu.Lock()
+	if !c.lastRestart.IsZero() && time.Since(c.lastRestart) < restartCooldown {
+		c.sessionMu.Unlock()
+		return fmt.Errorf("githubmcp: subprocess restart cooldown active (last attempt %s ago)",
+			time.Since(c.lastRestart).Round(time.Millisecond))
+	}
+	c.lastRestart = time.Now()
+	c.teardown()
+	c.sessionMu.Unlock()
+
+	c.logger.Warn("github-mcp-server: subprocess died, respawning")
+	if err := c.spawn(ctx); err != nil {
+		c.logger.Error("github-mcp-server: respawn failed", "err", err)
+		return err
+	}
+	c.logger.Info("github-mcp-server: respawn complete")
+	return nil
+}
+
+// subprocessDied reports whether the current cmd has exited. Used by Call to
+// decide whether a CallTool error is "upstream returned an error" (don't
+// restart) or "transport is dead" (restart and retry once).
+func (c *Client) subprocessDied() bool {
+	c.sessionMu.RLock()
+	defer c.sessionMu.RUnlock()
+	if c.cmd == nil {
+		return true
+	}
+	if c.cmd.ProcessState != nil {
+		return true
+	}
+	// ProcessState is only set after cmd.Wait returns; the SDK's pipeRWC
+	// calls Wait inside its Close, not proactively. A Signal(0) probe tells
+	// us liveness without committing to a Wait we can't undo.
+	if c.cmd.Process == nil {
+		return true
+	}
+	if err := c.cmd.Process.Signal(syscall.Signal(0)); err != nil {
+		return true
+	}
+	return false
 }
 
 // resolveBinary picks the github-mcp-server binary path: explicit option →
@@ -170,8 +291,10 @@ func buildEnv(token string, opts Options) []string {
 // pipeStderr forwards the subprocess's stderr to our slog at Info, prefixed
 // "github-mcp-server: ". The upstream emits structured logs there; we want
 // them threaded into the orchestrator's log stream for one-pane debugging.
-func (c *Client) pipeStderr(r io.ReadCloser) {
-	defer close(c.stderrDone)
+// done is closed when the goroutine exits — used by teardown to wait out a
+// dying subprocess before declaring restart complete.
+func (c *Client) pipeStderr(r io.ReadCloser, done chan struct{}) {
+	defer close(done)
 	scanner := bufio.NewScanner(r)
 	scanner.Buffer(make([]byte, 0, 4096), 64*1024)
 	for scanner.Scan() {
@@ -245,11 +368,19 @@ func (c *Client) ListTools(_ context.Context) ([]middleware.ToolSpec, error) {
 // MCP CallTool round-trip. classifyExit() in wsserver maps the resulting
 // context.DeadlineExceeded into event.SandboxErrTimeout so the assistant
 // turn sees a graceful timeout instead of hanging on a stuck remote API.
+//
+// If the upstream subprocess has died (crash, OOM, kill -9), Call detects
+// the dead pipe, respawns the binary, and retries the tool call exactly
+// once before surfacing the error. Cooldown-throttled in respawn() so a
+// flapping upstream can't loop.
 func (c *Client) Call(ctx context.Context, call middleware.ToolCall, opts middleware.DispatchOptions) (<-chan sandbox.ExecChunk, error) {
 	c.callMu.Lock()
 	defer c.callMu.Unlock()
 
-	if c.session == nil {
+	c.sessionMu.RLock()
+	session := c.session
+	c.sessionMu.RUnlock()
+	if session == nil {
 		return nil, fmt.Errorf("%w: github session not open", sandbox.ErrBadRequest)
 	}
 
@@ -261,17 +392,47 @@ func (c *Client) Call(ctx context.Context, call middleware.ToolCall, opts middle
 	}
 
 	bare := UnprefixedName(call.Tool)
-	result, err := c.session.CallTool(callCtx, &mcp.CallToolParams{
+	result, err := session.CallTool(callCtx, &mcp.CallToolParams{
 		Name:      bare,
 		Arguments: call.Args,
 	})
 	if err != nil {
-		// Surface a context.DeadlineExceeded / context.Canceled cleanly so
-		// classifyExit maps it to the right event-layer code.
+		// Context cancellation / deadline must round-trip cleanly so
+		// classifyExit maps to SandboxErrTimeout / SandboxErrCanceled.
+		// These are NOT subprocess crashes — leave the subprocess alone.
 		if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
 			return c.contextErrorChunk(err), nil
 		}
-		return c.errorChunk(err.Error()), nil
+
+		// Subprocess-died detection: if the cmd has exited, the stdio
+		// transport is unrecoverable. Respawn and retry once before
+		// surfacing the error to the translator.
+		if c.subprocessDied() {
+			if rerr := c.respawn(ctx); rerr != nil {
+				return c.errorChunk(fmt.Sprintf("upstream subprocess died and respawn failed: %v", rerr)), nil
+			}
+			c.sessionMu.RLock()
+			session = c.session
+			c.sessionMu.RUnlock()
+			if session == nil {
+				return c.errorChunk("upstream subprocess died and respawn left no session"), nil
+			}
+			// One retry. If this also fails, surface the error to the
+			// model — endless retries on a poison call are worse than a
+			// graceful turn-level error.
+			result, err = session.CallTool(callCtx, &mcp.CallToolParams{
+				Name:      bare,
+				Arguments: call.Args,
+			})
+			if err != nil {
+				if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
+					return c.contextErrorChunk(err), nil
+				}
+				return c.errorChunk(err.Error()), nil
+			}
+		} else {
+			return c.errorChunk(err.Error()), nil
+		}
 	}
 
 	payload, marshalErr := encodeResult(result)
@@ -357,6 +518,8 @@ func (c *Client) IsDestructive(name string) bool {
 // subprocess stdin; the SDK's pipeRWC.Close then waits for the process to
 // exit, escalating to SIGTERM then SIGKILL on the TerminateDuration.
 func (c *Client) Close() error {
+	c.sessionMu.Lock()
+	defer c.sessionMu.Unlock()
 	var firstErr error
 	if c.session != nil {
 		if err := c.session.Close(); err != nil {
@@ -364,15 +527,17 @@ func (c *Client) Close() error {
 		}
 		c.session = nil
 	}
-	// Drain stderr goroutine. If the process is gone, the pipe Read returns
-	// io.EOF and the scanner loop exits.
-	select {
-	case <-c.stderrDone:
-	case <-time.After(2 * time.Second):
+	if c.stderrDone != nil {
+		select {
+		case <-c.stderrDone:
+		case <-time.After(2 * time.Second):
+		}
+		c.stderrDone = nil
 	}
 	if c.cmd != nil && c.cmd.Process != nil {
 		// Belt-and-suspenders: ensure no zombie if Close raced something.
 		_ = c.cmd.Process.Release()
 	}
+	c.cmd = nil
 	return firstErr
 }

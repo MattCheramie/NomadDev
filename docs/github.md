@@ -160,6 +160,23 @@ runs locally. Other than the badge the card is identical to the
 sandbox/fsops approval flow — same tool/args/reason layout, same approve
 and deny actions, same countdown.
 
+## Subprocess supervision
+
+If the upstream `github-mcp-server` subprocess dies mid-session (crash,
+OOM, kill -9, `--kill-grandchild` style cleanup), the next `github_*` tool
+call detects the dead stdio pipe, respawns the binary, and retries the
+call exactly once. Subprocess crashes that surface a poison-call pattern
+fall through to a turn-level error rather than looping.
+
+The respawn is cooldown-throttled to one attempt per 5 seconds, capping
+the worst case if the binary panics on every boot. Each respawn logs at
+WARN level with the diagnostic, and successful respawns log at INFO so
+operators see the recovery in `journalctl -u nomaddev-orchestrator`.
+
+The tool catalogue is not re-fetched on respawn — `tools/list` only fires
+on the first boot. We disable `--dynamic-toolsets`, so the upstream's
+advertised tools are stable across restarts.
+
 ## Observability
 
 A single counter tracks every invocation:
@@ -170,6 +187,18 @@ nomaddev_github_calls_total{tool="github_create_pull_request", outcome="ok"}
 
 Outcomes: `ok`, `error`, `timeout`, `canceled`, `bad_request`, `denied`
 (approval denied or timed out — call did not reach GitHub).
+
+A latency histogram tracks SLO percentiles:
+
+```
+nomaddev_github_call_seconds_bucket{le="..."}
+```
+
+The histogram is unlabeled (one set of buckets across all tools) to keep
+Prom series cardinality bounded. The counter is the right place for
+per-tool breakdown; the histogram answers "what's p95/p99 across all
+GitHub calls?". Pre-flight rejections (bad args, approval denied) don't
+contribute — only actual upstream MCP round-trips are observed.
 
 Stderr from the subprocess is line-piped into the orchestrator's structured
 log at Info level (`logger=github-mcp-server`) so upstream errors land in

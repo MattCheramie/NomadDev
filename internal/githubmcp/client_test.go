@@ -5,6 +5,8 @@ package githubmcp
 import (
 	"context"
 	"errors"
+	"log/slog"
+	"strings"
 	"testing"
 	"time"
 
@@ -155,5 +157,70 @@ func TestCall_NilSession_ReturnsBadRequest(t *testing.T) {
 	}
 	if !errors.Is(err, sandbox.ErrBadRequest) {
 		t.Errorf("err = %v, want ErrBadRequest", err)
+	}
+}
+
+// TestSubprocessDied_NilCmd: a zero-value Client (no cmd) is treated as
+// "dead" so Call doesn't try to use it without a respawn.
+func TestSubprocessDied_NilCmd(t *testing.T) {
+	c := &Client{}
+	if !c.subprocessDied() {
+		t.Fatal("nil cmd should be reported dead")
+	}
+}
+
+// TestRespawn_CooldownEnforced: a second respawn within restartCooldown
+// must be rejected to prevent restart storms when the upstream binary
+// crashes on every boot.
+func TestRespawn_CooldownEnforced(t *testing.T) {
+	// Construct a Client whose Options.Token resolution will fail (no env
+	// var set). That makes spawn() fail fast without actually exec'ing
+	// the subprocess — we want to verify the cooldown gate, not test the
+	// upstream binary.
+	t.Setenv("TEST_NO_SUCH_TOKEN_VAR", "")
+	c := &Client{
+		opts: Options{
+			Token: EnvTokenSource{Var: "TEST_NO_SUCH_TOKEN_VAR"},
+		},
+		logger:      slog.Default(),
+		lastRestart: time.Now(), // pretend we just restarted
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+
+	err := c.respawn(ctx)
+	if err == nil {
+		t.Fatal("want cooldown error on rapid second respawn")
+	}
+	if !strings.Contains(err.Error(), "cooldown") {
+		t.Errorf("err = %v, want cooldown message", err)
+	}
+}
+
+// TestRespawn_FirstCallNotCooldownThrottled: a Client that has never
+// restarted must allow respawn(). Construction-error path is fine — we're
+// just asserting we got past the cooldown gate.
+func TestRespawn_FirstCallNotCooldownThrottled(t *testing.T) {
+	t.Setenv("TEST_NO_SUCH_TOKEN_VAR2", "")
+	c := &Client{
+		opts: Options{
+			Token: EnvTokenSource{Var: "TEST_NO_SUCH_TOKEN_VAR2"},
+		},
+		logger: slog.Default(),
+		// lastRestart is zero — never restarted before.
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+
+	err := c.respawn(ctx)
+	if err == nil {
+		t.Fatal("want spawn-side error (token missing) but not cooldown")
+	}
+	if strings.Contains(err.Error(), "cooldown") {
+		t.Errorf("first respawn should not be cooldown-throttled, got %v", err)
+	}
+	// lastRestart must be updated either way so the next call IS throttled.
+	if c.lastRestart.IsZero() {
+		t.Error("lastRestart should be set after respawn attempt")
 	}
 }
