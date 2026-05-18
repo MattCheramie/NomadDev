@@ -289,12 +289,14 @@ What's instrumented today:
   deliberately omitted from span attributes — they'd dwarf trace
   storage and could leak secrets.
 
-These spans don't yet chain into the `ws.dispatch` root because the
-dispatcher's context isn't threaded into `runner.Exec` /
-`Client.Call`; that's a follow-up refactor (see README's
-remaining-Phase-11 list). For per-stage timing today, pair the
-trace surface with the Phase 11.1 Grafana dashboard — Prometheus
-already exposes per-stage latency histograms.
+Spans chain end-to-end (Phase 11.4): a `traceparent` header on the
+`/ws` upgrade lifts into the `ws.dispatch.<envelope.type>` span as
+the parent, and the dispatcher's `context.Context` is threaded
+through `handleCommandRequest` → `runner.Exec` so the
+`sandbox.exec` child span chains under it. Same path for
+`handleUserIntent` → middleware turn → `github.call`. Flame-graph
+views in Tempo / Jaeger now show the full
+`upstream → dispatch → tool` tree.
 
 **Why a quiet-fallback default.** If the OTLP endpoint is a typo,
 `tracing.Init` logs a warning and disables tracing rather than

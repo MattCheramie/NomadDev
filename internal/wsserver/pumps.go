@@ -25,7 +25,11 @@ const sendBuf = 64
 
 // runConnection wires the upgraded WS conn to the hub and pumps frames in both
 // directions. It blocks until either pump returns, then tears the client down.
+// connCtx carries the W3C trace context extracted from the upgrade
+// headers (Phase 11.4) — each per-envelope dispatch span links to
+// it as parent.
 func (s *Server) runConnection(
+	connCtx context.Context,
 	conn *websocket.Conn,
 	clientID string,
 	claims *auth.Claims,
@@ -48,7 +52,7 @@ func (s *Server) runConnection(
 
 	done := make(chan struct{})
 	go s.writePump(conn, client, sess, logger, done)
-	s.readPump(conn, client, sess, logger)
+	s.readPump(connCtx, conn, client, sess, logger)
 	<-done
 
 	s.hub.Unregister(client)
@@ -90,6 +94,7 @@ func (s *Server) bufferAndSend(sess *session.Session, c *hub.Client, env event.E
 //     error{rate_limited} envelope but the connection stays open — a
 //     well-behaved client can throttle and resume.
 func (s *Server) readPump(
+	connCtx context.Context,
 	conn *websocket.Conn,
 	client *hub.Client,
 	sess *session.Session,
@@ -142,7 +147,7 @@ func (s *Server) readPump(
 			s.replyError(sess, client, "", event.CodeBadEnvelope, err.Error())
 			continue
 		}
-		s.dispatch(env, client, sess, logger)
+		s.dispatch(connCtx, env, client, sess, logger)
 	}
 }
 
@@ -207,21 +212,26 @@ func (s *Server) writePump(
 	}
 }
 
-// dispatch handles one decoded inbound envelope.
+// dispatch handles one decoded inbound envelope. connCtx carries the
+// W3C trace context extracted at upgrade time (Phase 11.4); the
+// returned ctx is the dispatch-span ctx, which downstream handlers
+// thread into runner.Exec / Client.Call so per-tool child spans
+// chain under the dispatch root.
 func (s *Server) dispatch(
+	connCtx context.Context,
 	env event.Envelope,
 	client *hub.Client,
 	sess *session.Session,
 	logger *slog.Logger,
 ) {
-	// Phase 11.2: one root span per inbound envelope. No-op when
-	// tracing is disabled (otel.Tracer returns a noopTracer). The
-	// span surfaces type / sub / sid as attributes so a collector
-	// can filter by tool or operator without sampling-tax on
-	// quiet envelopes (a single tracer Start is ~tens of ns when
-	// the noop provider is installed).
+	// Phase 11.2 / 11.4: one root span per inbound envelope, parented
+	// to whatever traceparent the upgrade request carried (no-op when
+	// tracing is disabled). Span surfaces type / sub / sid as
+	// attributes so a collector can filter by tool or operator
+	// without sampling-tax on quiet envelopes (a single tracer Start
+	// is ~tens of ns when the noop provider is installed).
 	tracer := otel.Tracer("nomaddev/wsserver")
-	_, span := tracer.Start(context.Background(), "ws.dispatch."+env.Type,
+	dispatchCtx, span := tracer.Start(connCtx, "ws.dispatch."+env.Type,
 		trace.WithAttributes(
 			attribute.String("envelope.type", env.Type),
 			attribute.String("session.sub", client.Sub),
@@ -273,10 +283,10 @@ func (s *Server) dispatch(
 		}
 
 	case event.EventCommandRequest:
-		s.handleCommandRequest(env, client, sess, logger)
+		s.handleCommandRequest(dispatchCtx, env, client, sess, logger)
 
 	case event.EventUserIntent:
-		s.handleUserIntent(env, client, sess, logger)
+		s.handleUserIntent(dispatchCtx, env, client, sess, logger)
 
 	case event.EventToolApprovalGranted:
 		s.routeApproval(env, client, true)

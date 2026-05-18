@@ -27,6 +27,7 @@ const maxChunkSize = 16 * 1024
 // and emits envelopes back over bufferAndSend, then returns immediately so
 // the read pump can keep accepting frames.
 func (s *Server) handleCommandRequest(
+	dispatchCtx context.Context,
 	env event.Envelope, client *hub.Client, sess *session.Session, logger *slog.Logger,
 ) {
 	if s.runner == nil {
@@ -58,7 +59,10 @@ func (s *Server) handleCommandRequest(
 		}
 	}
 
-	execCtx, cancel := context.WithCancel(context.Background())
+	// Derive from dispatchCtx so the sandbox.exec span (Phase 11.3)
+	// chains under the ws.dispatch root (Phase 11.2/11.4) for a
+	// useful flame-graph view.
+	execCtx, cancel := context.WithCancel(dispatchCtx)
 
 	// Cancel the per-exec ctx when the client disconnects.
 	go func() {

@@ -59,6 +59,7 @@ func recordGitHubCall(tool, code string, startedAt time.Time) {
 // It is non-blocking: a goroutine drives the translator loop and fans events
 // back through bufferAndSend; the read pump returns to accept more frames.
 func (s *Server) handleUserIntent(
+	dispatchCtx context.Context,
 	env event.Envelope, client *hub.Client, sess *session.Session, logger *slog.Logger,
 ) {
 	if s.mw == nil {
@@ -85,7 +86,9 @@ func (s *Server) handleUserIntent(
 		}
 	}
 
-	turnCtx, cancel := context.WithCancel(context.Background())
+	// Derive from dispatchCtx (Phase 11.4) so per-tool spans
+	// chain under the ws.dispatch root.
+	turnCtx, cancel := context.WithCancel(dispatchCtx)
 	go func() {
 		select {
 		case <-client.Done():
