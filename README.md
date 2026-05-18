@@ -509,7 +509,7 @@ wider gap list. Small, cohesive items that unblock contributors.*
   auto-grant approvals → wsclient one-shot tool call). Avoids
   burning the live-CI PAT rate budget for contributor exploration.
 
-#### 9.3 Session-export CLI + reproducible-build CI + SQLite chaos tests — done
+#### 9.3 Session-export CLI + SQLite chaos tests — done
 - [x] **`cmd/session-export`** — small Go binary that dumps one
   SID's data from `sessions.db` or `history.db` as JSON Lines.
   Opens the DB **read-only** so a running orchestrator isn't
@@ -517,15 +517,6 @@ wider gap list. Small, cohesive items that unblock contributors.*
   `sqlite_master`. 7 tests cover SID filtering, both auto-detect
   paths, the both-tables ambiguity case, and explicit-`-kind`
   override on the wrong store.
-- [x] **Reproducible-build CI job.** New `reproducible-build` job
-  in `ci.yml` compiles `cmd/orchestrator` twice with the same
-  `-trimpath -tags "gemini github" -ldflags "-s -w -X main.version=…"`
-  flags (the release-workflow contract), drops the build cache
-  between runs, and fails if the two binaries don't have
-  identical sha256. Catches a stray timestamp leak or a
-  non-deterministic codegen change before a tag is cut.
-  Confirmed reproducible locally
-  (`5bfe273c…65142c` ✓).
 - [x] **SQLite chaos / failure-injection tests.** New
   `internal/dbutil/chaos_test.go` covers four real-world failure
   modes: bit-flip corruption (integrity_check surfaces
@@ -535,9 +526,18 @@ wider gap list. Small, cohesive items that unblock contributors.*
   migration (`alpha` table must not exist + `user_version` must
   not bump).
 
-**Remaining DX-lens follow-ups:** mobile E2E (Playwright/Cypress)
-covering the onboarding-to-first-turn path — its own PR because the
-Node test stack is independent of everything else.
+**Remaining DX-lens follow-ups:**
+- Mobile E2E (Playwright/Cypress) covering the onboarding-to-first-turn
+  path — its own PR because the Node test stack is independent of
+  everything else.
+- **Reproducible-build verification** — attempted in this PR (see
+  reverted commit on `claude/dx-tooling`) but Go-on-`ubuntu-latest`
+  consistently produced different sha256s across two builds with
+  `-trimpath -ldflags "-s -w -buildid="`, even though the same
+  flags are bit-identical on developer machines. The next attempt
+  should use `diffoscope` to identify exactly which section
+  differs (likely a `runtime/debug.BuildInfo` non-determinism or
+  a module-extraction-order quirk) before re-adding the check.
 
 ---
 
