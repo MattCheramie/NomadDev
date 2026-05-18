@@ -15,6 +15,19 @@ import (
 	nlog "github.com/mattcheramie/nomaddev/internal/log"
 )
 
+// WebAuthnConfig governs the Phase 12.3 security-key flow. Default
+// off because WebAuthn requires the SPA to be served over HTTPS
+// (or localhost) and the default Tailscale-fronted deploy is
+// plain HTTP. Operators behind a TLS reverse proxy set Enabled=true
+// and point RPID at the proxy's hostname.
+type WebAuthnConfig struct {
+	Enabled       bool
+	RPID          string   // bare hostname, no scheme/port
+	RPDisplayName string   // shown in browser permission prompt
+	Origins       []string // allowed origins, e.g. https://host:port
+	StorePath     string   // SQLite path for the credential store
+}
+
 // TracingConfig governs the OpenTelemetry exporter wiring. Tracing is
 // off by default — spans are a no-op until Enabled is true.
 type TracingConfig struct {
@@ -177,6 +190,7 @@ type Config struct {
 	Auth           AuthConfig
 	Audit          AuditConfig
 	Tracing        TracingConfig
+	WebAuthn       WebAuthnConfig
 	Session        SessionConfig
 	Sandbox        SandboxConfig
 	Middleware     MiddlewareConfig
@@ -233,6 +247,13 @@ func Load() (*Config, error) {
 		Audit: AuditConfig{
 			Backend: envOr("NOMADDEV_AUDIT_BACKEND", "stderr"),
 			Path:    envOr("NOMADDEV_AUDIT_PATH", "/var/lib/nomaddev/audit.log"),
+		},
+		WebAuthn: WebAuthnConfig{
+			Enabled:       envBool("NOMADDEV_WEBAUTHN_ENABLED", false),
+			RPID:          os.Getenv("NOMADDEV_WEBAUTHN_RPID"),
+			RPDisplayName: envOr("NOMADDEV_WEBAUTHN_RP_DISPLAY_NAME", "NomadDev"),
+			Origins:       envCSV("NOMADDEV_WEBAUTHN_ORIGINS", nil),
+			StorePath:     envOr("NOMADDEV_WEBAUTHN_STORE_PATH", "/var/lib/nomaddev/webauthn.db"),
 		},
 		Tracing: TracingConfig{
 			Enabled:        envBool("NOMADDEV_OTEL_ENABLED", false),

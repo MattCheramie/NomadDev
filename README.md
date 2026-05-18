@@ -830,12 +830,48 @@ the sandbox / GitHub MCP tool.
   `perSession=false` ignores SID, and `..`-traversal still
   rejected under the per-SID prefix.
 
-**Remaining Phase-12 follow-ups:** pool-style memory quota
-(only if a multi-tenant deploy hits the worst-case sizing —
-documented sizing approach in `docs/sandbox.md` covers the same
-blast radius); mobile native build (Expo EAS — separate infra
-setup); WebAuthn behind TLS (significant; server-side ceremony
-+ browser API integration).
+#### 12.3 WebAuthn — server-side ceremony + credential store — done
+- [x] **New `internal/webauthn` package** wrapping
+  `github.com/go-webauthn/webauthn`. `Service` owns the four
+  ceremony entry points (BeginRegistration / FinishRegistration /
+  BeginLogin / FinishLogin); the SQLite-backed `Store`
+  persists per-(sub, credential_id) rows with the public key,
+  sign count, and attestation type. Uses the Phase 8.7 dbutil
+  migration pattern.
+- [x] **In-memory `SessionCache`** for in-flight ceremony
+  challenges. 5-minute TTL, used-once `Take` semantics so a
+  replayed finish gets a clean miss; pruned on every Put / Take.
+- [x] **Four new HTTP endpoints** under `/auth/webauthn/`:
+  - `register/begin` + `register/finish` — JWT-gated; an
+    operator must already be authenticated to add a security key
+    to their `sub`.
+  - `login/begin` + `login/finish` — unauthenticated; takes
+    `sub` and returns a fresh JWT pair on successful assertion.
+- [x] **Probe resistance.** `login/begin` returns the same
+  401 message whether the sub exists with no keys or doesn't
+  exist at all; the server log carries the real reason for the
+  operator.
+- [x] **Disabled by default.** WebAuthn requires HTTPS-or-localhost,
+  which the default Tailscale plain-HTTP deploy doesn't have. The
+  routes only register when `NOMADDEV_WEBAUTHN_ENABLED=true`;
+  unregistered routes return 404 (the canonical "not configured"
+  signal).
+- [x] **9 unit tests + 5 handler tests** pin the store roundtrip,
+  the session-cache TTL + used-once semantics, the disabled-route
+  404, JWT-required behavior, the begin-register
+  options+session-token shape, and the probe-resistant login-begin
+  error.
+
+See [`docs/webauthn.md`](./docs/webauthn.md) for the operator
+workflow, threat model, and SPA-side integration sketch.
+
+**Remaining Phase-12 follow-ups:** mobile-side WebAuthn UI
+(Settings "Register key" + login "Sign in with key" — the SPA
+calls `navigator.credentials.create/get`; server is ready);
+pool-style memory quota (only if a multi-tenant deploy hits the
+worst-case sizing — documented sizing approach in
+`docs/sandbox.md` covers the same blast radius); mobile native
+build (Expo EAS — separate infra setup).
 
 ---
 

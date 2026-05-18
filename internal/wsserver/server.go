@@ -20,6 +20,7 @@ import (
 	"github.com/mattcheramie/nomaddev/internal/middleware"
 	"github.com/mattcheramie/nomaddev/internal/sandbox"
 	"github.com/mattcheramie/nomaddev/internal/session"
+	"github.com/mattcheramie/nomaddev/internal/webauthn"
 )
 
 // Server bundles the HTTP listener, the WS upgrader, and references to the
@@ -33,6 +34,7 @@ type Server struct {
 	issuer    *auth.IssuerSigner  // nil disables /auth/refresh
 	revoker   auth.RevocationList // nil disables /auth/revoke and revocation checks
 	audit     audit.Sink          // nil falls back to audit.NoopSink at use sites
+	webauthn  *webauthn.Service   // nil disables /auth/webauthn/*
 	readiness []ReadinessProbe    // probed by /readyz
 	runner    sandbox.Runner      // may be nil — see handleCommandRequest
 	mw        *middleware.Service // may be nil — see handleUserIntent
@@ -64,6 +66,11 @@ type Options struct {
 	// dependency. Empty slice = /readyz always reports OK (acceptable
 	// for the no-deps mock-runtime path).
 	Readiness []ReadinessProbe
+	// WebAuthn enables the /auth/webauthn/* endpoints. nil leaves
+	// them unregistered (operators on plain-HTTP Tailscale deploys
+	// where WebAuthn can't satisfy its HTTPS-or-localhost
+	// requirement don't pay for routes they can't use).
+	WebAuthn *webauthn.Service
 }
 
 // New constructs a Server. The HTTP server is built but not started. runner
@@ -95,6 +102,7 @@ func NewWithOptions(
 		revoker:   opts.Revoker,
 		audit:     coalesceAudit(opts.Audit),
 		readiness: opts.Readiness,
+		webauthn:  opts.WebAuthn,
 		runner:    runner,
 		mw:        mw,
 		upgrader: websocket.Upgrader{
@@ -118,6 +126,12 @@ func NewWithOptions(
 	}
 	if opts.Revoker != nil {
 		mux.HandleFunc("/auth/revoke", srv.revokeHandler)
+	}
+	if opts.WebAuthn != nil {
+		mux.HandleFunc("/auth/webauthn/register/begin", srv.webauthnRegisterBeginHandler)
+		mux.HandleFunc("/auth/webauthn/register/finish", srv.webauthnRegisterFinishHandler)
+		mux.HandleFunc("/auth/webauthn/login/begin", srv.webauthnLoginBeginHandler)
+		mux.HandleFunc("/auth/webauthn/login/finish", srv.webauthnLoginFinishHandler)
 	}
 	if cfg.SPA.Enabled {
 		// Registered AFTER /ws, /healthz, and /metrics so longest-prefix wins

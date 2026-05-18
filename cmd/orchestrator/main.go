@@ -27,6 +27,7 @@ import (
 	"github.com/mattcheramie/nomaddev/internal/sandbox"
 	"github.com/mattcheramie/nomaddev/internal/session"
 	"github.com/mattcheramie/nomaddev/internal/tracing"
+	"github.com/mattcheramie/nomaddev/internal/webauthn"
 	"github.com/mattcheramie/nomaddev/internal/wsserver"
 )
 
@@ -231,11 +232,24 @@ func run(listenOverride string) error {
 		"github_tools", len(ghTools),
 	)
 
+	waSvc, waClose, err := buildWebAuthn(cfg, logger)
+	if err != nil {
+		return fmt.Errorf("webauthn: %w", err)
+	}
+	if waClose != nil {
+		defer func() {
+			if err := waClose(); err != nil {
+				logger.Warn("orchestrator: webauthn close", "err", err)
+			}
+		}()
+	}
+
 	srv := wsserver.NewWithOptions(cfg, logger, h, sessions, verifier, runner, mw, wsserver.Options{
 		Issuer:    issuer,
 		Revoker:   revoker,
 		Audit:     auditSink,
 		Readiness: buildReadinessProbes(sessions, mw, revoker),
+		WebAuthn:  waSvc,
 	})
 	logger.Info("orchestrator: auth",
 		"access_ttl", cfg.Auth.AccessTTL,
@@ -515,6 +529,35 @@ func buildReadinessProbes(sess session.Store, mw *middleware.Service, rev auth.R
 		probes = append(probes, wsserver.ReadinessProbe{Name: "revocation_db", Check: p.PingContext})
 	}
 	return probes
+}
+
+// buildWebAuthn opens the credential store + wires the WebAuthn
+// service when the operator has enabled it. Returns (nil, nil, nil)
+// when disabled — the wsserver layer registers no routes in that
+// case.
+func buildWebAuthn(cfg *config.Config, logger *slog.Logger) (*webauthn.Service, func() error, error) {
+	if !cfg.WebAuthn.Enabled {
+		return nil, nil, nil
+	}
+	if err := os.MkdirAll(filepath.Dir(cfg.WebAuthn.StorePath), 0o700); err != nil {
+		return nil, nil, fmt.Errorf("webauthn dir: %w", err)
+	}
+	store, err := webauthn.NewSQLiteStore(cfg.WebAuthn.StorePath)
+	if err != nil {
+		return nil, nil, err
+	}
+	svc, err := webauthn.New(webauthn.Config{
+		RPID:          cfg.WebAuthn.RPID,
+		RPDisplayName: cfg.WebAuthn.RPDisplayName,
+		Origins:       cfg.WebAuthn.Origins,
+	}, store)
+	if err != nil {
+		_ = store.Close()
+		return nil, nil, err
+	}
+	logger.Info("orchestrator: webauthn enabled",
+		"rpid", cfg.WebAuthn.RPID, "origins", cfg.WebAuthn.Origins)
+	return svc, store.Close, nil
 }
 
 // firstNonEmpty returns the first non-empty arg, or "" if none. Used to
