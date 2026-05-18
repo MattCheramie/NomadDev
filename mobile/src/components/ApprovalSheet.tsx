@@ -27,7 +27,12 @@ export function ApprovalSheet({ request, onApprove, onDeny }: ApprovalSheetProps
         <View style={styles.sheet} accessibilityLabel="approval-sheet">
           <Text style={styles.title}>Approval required</Text>
           <Text style={styles.label}>Tool</Text>
-          <Text style={styles.value}>{request.tool}</Text>
+          <View style={styles.toolRow}>
+            <Text style={styles.value}>{request.tool}</Text>
+            {request.tool.startsWith('github_') ? (
+              <Text style={styles.badge} accessibilityLabel="github-badge">GITHUB</Text>
+            ) : null}
+          </View>
           {request.reason ? (
             <>
               <Text style={styles.label}>Reason</Text>
@@ -80,6 +85,21 @@ const styles = StyleSheet.create({
   title: { color: '#e6edf3', fontSize: 18, fontWeight: '700' as '700', marginBottom: 6 },
   label: { color: '#9aa4b2', fontSize: 12, marginTop: 6 },
   value: { color: '#e6edf3', fontSize: 14 },
+  toolRow: { flexDirection: 'row', alignItems: 'center', gap: 8, flexWrap: 'wrap' },
+  // GitHub-branded badge surfaced next to the tool name when the dispatcher
+  // routes the call through the github-mcp-server backend. Visual cue so the
+  // operator instantly knows the approval touches GitHub state vs. the local
+  // sandbox/fsops.
+  badge: {
+    color: '#e6edf3',
+    backgroundColor: '#6f42c1',
+    fontSize: 10,
+    fontWeight: '700' as '700',
+    paddingVertical: 2,
+    paddingHorizontal: 6,
+    borderRadius: 4,
+    overflow: 'hidden',
+  },
   code: {
     color: '#7ee787', fontFamily: 'Menlo, Consolas, monospace' as any, fontSize: 12,
     backgroundColor: '#161b22', padding: 8, borderRadius: 6,

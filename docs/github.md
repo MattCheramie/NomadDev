@@ -31,6 +31,22 @@ A binary built **without** `-tags github` is a no-op for GitHub features: the
 stub returns `ErrNotBuilt` from `githubmcp.New`. Default builds still work,
 they just don't expose any `github_*` tools.
 
+### Live smoke test (developer-only)
+
+The github-tagged suite includes a `TestLive_*` group that spawns the real
+binary and round-trips against the GitHub API. CI skips it automatically
+(env unset); developers run it manually:
+
+```sh
+export NOMADDEV_GITHUB_TOKEN=github_pat_…
+# github-mcp-server on PATH, or:
+# export NOMADDEV_GITHUB_MCP_BIN=/path/to/github-mcp-server
+make test-github-live
+```
+
+This is the highest-fidelity check that the upstream's MCP wire protocol
+hasn't drifted from what this adapter expects.
+
 ## Configuration
 
 All knobs default to safe values; setting `NOMADDEV_GITHUB_TOKEN` is the
@@ -114,6 +130,16 @@ Gemini emits → github_create_pull_request(...)
               → client.Call strips prefix → MCP CallTool("create_pull_request")
               → result rendered into a single ExecChunk + assistant.chunk
 ```
+
+## Mobile UX
+
+The approval card surfaces a small **GITHUB** badge next to the tool name
+whenever the dispatcher routes the call through the github-mcp-server
+backend (any tool prefixed `github_`). It's a visual cue so the operator
+instantly distinguishes an approval that touches GitHub state from one that
+runs locally. Other than the badge the card is identical to the
+sandbox/fsops approval flow — same tool/args/reason layout, same approve
+and deny actions, same countdown.
 
 ## Observability
 
