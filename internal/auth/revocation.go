@@ -210,6 +210,15 @@ func (s *SQLiteRevocationList) Close() error {
 	return s.db.Close()
 }
 
+// PingContext verifies the database connection is alive. Used by the
+// orchestrator's /readyz probe.
+func (s *SQLiteRevocationList) PingContext(ctx context.Context) error {
+	if s.db == nil {
+		return nil
+	}
+	return s.db.PingContext(ctx)
+}
+
 // Prune deletes rows whose exp_at is before now and returns the row count.
 func (s *SQLiteRevocationList) Prune(ctx context.Context, now time.Time) (int, error) {
 	res, err := s.db.ExecContext(ctx, `DELETE FROM revoked_tokens WHERE exp_at < ?`, now.Unix())

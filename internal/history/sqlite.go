@@ -177,3 +177,7 @@ func (s *SQLiteStore) Reset(ctx context.Context, sid string) error {
 
 // Close shuts the database down. Idempotent.
 func (s *SQLiteStore) Close() error { return s.db.Close() }
+
+// PingContext verifies the database connection is alive. Used by the
+// orchestrator's /readyz probe.
+func (s *SQLiteStore) PingContext(ctx context.Context) error { return s.db.PingContext(ctx) }

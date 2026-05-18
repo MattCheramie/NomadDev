@@ -48,6 +48,14 @@ func TestSPA_HealthAndWSStillResolve(t *testing.T) {
 		t.Errorf("healthz hijacked by SPA: code=%d body=%q", w.Code, w.Body.String())
 	}
 
+	// /readyz must not be hijacked by the SPA either — same longest-prefix
+	// mux invariant as /healthz.
+	w = httptest.NewRecorder()
+	srv.Handler().ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/readyz", nil))
+	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `"status"`) {
+		t.Errorf("readyz hijacked by SPA: code=%d body=%q", w.Code, w.Body.String())
+	}
+
 	// /ws without an upgrade header returns the bad-request the WS handler
 	// emits, not the SPA fallback.
 	w = httptest.NewRecorder()

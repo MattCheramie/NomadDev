@@ -4,6 +4,7 @@ package wsserver
 
 import (
 	"context"
+	"encoding/json"
 	"log/slog"
 	"net/http"
 	"time"
@@ -31,6 +32,7 @@ type Server struct {
 	issuer    *auth.IssuerSigner  // nil disables /auth/refresh
 	revoker   auth.RevocationList // nil disables /auth/revoke and revocation checks
 	audit     audit.Sink          // nil falls back to audit.NoopSink at use sites
+	readiness []ReadinessProbe    // probed by /readyz
 	runner    sandbox.Runner      // may be nil — see handleCommandRequest
 	mw        *middleware.Service // may be nil — see handleUserIntent
 	sem       chan struct{}       // optional cap on concurrent execs; nil = unlimited
@@ -38,6 +40,14 @@ type Server struct {
 	upgrader  websocket.Upgrader
 	http      *http.Server
 	mux       *http.ServeMux
+}
+
+// ReadinessProbe is one named dependency the /readyz handler will
+// probe. Check is invoked with a per-request context; a nil return
+// means healthy, any error returns 503 for the whole endpoint.
+type ReadinessProbe struct {
+	Name  string
+	Check func(ctx context.Context) error
 }
 
 // Options carries optional dependencies for New. Existing callers that
@@ -49,6 +59,10 @@ type Options struct {
 	// Audit is the structured security-event sink. nil is equivalent
 	// to audit.NoopSink — every audit.Log call becomes a no-op.
 	Audit audit.Sink
+	// Readiness probes are invoked by /readyz, one per configured
+	// dependency. Empty slice = /readyz always reports OK (acceptable
+	// for the no-deps mock-runtime path).
+	Readiness []ReadinessProbe
 }
 
 // New constructs a Server. The HTTP server is built but not started. runner
@@ -71,16 +85,17 @@ func NewWithOptions(
 ) *Server {
 	mux := http.NewServeMux()
 	srv := &Server{
-		cfg:      cfg,
-		log:      log,
-		hub:      h,
-		sessions: s,
-		verifier: v,
-		issuer:   opts.Issuer,
-		revoker:  opts.Revoker,
-		audit:    coalesceAudit(opts.Audit),
-		runner:   runner,
-		mw:       mw,
+		cfg:       cfg,
+		log:       log,
+		hub:       h,
+		sessions:  s,
+		verifier:  v,
+		issuer:    opts.Issuer,
+		revoker:   opts.Revoker,
+		audit:     coalesceAudit(opts.Audit),
+		readiness: opts.Readiness,
+		runner:    runner,
+		mw:        mw,
 		upgrader: websocket.Upgrader{
 			Subprotocols: []string{"bearer"},
 			CheckOrigin:  func(_ *http.Request) bool { return true },
@@ -94,6 +109,7 @@ func NewWithOptions(
 		srv.intentSem = make(chan struct{}, mw.Config.MaxConcurrent)
 	}
 	mux.HandleFunc("/healthz", srv.healthHandler)
+	mux.HandleFunc("/readyz", srv.readyHandler)
 	mux.Handle("/metrics", metrics.Handler())
 	mux.HandleFunc("/ws", srv.wsHandler)
 	if opts.Issuer != nil {
@@ -136,8 +152,48 @@ func (s *Server) Shutdown(ctx context.Context) error {
 }
 
 func (s *Server) healthHandler(w http.ResponseWriter, _ *http.Request) {
+	// Liveness: the process is up and the HTTP listener is responding.
+	// Does NOT probe dependencies — that's /readyz's job.
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write([]byte(`{"status":"ok"}`))
+}
+
+// readyHandler implements /readyz. Iterates the configured Readiness
+// probes and returns 200 with per-probe pass/fail JSON; 503 if any
+// single probe failed. Each probe gets its own 2-second deadline so a
+// hung dependency can't lock the endpoint open. The JSON shape is
+// stable: {"status":"ok|degraded","checks":{"name":"ok|err msg",...}}.
+func (s *Server) readyHandler(w http.ResponseWriter, r *http.Request) {
+	checks := make(map[string]string, len(s.readiness))
+	allOK := true
+	for _, p := range s.readiness {
+		ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
+		err := p.Check(ctx)
+		cancel()
+		if err != nil {
+			allOK = false
+			checks[p.Name] = err.Error()
+			continue
+		}
+		checks[p.Name] = "ok"
+	}
+	status := "ok"
+	code := http.StatusOK
+	if !allOK {
+		status = "degraded"
+		code = http.StatusServiceUnavailable
+	}
+	body := readyResponse{Status: status, Checks: checks}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(code)
+	_ = json.NewEncoder(w).Encode(body)
+}
+
+// readyResponse is the JSON shape returned by /readyz. Keep keys
+// stable — downstream alerting depends on them.
+type readyResponse struct {
+	Status string            `json:"status"`
+	Checks map[string]string `json:"checks"`
 }
 
 // coalesceAudit returns the supplied Sink or a NoopSink if nil. Every

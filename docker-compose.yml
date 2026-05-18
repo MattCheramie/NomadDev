@@ -29,11 +29,16 @@ services:
       # enable when the orchestrator runs on a host you fully control.
       # - /var/run/docker.sock:/var/run/docker.sock
     healthcheck:
-      # distroless/static has no shell, so we point the binary itself or use
-      # an external check. Compose's `service_healthy` runs from the host; if
-      # you need an in-container probe, switch to distroless/cc and install
-      # busybox-wget.
-      disable: true
+      # distroless/static has no shell and no wget, so the orchestrator
+      # binary doubles as its own healthcheck client via -healthcheck.
+      # /readyz returns 503 if any configured SQLite store is unreachable;
+      # Compose flips the container to "unhealthy" and restart: unless-stopped
+      # then bounces it.
+      test: ["CMD", "/usr/local/bin/orchestrator", "-healthcheck", "http://127.0.0.1:8080/readyz"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
 
 volumes:
   nomaddev-data:
