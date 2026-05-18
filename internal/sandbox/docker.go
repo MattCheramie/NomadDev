@@ -27,6 +27,7 @@ import (
 type DockerRunner struct {
 	cli            *client.Client
 	image          string
+	expectedDigest string // non-empty when image was pinned via @sha256:...
 	workspaceDir   string
 	defaultTimeout time.Duration
 	limits         ResourceLimits
@@ -45,11 +46,23 @@ type DockerRunnerOptions struct {
 	ReadonlyRoot   bool
 	Network        string
 	PreferRunsc    bool
-	Logger         *slog.Logger
+	// RequireDigest, when true, makes NewDockerRunner return
+	// ErrImageDigestRequired if Image has no `@sha256:...` suffix. Use
+	// this in production to refuse to boot on a tag-only ref that
+	// would be vulnerable to a registry-tag race.
+	RequireDigest bool
+	Logger        *slog.Logger
 }
 
 // NewDockerRunner constructs a DockerRunner and probes the daemon for runsc.
 func NewDockerRunner(ctx context.Context, opts DockerRunnerOptions) (*DockerRunner, error) {
+	_, _, digest, err := ParseImageRef(opts.Image)
+	if err != nil {
+		return nil, fmt.Errorf("sandbox: parse image %q: %w", opts.Image, err)
+	}
+	if opts.RequireDigest && digest == "" {
+		return nil, fmt.Errorf("%w: %q", ErrImageDigestRequired, opts.Image)
+	}
 	cli, err := client.NewClientWithOpts(client.FromEnv, client.WithAPIVersionNegotiation())
 	if err != nil {
 		return nil, fmt.Errorf("sandbox: docker client: %w", err)
@@ -61,6 +74,7 @@ func NewDockerRunner(ctx context.Context, opts DockerRunnerOptions) (*DockerRunn
 	r := &DockerRunner{
 		cli:            cli,
 		image:          opts.Image,
+		expectedDigest: digest,
 		workspaceDir:   opts.WorkspaceDir,
 		defaultTimeout: opts.DefaultTimeout,
 		limits:         opts.Limits,
@@ -77,6 +91,13 @@ func NewDockerRunner(ctx context.Context, opts DockerRunnerOptions) (*DockerRunn
 		} else {
 			r.log.Warn("sandbox: gVisor (runsc) not advertised by Docker daemon; using default runtime")
 		}
+	}
+	if digest != "" {
+		r.log.Info("sandbox: image pinned by digest",
+			"image", opts.Image, "digest", digest)
+	} else {
+		r.log.Warn("sandbox: image not pinned by digest — tag-race risk; set NOMADDEV_SANDBOX_REQUIRE_DIGEST=true to enforce",
+			"image", opts.Image)
 	}
 	return r, nil
 }
@@ -137,6 +158,30 @@ func (r *DockerRunner) runOne(
 		}
 		_, _ = io.Copy(io.Discard, pullReader)
 		_ = pullReader.Close()
+	}
+
+	// 1a. If the operator pinned the image by digest, verify that what
+	//     ended up local actually matches. Docker validates digest-on-pull,
+	//     but the cache path bypasses that and a malicious `docker tag`
+	//     on the host could otherwise smuggle a different manifest under
+	//     the configured name.
+	if r.expectedDigest != "" {
+		inspect, _, inspectErr := r.cli.ImageInspectWithRaw(ctx, r.image)
+		if inspectErr != nil {
+			out <- ExecChunk{Stream: StreamExit, ExitCode: -1,
+				Err: fmt.Errorf("sandbox: post-pull inspect: %w", inspectErr)}
+			return
+		}
+		if !MatchesRepoDigest(inspect.RepoDigests, r.expectedDigest) {
+			r.log.Error("sandbox: image digest mismatch — refusing to run",
+				"image", r.image,
+				"expected", r.expectedDigest,
+				"got_repo_digests", inspect.RepoDigests)
+			out <- ExecChunk{Stream: StreamExit, ExitCode: -1,
+				Err: fmt.Errorf("%w: image %q has RepoDigests %v, expected %s",
+					ErrImageDigestMismatch, r.image, inspect.RepoDigests, r.expectedDigest)}
+			return
+		}
 	}
 
 	// 2. Build container config.

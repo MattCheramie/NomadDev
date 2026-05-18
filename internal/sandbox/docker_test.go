@@ -159,6 +159,46 @@ func TestDocker_NoNetwork(t *testing.T) {
 	}
 }
 
+func TestDocker_RequireDigest_RejectsTagOnlyImage(t *testing.T) {
+	// No daemon needed: NewDockerRunner validates the image string
+	// before touching Docker.
+	_, err := NewDockerRunner(context.Background(), DockerRunnerOptions{
+		Image:         "alpine:3.20",
+		RequireDigest: true,
+	})
+	if err == nil {
+		t.Fatal("expected error when RequireDigest is set on a tag-only image")
+	}
+	if !errors.Is(err, ErrImageDigestRequired) {
+		t.Fatalf("err = %v, want ErrImageDigestRequired", err)
+	}
+}
+
+func TestDocker_RequireDigest_AcceptsPinnedImage(t *testing.T) {
+	requireDaemon(t)
+	pinned := "alpine:3.20@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+	r, err := NewDockerRunner(context.Background(), DockerRunnerOptions{
+		Image:         pinned,
+		RequireDigest: true,
+		Network:       "none",
+	})
+	if err != nil {
+		t.Fatalf("NewDockerRunner: %v", err)
+	}
+	if r.expectedDigest == "" {
+		t.Fatal("expectedDigest should have been parsed out")
+	}
+}
+
+func TestDocker_RejectsMalformedDigest(t *testing.T) {
+	_, err := NewDockerRunner(context.Background(), DockerRunnerOptions{
+		Image: "alpine@md5:0123456789abcdef",
+	})
+	if err == nil {
+		t.Fatal("expected parse error on non-sha256 digest")
+	}
+}
+
 func TestDocker_OOMKill(t *testing.T) {
 	requireDaemon(t)
 	// Tight 16 MiB cap; the script asks dd for a 256 MiB buffer in one
