@@ -43,9 +43,13 @@ type Claims struct {
 	jwt.RegisteredClaims
 }
 
-// Verifier validates HS256 tokens signed with a shared secret.
+// Verifier validates HS256 tokens signed with one of a small set of
+// trusted secrets. The first secret is the "primary" used by the
+// issuer to sign new tokens; the rest are previous-generation secrets
+// kept around during a rotation grace window so tokens signed under
+// the old secret still verify until they expire naturally.
 type Verifier struct {
-	secret   []byte
+	secrets  [][]byte // primary first, then any previous-generation secrets
 	parser   *jwt.Parser
 	revoker  RevocationList
 	verifyAt func() time.Time // overridable for tests
@@ -60,11 +64,31 @@ func NewVerifier(secret []byte) *Verifier {
 // NewVerifierWithRevocation constructs a Verifier that also rejects tokens
 // whose jti has been revoked. Pass NoopRevocationList{} to disable.
 func NewVerifierWithRevocation(secret []byte, rev RevocationList) *Verifier {
+	return NewVerifierWithSecrets([][]byte{secret}, rev)
+}
+
+// NewVerifierWithSecrets constructs a Verifier that tries each secret in
+// order during token validation. The first matching signature wins;
+// callers list the current ("primary") secret first and any
+// previous-generation secrets after. Used by the orchestrator to honor
+// NOMADDEV_JWT_PREV_SECRETS so a rotation can avoid mass session
+// re-onboarding — tokens minted under the old secret keep verifying
+// until they expire naturally.
+//
+// Each secret is tried with the standard HS256 / issuer / expiration
+// guards. Empty secrets are dropped silently.
+func NewVerifierWithSecrets(secrets [][]byte, rev RevocationList) *Verifier {
 	if rev == nil {
 		rev = NoopRevocationList{}
 	}
+	clean := make([][]byte, 0, len(secrets))
+	for _, s := range secrets {
+		if len(s) > 0 {
+			clean = append(clean, s)
+		}
+	}
 	return &Verifier{
-		secret: secret,
+		secrets: clean,
 		parser: jwt.NewParser(
 			jwt.WithValidMethods([]string{"HS256"}),
 			jwt.WithIssuer(Issuer),
@@ -91,12 +115,33 @@ func (v *Verifier) parseCtx(ctx context.Context, tokenString string) (*Claims, e
 	if tokenString == "" {
 		return nil, errors.New("auth: empty token")
 	}
-	claims := &Claims{}
-	_, err := v.parser.ParseWithClaims(tokenString, claims, func(_ *jwt.Token) (any, error) {
-		return v.secret, nil
-	})
-	if err != nil {
-		return nil, fmt.Errorf("auth: parse: %w", err)
+	if len(v.secrets) == 0 {
+		return nil, errors.New("auth: no secrets configured")
+	}
+	// Try each secret in order. Primary first so the common path is
+	// one parse; rotation grace falls through to previous-generation
+	// secrets only when the primary fails. The parser also enforces
+	// HS256 + issuer + expiration on every attempt — none of those
+	// failure modes get masked by the fallthrough.
+	var (
+		claims  *Claims
+		lastErr error
+	)
+	for _, secret := range v.secrets {
+		s := secret // capture for closure
+		c := &Claims{}
+		_, err := v.parser.ParseWithClaims(tokenString, c, func(_ *jwt.Token) (any, error) {
+			return s, nil
+		})
+		if err == nil {
+			claims = c
+			lastErr = nil
+			break
+		}
+		lastErr = err
+	}
+	if claims == nil {
+		return nil, fmt.Errorf("auth: parse: %w", lastErr)
 	}
 	if claims.Sid == "" {
 		return nil, errors.New("auth: token missing sid claim")

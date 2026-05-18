@@ -127,8 +127,17 @@ func run(listenOverride string) error {
 			logger.Warn("orchestrator: revocation close", "err", err)
 		}
 	}()
-	verifier := auth.NewVerifierWithRevocation(cfg.JWTSecret, revoker)
+	// JWT secret rotation grace window: the primary (cfg.JWTSecret)
+	// is what the Issuer signs with; the verifier additionally
+	// accepts cfg.JWTPrevSecrets so a rotation doesn't immediately
+	// invalidate every live session.
+	secrets := append([][]byte{cfg.JWTSecret}, cfg.JWTPrevSecrets...)
+	verifier := auth.NewVerifierWithSecrets(secrets, revoker)
 	issuer := auth.NewIssuerWithTTLs(cfg.JWTSecret, cfg.Auth.AccessTTL, cfg.Auth.RefreshTTL)
+	if len(cfg.JWTPrevSecrets) > 0 {
+		logger.Info("orchestrator: JWT rotation grace active",
+			"prev_secret_count", len(cfg.JWTPrevSecrets))
+	}
 
 	runner, err := sandbox.NewRunner(rootCtx, sandbox.FactoryConfig{
 		Runtime:        cfg.Sandbox.Runtime,

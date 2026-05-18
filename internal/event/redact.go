@@ -2,6 +2,7 @@ package event
 
 import (
 	"fmt"
+	"regexp"
 	"strings"
 )
 
@@ -65,6 +66,14 @@ func redactValue(key string, v any) any {
 	}
 	switch x := v.(type) {
 	case string:
+		// Script-shaped args carry shell code; an inline
+		// `export TOKEN=abc123` would otherwise show in plain text
+		// on the approval card. Scan and mask any sensitive-named
+		// assignments before truncation. Non-script string keys
+		// fall through to the standard truncation path.
+		if isScriptKey(key) {
+			return truncateString(redactScript(x))
+		}
 		return truncateString(x)
 	case map[string]any:
 		return RedactArgs(x)
@@ -76,6 +85,66 @@ func redactValue(key string, v any) any {
 		return out
 	}
 	return v
+}
+
+// scriptKeys are arg-key substrings (case-insensitive) that signal
+// "this string is shell code, scan its contents for inline secrets".
+// Kept narrow on purpose — a free-form "description" or "body" field
+// shouldn't get pattern-scanned because the scanner is a heuristic,
+// not a parser, and false positives mangle prose.
+var scriptKeys = []string{"script", "command"}
+
+func isScriptKey(key string) bool {
+	if key == "" {
+		return false
+	}
+	lower := strings.ToLower(key)
+	for _, needle := range scriptKeys {
+		if strings.Contains(lower, needle) {
+			return true
+		}
+	}
+	return false
+}
+
+// inlineAssignRE matches shell-style `NAME=VALUE` and
+// `export NAME=VALUE` (and `set NAME=VALUE`) — the common shapes
+// for setting a secret inline in a bash script. The NAME capture is
+// strict (uppercase letters, digits, underscore) so we don't match
+// prose like "the script=foo argument"; the VALUE capture is greedy
+// to end-of-line OR end-of-quoted-string, covering both
+// `TOKEN=abc` and `TOKEN="abc 123"`. Heuristic on purpose; the
+// approval card stays useful even when this misses a creative
+// assignment shape — operators can read the script.
+var inlineAssignRE = regexp.MustCompile(
+	`(?m)(?:\b(?:export|set)\s+)?([A-Z][A-Z0-9_]*)=(?:("[^"]*"|'[^']*'|[^\s;&|]+))`,
+)
+
+// redactScript scans s for inline NAME=VALUE assignments and replaces
+// the VALUE with the redaction sentinel when NAME matches the same
+// sensitive-key list RedactArgs uses. Returns s unchanged when no
+// matches are found.
+func redactScript(s string) string {
+	return inlineAssignRE.ReplaceAllStringFunc(s, func(match string) string {
+		// Re-run the regex to pull out the capture groups; ReplaceAllStringFunc
+		// doesn't expose them directly.
+		sub := inlineAssignRE.FindStringSubmatch(match)
+		if len(sub) < 3 {
+			return match
+		}
+		name := sub[1]
+		if !isSensitiveKey(name) {
+			return match
+		}
+		// Reconstruct the prefix exactly so the original whitespace
+		// + export/set keyword survives — operators reviewing the
+		// approval need the script to remain readable.
+		eq := strings.Index(match, "=")
+		if eq < 0 {
+			return match
+		}
+		return match[:eq+1] + redactedSentinel
+	})
 }
 
 func isSensitiveKey(key string) bool {

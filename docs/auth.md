@@ -112,8 +112,41 @@ go run ./scripts/gen-jwt -kind pair -sub matt -sid sess-1
 ## Secret management
 
 The signing secret lives in `NOMADDEV_JWT_SECRET`. The orchestrator refuses to
-start if the decoded secret is under 32 bytes. Rotate by issuing fresh tokens
-under the new secret, then redeploying the orchestrator with the new env.
+start if the decoded secret is under 32 bytes.
+
+### Rotation with a grace window (Phase 10.1)
+
+A naive rotation (replace `NOMADDEV_JWT_SECRET`, restart) invalidates
+every live token instantly — every mobile session re-onboards. The
+`NOMADDEV_JWT_PREV_SECRETS` knob lets the verifier accept tokens
+signed under the previous-generation secret alongside the new one
+for a configurable window:
+
+```sh
+# 1. Generate a new secret. Move the old one to PREV_SECRETS.
+OLD=$(grep '^NOMADDEV_JWT_SECRET=' /etc/nomaddev/env | cut -d= -f2-)
+NEW=$(head -c 48 /dev/urandom | base64 | tr -d '\n')
+sudo sed -i "s|^NOMADDEV_JWT_SECRET=.*|NOMADDEV_JWT_SECRET=${NEW}|" /etc/nomaddev/env
+sudo sed -i "s|^NOMADDEV_JWT_PREV_SECRETS=.*|NOMADDEV_JWT_PREV_SECRETS=${OLD}|" /etc/nomaddev/env
+sudo systemctl restart nomaddev-orchestrator
+
+# 2. New tokens (refresh-rotated, or freshly minted via gen-jwt)
+#    are signed under NEW. Existing tokens keep verifying under
+#    OLD until they expire naturally. Wait for the longest TTL
+#    (default 30d for refresh tokens).
+
+# 3. Clear PREV_SECRETS to revoke any still-live old tokens.
+sudo sed -i 's|^NOMADDEV_JWT_PREV_SECRETS=.*|NOMADDEV_JWT_PREV_SECRETS=|' /etc/nomaddev/env
+sudo systemctl restart nomaddev-orchestrator
+```
+
+`NOMADDEV_JWT_PREV_SECRETS` is comma-separated, so a multi-step
+rotation can layer two generations of previous secrets. Each entry
+follows the same decoding rules as `NOMADDEV_JWT_SECRET`
+(base64 / hex / raw, ≥ 32 bytes decoded). The orchestrator logs
+`orchestrator: JWT rotation grace active` at startup when any
+previous secrets are configured so the rotation state is visible in
+`journalctl`.
 
 `scripts/gen-jwt.go` is the dev-time issuer:
 

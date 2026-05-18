@@ -558,6 +558,54 @@ that needs `diffoscope` for the next attempt — captured in
 [`claude/dx-tooling`](#)'s revert commit, which records the
 investigator-friendly diagnostic context.
 
+### Phase 10: Security gaps not in the top-10 — in progress
+*Objective: Work the Security-gaps-beyond-top-10 lens from the
+review's wider gap list — items the original top-10 prioritization
+left for follow-up because they're either narrower in blast radius
+or carry more architectural weight.*
+
+#### 10.1 Origin allowlist + CSP + JWT rotation grace + script-content redaction — done
+- [x] **`CheckOrigin` allowlist.** `gorilla/websocket`'s upgrader
+  previously accepted any origin unconditionally. New
+  `NOMADDEV_WS_ALLOWED_ORIGINS` (CSV) populates a strict
+  case-insensitive same-origin gate on `/ws`. Empty preserves the
+  pre-10.1 behavior (Tailscale deploys have no meaningful browser
+  origin boundary); operators behind a TLS reverse proxy turn on
+  the gate without code changes. Same-origin / non-browser clients
+  without an `Origin` header always pass.
+- [x] **CSP + hardening headers on the SPA.** `withSecurityHeaders`
+  wraps the SPA handler with `Content-Security-Policy`
+  (`default-src 'self'`, `connect-src 'self' ws: wss:`,
+  `frame-ancestors 'none'`), `X-Content-Type-Options: nosniff`,
+  `Referrer-Policy: strict-origin-when-cross-origin`,
+  `X-Frame-Options: DENY`. The `/ws` and `/metrics` paths keep
+  their existing shapes — CSP only applies to browser-context
+  responses.
+- [x] **JWT secret rotation grace window.** New
+  `NOMADDEV_JWT_PREV_SECRETS` (CSV) lets the verifier accept tokens
+  signed under previous-generation secrets while new tokens are
+  signed under `NOMADDEV_JWT_SECRET`. Rotation workflow lives in
+  [`docs/auth.md`](./docs/auth.md#rotation-with-a-grace-window-phase-101).
+  Startup logs `orchestrator: JWT rotation grace active` when any
+  prev secrets are configured.
+- [x] **Inline-script secret redaction.** The Phase-7
+  `RedactArgs` helper masks values of sensitive-keyed args but
+  left `script` content alone — an `export TOKEN=abc123` line in
+  a bash script reached the approval card in plain text. New
+  `redactScript` scans script-shaped arg values for
+  `(export|set)? NAME=VALUE` shapes and masks the value when
+  `NAME` matches the same sensitive-key list. Heuristic on
+  purpose: prose-shaped fields (`body`, `description`) don't get
+  the scanner; `script` / `command` keys do.
+
+**Remaining Phase-10 follow-ups:** per-session sandbox workspace
+isolation (mkdir-per-SID + plumb-through bind mount — substantial
+sandbox-runner change), user-namespace remapping (Docker daemon
+feature flag + per-deploy config), and a total-memory cross-session
+quota (the existing per-runner `MaxConcurrent` semaphore already
+caps run count globally; the gap is per-job memory accounting on
+top of that).
+
 ---
 
 ## 🚀 Running the orchestrator
