@@ -213,14 +213,18 @@ jobs:
           SOURCE_DATE_EPOCH: '1700000000'
         run: |
           mkdir -p out1 out2
-          go build -trimpath -tags "gemini github" \
-            -ldflags "-s -w -X main.version=ci-reproducible" \
-            -o out1/orchestrator ./cmd/orchestrator
-          # Drop the build cache so the second build can't accidentally
-          # reuse cached objects that mask a non-determinism elsewhere.
+          # Both builds start from an empty cache so the second isn't
+          # inheriting cached objects the first one created. -buildid=
+          # clears Go's build ID — without it, even bit-identical
+          # inputs can produce binaries that differ only in the cache
+          # key the toolchain stamps for incremental builds.
           go clean -cache
           go build -trimpath -tags "gemini github" \
-            -ldflags "-s -w -X main.version=ci-reproducible" \
+            -ldflags "-s -w -buildid= -X main.version=ci-reproducible" \
+            -o out1/orchestrator ./cmd/orchestrator
+          go clean -cache
+          go build -trimpath -tags "gemini github" \
+            -ldflags "-s -w -buildid= -X main.version=ci-reproducible" \
             -o out2/orchestrator ./cmd/orchestrator
 
           h1=$(sha256sum out1/orchestrator | awk '{print $1}')
@@ -229,6 +233,10 @@ jobs:
           echo "build 2: $h2"
           if [ "$h1" != "$h2" ]; then
             echo "::error::orchestrator binary is not bit-reproducible across two builds"
+            # Diff the two binaries' sections so the next investigator
+            # has a starting point. cmp shows the first differing byte;
+            # nm -a may help narrow it to a symbol.
+            cmp -l out1/orchestrator out2/orchestrator | head -20 || true
             exit 1
           fi
           echo "reproducible ✓"
