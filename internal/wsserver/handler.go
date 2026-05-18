@@ -19,7 +19,7 @@ func (s *Server) wsHandler(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
 		return
 	}
-	claims, err := s.verifier.Parse(token)
+	claims, err := s.verifier.ParseAccess(token)
 	if err != nil {
 		s.log.Warn("ws: token rejected", "remote", r.RemoteAddr, "err", err)
 		metrics.WSConnectsTotal.WithLabelValues("unauthorized").Inc()

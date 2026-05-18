@@ -27,6 +27,8 @@ type Server struct {
 	hub       *hub.Hub
 	sessions  session.Store
 	verifier  *auth.Verifier
+	issuer    *auth.IssuerSigner  // nil disables /auth/refresh
+	revoker   auth.RevocationList // nil disables /auth/revoke and revocation checks
 	runner    sandbox.Runner      // may be nil — see handleCommandRequest
 	mw        *middleware.Service // may be nil — see handleUserIntent
 	sem       chan struct{}       // optional cap on concurrent execs; nil = unlimited
@@ -34,6 +36,14 @@ type Server struct {
 	upgrader  websocket.Upgrader
 	http      *http.Server
 	mux       *http.ServeMux
+}
+
+// Options carries optional dependencies for New. Existing callers that
+// pass nil for both Issuer and Revoker get the pre-refresh behavior
+// (HTTP /ws only, no /auth/* endpoints).
+type Options struct {
+	Issuer  *auth.IssuerSigner
+	Revoker auth.RevocationList
 }
 
 // New constructs a Server. The HTTP server is built but not started. runner
@@ -44,6 +54,16 @@ func New(
 	cfg *config.Config, log *slog.Logger, h *hub.Hub, s session.Store,
 	v *auth.Verifier, runner sandbox.Runner, mw *middleware.Service,
 ) *Server {
+	return NewWithOptions(cfg, log, h, s, v, runner, mw, Options{})
+}
+
+// NewWithOptions is New plus the auth Issuer/Revoker hookups needed by
+// the /auth/refresh and /auth/revoke endpoints.
+func NewWithOptions(
+	cfg *config.Config, log *slog.Logger, h *hub.Hub, s session.Store,
+	v *auth.Verifier, runner sandbox.Runner, mw *middleware.Service,
+	opts Options,
+) *Server {
 	mux := http.NewServeMux()
 	srv := &Server{
 		cfg:      cfg,
@@ -51,6 +71,8 @@ func New(
 		hub:      h,
 		sessions: s,
 		verifier: v,
+		issuer:   opts.Issuer,
+		revoker:  opts.Revoker,
 		runner:   runner,
 		mw:       mw,
 		upgrader: websocket.Upgrader{
@@ -68,6 +90,12 @@ func New(
 	mux.HandleFunc("/healthz", srv.healthHandler)
 	mux.Handle("/metrics", metrics.Handler())
 	mux.HandleFunc("/ws", srv.wsHandler)
+	if opts.Issuer != nil {
+		mux.HandleFunc("/auth/refresh", srv.refreshHandler)
+	}
+	if opts.Revoker != nil {
+		mux.HandleFunc("/auth/revoke", srv.revokeHandler)
+	}
 	if cfg.SPA.Enabled {
 		// Registered AFTER /ws, /healthz, and /metrics so longest-prefix wins
 		// keeps them resolving to their own handlers; "/" only matches when

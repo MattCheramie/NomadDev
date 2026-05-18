@@ -14,6 +14,7 @@ deferred until there's a reason for them.
   "sub":    "matt",
   "sid":    "sess-1",
   "scopes": ["orchestrator:connect"],
+  "kind":   "access",
   "iat":    1731600000,
   "exp":    1731686400,
   "jti":    "01HX..."
@@ -28,8 +29,85 @@ deferred until there's a reason for them.
   `command.request` (Phase 3 sandbox) without an additional scope check.
   Per-tool scopes (e.g. `sandbox:exec`, `sandbox:read`) are deferred until a
   multi-tenant deployment needs to enforce them.
+- `kind` — `access` or `refresh`. Access tokens are presented at `/ws`;
+  refresh tokens are only valid at `POST /auth/refresh`. Empty / missing
+  is treated as `access` (back-compat with tokens minted before Phase 8).
 - `iat` / `exp` — required. The verifier rejects expired tokens.
-- `jti` — optional. Reserved for a revocation list.
+- `jti` — required for revocability. The issuer always populates it with
+  a ULID; tokens minted by external systems without a `jti` are still
+  accepted but cannot be individually revoked.
+
+## Access vs refresh tokens (Phase 8)
+
+The orchestrator mints two kinds of tokens:
+
+| Kind     | TTL (default) | Where it's accepted    | What it lets you do                |
+|----------|---------------|------------------------|------------------------------------|
+| access   | 1 hour        | `/ws`, `/auth/revoke`  | Connect, send envelopes            |
+| refresh  | 30 days       | `/auth/refresh`        | Mint a new (access, refresh) pair  |
+
+Mobile clients keep the long-lived refresh token in secure storage and
+exchange it for short-lived access tokens as they expire. The pre-Phase-8
+flow (one ttl, one token, no refresh) keeps working: tokens minted by
+the old `gen-jwt` (no `kind` claim) are accepted as `access`.
+
+### `POST /auth/refresh`
+
+Exchange a refresh token for a new pair. The old refresh JTI is rotated
+into the revocation list so it cannot be replayed.
+
+```sh
+curl -sS -X POST http://127.0.0.1:8080/auth/refresh \
+    -H "Authorization: Bearer $REFRESH_TOKEN"
+# {
+#   "access_token":      "eyJ...",
+#   "refresh_token":     "eyJ...",
+#   "access_expires_in": 3600,
+#   "refresh_expires_in":2592000,
+#   "token_type":        "Bearer"
+# }
+```
+
+Tolerant of body shape: `Authorization: Bearer …`, JSON body
+`{"refresh_token":"…"}`, or `application/x-www-form-urlencoded` with
+`refresh_token=…`.
+
+### `POST /auth/revoke`
+
+Add a token's JTI to the revocation list. Idempotent — calling twice
+returns 204 either time. Both access and refresh tokens are accepted.
+
+```sh
+curl -sS -X POST http://127.0.0.1:8080/auth/revoke \
+    -H "Authorization: Bearer $TOKEN" -o /dev/null -w '%{http_code}\n'
+# 204
+```
+
+### Revocation backend
+
+`NOMADDEV_AUTH_REVOCATION_BACKEND` selects where revoked JTIs are stored:
+
+- `sqlite` (default) — durable across restarts. File at
+  `NOMADDEV_AUTH_REVOCATION_PATH` (default
+  `/var/lib/nomaddev/revocations.db`).
+- `memory` — fast, but a restart forgets every revocation.
+- `none` — disables revocation entirely (pre-Phase-8 behavior).
+
+A janitor goroutine prunes entries whose `exp` has passed every
+`NOMADDEV_AUTH_REVOCATION_JANITOR_INTERVAL` (default 5m).
+
+### Issuing tokens via `gen-jwt`
+
+```sh
+# Single access token (back-compat default).
+go run ./scripts/gen-jwt -sub matt -sid sess-1 -ttl 1h
+
+# Long-lived refresh token for mobile onboarding.
+go run ./scripts/gen-jwt -kind refresh -sub matt -sid sess-1 -ttl 720h
+
+# Both at once, JSON-formatted for piping into onboarding tools.
+go run ./scripts/gen-jwt -kind pair -sub matt -sid sess-1
+```
 
 ## Secret management
 
