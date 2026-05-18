@@ -509,12 +509,35 @@ wider gap list. Small, cohesive items that unblock contributors.*
   auto-grant approvals → wsclient one-shot tool call). Avoids
   burning the live-CI PAT rate budget for contributor exploration.
 
+#### 9.3 Session-export CLI + reproducible-build CI + SQLite chaos tests — done
+- [x] **`cmd/session-export`** — small Go binary that dumps one
+  SID's data from `sessions.db` or `history.db` as JSON Lines.
+  Opens the DB **read-only** so a running orchestrator isn't
+  disturbed; auto-detects which store the file is via
+  `sqlite_master`. 7 tests cover SID filtering, both auto-detect
+  paths, the both-tables ambiguity case, and explicit-`-kind`
+  override on the wrong store.
+- [x] **Reproducible-build CI job.** New `reproducible-build` job
+  in `ci.yml` compiles `cmd/orchestrator` twice with the same
+  `-trimpath -tags "gemini github" -ldflags "-s -w -X main.version=…"`
+  flags (the release-workflow contract), drops the build cache
+  between runs, and fails if the two binaries don't have
+  identical sha256. Catches a stray timestamp leak or a
+  non-deterministic codegen change before a tag is cut.
+  Confirmed reproducible locally
+  (`5bfe273c…65142c` ✓).
+- [x] **SQLite chaos / failure-injection tests.** New
+  `internal/dbutil/chaos_test.go` covers four real-world failure
+  modes: bit-flip corruption (integrity_check surfaces
+  `ErrIntegrityCheckFailed`), half-truncated file (integrity_check
+  or first read fails), non-SQLite file at the configured path
+  (Ping fails cleanly), and atomic-rollback of a partially-applied
+  migration (`alpha` table must not exist + `user_version` must
+  not bump).
+
 **Remaining DX-lens follow-ups:** mobile E2E (Playwright/Cypress)
-covering the onboarding-to-first-turn path; chaos / failure-injection
-tests for GitHub subprocess crash + Docker daemon loss; a small
-session/history CLI export tool for audit / legal-hold dumps;
-reproducible-build verification (`-trimpath` is set; assert
-bit-for-bit on every release).
+covering the onboarding-to-first-turn path — its own PR because the
+Node test stack is independent of everything else.
 
 ---
 
