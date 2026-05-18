@@ -20,7 +20,43 @@ jobs:
           cache: true
       - run: go mod download
       - run: go vet ./...
-      - run: go test -race -count=1 ./...
+      # -coverpkg=./... measures coverage across every package the
+      # default suite touches, not just the package under test. The
+      # threshold is intentionally low so the bar tightens as we add
+      # tests rather than gates new code on a number we haven't yet
+      # justified.
+      - name: test (with coverage)
+        run: |
+          go test -race -count=1 -coverpkg=./... -coverprofile=coverage.out ./...
+      - name: coverage summary
+        run: |
+          go tool cover -func=coverage.out | tee coverage-summary.txt
+          total=$(go tool cover -func=coverage.out | awk '/^total:/ {print $3}' | tr -d '%')
+          echo "Total coverage: ${total}%"
+          echo "TOTAL_COVERAGE=${total}" >> "$GITHUB_ENV"
+      - name: enforce coverage floor
+        env:
+          # Measured 64.0% at Phase 9.2 introduction; floor set well
+          # below the current level so legitimate refactors don't
+          # bounce the build. Tighten as the suite grows.
+          MIN_COVERAGE: '55'
+        run: |
+          awk -v have="${TOTAL_COVERAGE}" -v want="${MIN_COVERAGE}" 'BEGIN {
+            if (have+0 < want+0) {
+              printf "coverage %.1f%% is below floor %.1f%%\n", have, want
+              exit 1
+            }
+            printf "coverage %.1f%% >= floor %.1f%%\n", have, want
+          }'
+      - name: upload coverage artifact
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: coverage
+          path: |
+            coverage.out
+            coverage-summary.txt
+          retention-days: 14
 
   test-docker:
     name: test (docker tag)
