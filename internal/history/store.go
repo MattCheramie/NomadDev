@@ -16,10 +16,11 @@ import (
 type Role string
 
 const (
-	RoleUser       Role = "user"
-	RoleAssistant  Role = "assistant"
-	RoleToolCall   Role = "tool_call"
-	RoleToolResult Role = "tool_result"
+	RoleUser          Role = "user"
+	RoleAssistant     Role = "assistant"
+	RoleToolCall      Role = "tool_call"
+	RoleToolResult    Role = "tool_result"
+	RoleSystemSummary Role = "system.summary"
 )
 
 // Turn is one entry in a session's conversation thread. Parts is opaque

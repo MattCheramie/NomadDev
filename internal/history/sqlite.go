@@ -181,3 +181,171 @@ func (s *SQLiteStore) Close() error { return s.db.Close() }
 // PingContext verifies the database connection is alive. Used by the
 // orchestrator's /readyz probe.
 func (s *SQLiteStore) PingContext(ctx context.Context) error { return s.db.PingContext(ctx) }
+
+// distinctSIDs returns every sid that currently has at least one turn. Used
+// by the summarization janitor to iterate compaction candidates.
+func (s *SQLiteStore) distinctSIDs(ctx context.Context) ([]string, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT DISTINCT sid FROM turns`)
+	if err != nil {
+		return nil, fmt.Errorf("history: distinct sids: %w", err)
+	}
+	defer rows.Close()
+	var out []string
+	for rows.Next() {
+		var sid string
+		if err := rows.Scan(&sid); err != nil {
+			return nil, fmt.Errorf("history: scan sid: %w", err)
+		}
+		out = append(out, sid)
+	}
+	return out, rows.Err()
+}
+
+// compactionRow is the minimal projection the compactor needs to score and
+// rewrite turns.
+type compactionRow struct {
+	idx  int
+	role string
+	text string
+	ts   int64
+}
+
+// loadCompactionRows returns every user/assistant turn for sid in ascending
+// idx order. tool_call / tool_result rows are skipped — they carry structured
+// audit data that the summarizer wouldn't faithfully preserve.
+func (s *SQLiteStore) loadCompactionRows(ctx context.Context, sid string) ([]compactionRow, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT turn_idx, role, parts_json, ts FROM turns
+		 WHERE sid = ? AND role IN (?, ?)
+		 ORDER BY turn_idx ASC`,
+		sid, string(RoleUser), string(RoleAssistant))
+	if err != nil {
+		return nil, fmt.Errorf("history: load compaction rows: %w", err)
+	}
+	defer rows.Close()
+	var out []compactionRow
+	for rows.Next() {
+		var (
+			idx   int
+			role  string
+			parts []byte
+			ts    int64
+		)
+		if err := rows.Scan(&idx, &role, &parts, &ts); err != nil {
+			return nil, fmt.Errorf("history: scan compaction row: %w", err)
+		}
+		out = append(out, compactionRow{
+			idx:  idx,
+			role: role,
+			text: extractText(parts),
+			ts:   ts,
+		})
+	}
+	return out, rows.Err()
+}
+
+// replaceWithSummary deletes victims (by idx) and inserts a single
+// system.summary turn at minIdx/minTS in one transaction. The pre-acquired
+// per-SID mutex is the caller's responsibility — see Compact.
+func (s *SQLiteStore) replaceWithSummary(
+	ctx context.Context, sid string, victims []int, minIdx int, minTS int64, summary []byte,
+) error {
+	if len(victims) == 0 {
+		return nil
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("history: begin compaction tx: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	// Build placeholder list for the IN clause. len(victims) is bounded by
+	// the number of user/assistant turns in one session, which the janitor
+	// thresholds keep modest.
+	placeholders := make([]byte, 0, len(victims)*2-1)
+	args := make([]any, 0, len(victims)+1)
+	args = append(args, sid)
+	for i, v := range victims {
+		if i > 0 {
+			placeholders = append(placeholders, ',')
+		}
+		placeholders = append(placeholders, '?')
+		args = append(args, v)
+	}
+	delStmt := fmt.Sprintf(
+		`DELETE FROM turns WHERE sid = ? AND turn_idx IN (%s)`, string(placeholders))
+	if _, err := tx.ExecContext(ctx, delStmt, args...); err != nil {
+		return fmt.Errorf("history: delete victims: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx,
+		`INSERT INTO turns(sid, turn_idx, role, parts_json, ts) VALUES (?, ?, ?, ?, ?)`,
+		sid, minIdx, string(RoleSystemSummary), summary, minTS); err != nil {
+		return fmt.Errorf("history: insert summary: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("history: commit compaction: %w", err)
+	}
+	return nil
+}
+
+// Compact checks whether sid's user+assistant text exceeds wordThreshold and,
+// if so, asks the summarizer to condense the oldest 50% of those turns into
+// one system.summary row. Returns the number of turns that were collapsed
+// (zero when the threshold isn't met). Safe under concurrent Append on the
+// same sid: reuses the per-SID mutex.
+func (s *SQLiteStore) Compact(
+	ctx context.Context, sid string, wordThreshold int, summarizer Summarizer,
+) (int, error) {
+	if wordThreshold <= 0 || summarizer == nil {
+		return 0, nil
+	}
+	m := s.sidLock(sid)
+	m.Lock()
+	defer m.Unlock()
+
+	rows, err := s.loadCompactionRows(ctx, sid)
+	if err != nil {
+		return 0, err
+	}
+	if len(rows) < 2 {
+		return 0, nil
+	}
+
+	total := 0
+	for _, r := range rows {
+		total += countWords(r.text)
+	}
+	if total < wordThreshold {
+		return 0, nil
+	}
+
+	half := len(rows) / 2
+	if half == 0 {
+		return 0, nil
+	}
+	victims := rows[:half]
+
+	turns := make([]Turn, len(victims))
+	victimIdxs := make([]int, len(victims))
+	for i, v := range victims {
+		turns[i] = Turn{
+			SID:   sid,
+			Idx:   v.idx,
+			Role:  Role(v.role),
+			Parts: []byte(v.text),
+			TS:    time.Unix(0, v.ts).UTC(),
+		}
+		victimIdxs[i] = v.idx
+	}
+
+	summaryText, err := summarizer.Summarize(ctx, turns)
+	if err != nil {
+		return 0, fmt.Errorf("history: summarize: %w", err)
+	}
+	summaryParts := marshalText(summaryText)
+
+	if err := s.replaceWithSummary(ctx, sid, victimIdxs, victims[0].idx, victims[0].ts, summaryParts); err != nil {
+		return 0, err
+	}
+	return len(victims), nil
+}
