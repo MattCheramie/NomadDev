@@ -41,11 +41,17 @@ func githubOutcomeForCode(code string) string {
 
 // recordGitHubCall increments nomaddev_github_calls_total when call.Tool is a
 // github_* name. No-op otherwise so non-GitHub tools don't pollute the counter.
-func recordGitHubCall(tool, code string) {
+// startedAt is the entry timestamp into runToolCall; when non-zero it also
+// records the end-to-end latency to nomaddev_github_call_seconds. Pass
+// time.Time{} on the bad-args fast-fail path where no real work happened.
+func recordGitHubCall(tool, code string, startedAt time.Time) {
 	if !strings.HasPrefix(tool, "github_") {
 		return
 	}
 	metrics.GitHubCallsTotal.WithLabelValues(tool, githubOutcomeForCode(code)).Inc()
+	if !startedAt.IsZero() {
+		metrics.GitHubCallSeconds.Observe(time.Since(startedAt).Seconds())
+	}
 }
 
 // handleUserIntent is invoked by dispatch for an inbound user.intent envelope.
@@ -238,11 +244,12 @@ func (s *Server) runToolCall(
 	s.bufferAndSend(sess, client, cmdEnv)
 
 	// 2. Validate args before approval — bad args are a fast-fail, not a
-	//    human approval question.
+	//    human approval question. No latency recorded for github_* here:
+	//    bad args are a pre-flight rejection, not an upstream MCP round-trip.
 	if vErr := middleware.Validate(call.Tool, call.Args); vErr != nil {
 		s.emitResult(sess, client, cmdEnv.ID, time.Now(), -1, event.SandboxErrBadRequest, vErr.Error())
 		_ = s.appendToolTurns(ctx, sess.SID, call, nil, event.SandboxErrBadRequest, vErr.Error())
-		recordGitHubCall(call.Tool, event.SandboxErrBadRequest)
+		recordGitHubCall(call.Tool, event.SandboxErrBadRequest, time.Time{})
 		return middleware.ToolResult{CallID: call.ID, Tool: call.Tool, Error: event.SandboxErrBadRequest}, true
 	}
 
@@ -268,7 +275,9 @@ func (s *Server) runToolCall(
 			code, msg := classifyApprovalErr(awaitErr)
 			s.emitResult(sess, client, cmdEnv.ID, time.Now(), -1, code, msg)
 			_ = s.appendToolTurns(ctx, sess.SID, call, nil, code, msg)
-			recordGitHubCall(call.Tool, code)
+			// No latency recorded: human approval time isn't an upstream
+			// MCP characteristic and skews the SLO histogram.
+			recordGitHubCall(call.Tool, code, time.Time{})
 			if errors.Is(awaitErr, context.Canceled) {
 				return middleware.ToolResult{CallID: call.ID, Tool: call.Tool, Error: event.SandboxErrCanceled}, false
 			}
@@ -290,7 +299,7 @@ func (s *Server) runToolCall(
 		}
 		s.emitResult(sess, client, cmdEnv.ID, started, -1, code, err.Error())
 		_ = s.appendToolTurns(ctx, sess.SID, call, nil, code, err.Error())
-		recordGitHubCall(call.Tool, code)
+		recordGitHubCall(call.Tool, code, started)
 		return middleware.ToolResult{CallID: call.ID, Tool: call.Tool, Error: code}, true
 	}
 
@@ -332,7 +341,7 @@ func (s *Server) runToolCall(
 		Error:  exitErrCode,
 	}
 	_ = s.appendToolTurns(ctx, sess.SID, call, output, exitErrCode, exitMsg)
-	recordGitHubCall(call.Tool, exitErrCode)
+	recordGitHubCall(call.Tool, exitErrCode, started)
 	return result, true
 }
 

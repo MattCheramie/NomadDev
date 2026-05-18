@@ -77,10 +77,23 @@ var (
 // well under Prom's recommended ceiling. If a future GHES build adds many
 // custom tools, narrow via NOMADDEV_GITHUB_TOOLSETS rather than dropping the
 // label.
-var GitHubCallsTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
-	Name: "nomaddev_github_calls_total",
-	Help: "Count of GitHub MCP tool invocations, labeled by tool name and outcome.",
-}, []string{"tool", "outcome"})
+var (
+	GitHubCallsTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "nomaddev_github_calls_total",
+		Help: "Count of GitHub MCP tool invocations, labeled by tool name and outcome.",
+	}, []string{"tool", "outcome"})
+
+	// GitHubCallSeconds is unlabeled to keep cardinality bounded — Prom
+	// histograms multiply series by bucket count, so a per-tool variant
+	// would explode. Operators who need per-tool latency use the counter
+	// + log slice; the histogram answers the dashboard-level SLO question
+	// "what's p95 across all GitHub calls?".
+	GitHubCallSeconds = prometheus.NewHistogram(prometheus.HistogramOpts{
+		Name:    "nomaddev_github_call_seconds",
+		Help:    "Wall-clock duration of one GitHub MCP tool dispatch, end-to-end from runToolCall entry to terminal chunk.",
+		Buckets: prometheus.ExponentialBuckets(0.05, 2, 12), // 50ms → ~3min
+	})
+)
 
 func init() {
 	Registry.MustRegister(
@@ -92,6 +105,7 @@ func init() {
 		MiddlewareTurnsTotal,
 		MiddlewareTurnSeconds,
 		GitHubCallsTotal,
+		GitHubCallSeconds,
 	)
 }
 

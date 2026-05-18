@@ -22,6 +22,7 @@ defined in [`internal/metrics/metrics.go`](../internal/metrics/metrics.go).
 | `nomaddev_middleware_turns_total`     | counter   | `outcome` | `ok` / `error`                                   |
 | `nomaddev_middleware_turn_seconds`    | histogram | —         | 50 ms → ~3 min buckets                           |
 | `nomaddev_github_calls_total`         | counter   | `tool`, `outcome` | One per `github_*` MCP invocation; outcomes `ok` / `error` / `timeout` / `canceled` / `bad_request` / `denied` |
+| `nomaddev_github_call_seconds`        | histogram | —         | 50 ms → ~3 min buckets; only actual upstream round-trips observed |
 
 Suggested alerts:
 - `rate(nomaddev_ws_connects_total{result="unauthorized"}[5m]) > 1` —
