@@ -1,6 +1,6 @@
 module github.com/mattcheramie/nomaddev
 
-go 1.25.0
+go 1.25.10
 
 require (
 	github.com/docker/docker v25.0.6+incompatible
