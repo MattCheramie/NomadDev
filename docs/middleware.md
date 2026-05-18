@@ -115,7 +115,7 @@ restarts. The schema is one row per turn keyed by `(sid, turn_idx)`:
 CREATE TABLE IF NOT EXISTS turns (
     sid        TEXT    NOT NULL,
     turn_idx   INTEGER NOT NULL,
-    role       TEXT    NOT NULL,      -- 'user'|'assistant'|'tool_call'|'tool_result'
+    role       TEXT    NOT NULL,      -- 'user'|'assistant'|'tool_call'|'tool_result'|'system.summary'
     parts_json BLOB    NOT NULL,
     ts         INTEGER NOT NULL,
     PRIMARY KEY (sid, turn_idx)
@@ -136,6 +136,44 @@ proxy for tokens; token-aware windowing can land later.
 History is **not** coupled to session reaping. The session ring buffer
 (see `internal/session`) is wire-level reconnect-replay storage; history
 is durable LLM context. Different layers, different durabilities.
+
+### Background summarization compactor
+
+Long-running sessions accumulate unbounded user/assistant turns, which
+inflates Gemini context tokens on every `user.intent` (via `LoadWindow`)
+and grows `history.db` on disk. An opt-in goroutine in
+[`internal/history/summarizer.go`](../internal/history/summarizer.go)
+walks every session on a tick and, when the cumulative word count of a
+session's user + assistant turns crosses `WordThreshold`, asks a
+configurable HTTP endpoint to summarize the oldest 50 % of those turns,
+then replaces them with a single `system.summary` row inside one
+transaction.
+
+Properties:
+
+- **No schema change.** The `system.summary` value is just another
+  string in the existing `role TEXT` column — the Phase 8.7
+  append-only migration list stays at Version 1.
+- **Audit-safe.** `tool_call` / `tool_result` rows are never
+  summarized; structured tool I/O stays intact.
+- **Concurrency-safe.** Compaction acquires the same per-SID mutex
+  that `Append` uses, so `turn_idx` stays monotonic against
+  concurrent appends from the wsserver.
+- **Failure-safe.** Any error from the summarizer leaves the database
+  untouched; the next tick retries.
+- **Idx-preserving.** The summary row reuses the smallest deleted
+  `turn_idx`, so `LoadWindow`'s `ORDER BY turn_idx DESC` still
+  returns turns in the right order. Subsequent `Append` calls
+  continue past `MAX(turn_idx)+1` and never reuse gaps.
+- **Wire-compatible.** Summary rows carry the same `{"text": "..."}`
+  payload shape as user/assistant turns, so the translator's
+  history-replay path needs no special-casing.
+
+The endpoint is whatever the operator wires up — the orchestrator POSTs
+a JSON array `[{"role": "user|assistant", "text": "...", "ts": <nanos>}]`
+and expects `{"summary": "..."}` back. Disabled by default; configure
+via `NOMADDEV_HISTORY_SUMMARY_*` env vars (see
+[`docs/operations.md`](./operations.md#history-summarization-compactor)).
 
 ## Runtime selection
 

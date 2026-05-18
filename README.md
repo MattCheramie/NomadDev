@@ -896,6 +896,58 @@ workflow, threat model, and SPA-side integration sketch.
   covered by Playwright's virtual authenticator when the real
   ceremony is wired into the E2E (future follow-up).
 
+#### 12.5 History summarization compactor — done
+*Closes the unbounded-growth gap in `history.db`: long-running
+sessions inflated Gemini context tokens on every `user.intent`
+(via `LoadWindow`) and grew the on-disk file forever. A background
+goroutine now collapses the oldest half of a session's text into
+one `system.summary` row once it crosses a configurable word
+budget.*
+- [x] **New `Compactor` + `Summarizer` in
+  [`internal/history/summarizer.go`](./internal/history/summarizer.go).**
+  Janitor goroutine ticks every `NOMADDEV_HISTORY_SUMMARY_INTERVAL`
+  (default 5 m). For each session in `turns`, sums `strings.Fields`
+  word counts across `role IN ('user','assistant')` rows; if the
+  total crosses `NOMADDEV_HISTORY_SUMMARY_WORD_THRESHOLD` (default
+  15000), POSTs the oldest 50 % to
+  `NOMADDEV_HISTORY_SUMMARY_URL` as a `[{role,text,ts}]` array and
+  reads `{"summary": "..."}` back. One transaction deletes the
+  victims and inserts a single `role = 'system.summary'` row at
+  the smallest freed `turn_idx` so chronological order is
+  preserved. Opt-in (`NOMADDEV_HISTORY_SUMMARY_ENABLED`, default
+  off); SQLite backend only.
+- [x] **No schema change — Phase 8.7 contract preserved.** The
+  `system.summary` value is just data in the existing
+  `role TEXT` column. The migrations slice in
+  [`internal/history/sqlite.go`](./internal/history/sqlite.go)
+  stays at `Version: 1`. `PRAGMA user_version` is still `1`
+  after the change; `internal/dbutil`'s integrity-check and
+  downgrade-protection invariants are untouched.
+- [x] **Concurrency-safe.** Compaction acquires the same per-SID
+  mutex that `Append` uses, so `turn_idx` stays monotonic against
+  concurrent wsserver appends. Tested by a 20-append /
+  1-compaction race in
+  [`internal/history/summarizer_test.go`](./internal/history/summarizer_test.go).
+- [x] **Audit-safe.** `tool_call` / `tool_result` rows are never
+  selected for summarization — the LLM-bound textual chatter goes
+  through the summarizer; structured tool I/O stays intact.
+- [x] **Failure-safe.** Any non-2xx response, decode error, or
+  empty `summary` aborts the transaction; the database is left
+  untouched and the next tick retries naturally.
+- [x] **Wire-compatible.** Summary rows carry the same
+  `{"text": "..."}` `parts_json` shape as user/assistant turns,
+  so the translator's history-replay path needs no special-casing.
+- [x] **8 new unit tests** cover below-threshold no-op,
+  oldest-half replacement with tool-row preservation,
+  idx-monotonic `Append` after compaction, summarizer-error
+  rollback, concurrent-Append safety, reopen survival, the
+  HTTP client wire shape, and multi-session sweeps.
+
+See [`docs/middleware.md`](./docs/middleware.md#background-summarization-compactor)
+for the architecture and
+[`docs/operations.md`](./docs/operations.md#history-summarization-compactor)
+for the env var table and inspection commands.
+
 **Remaining Phase-12 follow-ups:** pool-style memory quota (only
 if a multi-tenant deploy hits the worst-case sizing — documented
 sizing approach in `docs/sandbox.md` covers the same blast
