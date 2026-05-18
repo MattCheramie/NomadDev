@@ -8,13 +8,14 @@ By combining mesh networking, ephemeral container sandboxing, and LLM-driven RPC
 
 The system is built on a "local-first" philosophy extended to remote infrastructure. Data and execution remain strictly within your private mesh network. 
 
-The architecture is divided into five modular, decoupled components:
+The architecture is divided into six modular, decoupled components:
 
 1. **The Secure Mesh (Connectivity):** A Tailscale overlay network ensuring the remote host and mobile client communicate exclusively over a private IP range.
 2. **The Orchestrator Daemon (Backend):** A lightweight, concurrent WebSocket server written in Go that acts as the central nervous system, handling secure client connections and job routing.
 3. **The Ephemeral Sandbox (Worker):** A Go-based wrapper around the Docker SDK that runs each tool call in a one-shot container with no network, read-only rootfs, and gVisor (`runsc`) isolation when the host advertises it. Hard memory / CPU / pids caps and a wall-clock timeout bound every execution.
 4. **The NLP-to-RPC Middleware (Logic):** A translation layer that utilizes the Google GenAI SDK to map natural language requests to predefined JSON schemas and remote procedure calls (RPC).
-5. **The Control Hub (Client):** A React Native mobile application that consumes JSON event streams to render a clean, native UI instead of raw terminal output.
+5. **The GitHub MCP Backend (Integration):** A subprocess-managed embedding of the official [github-mcp-server](https://github.com/github/github-mcp-server) exposing ~75 GitHub operations as additional tool calls. Mutating operations flow through the same approval gate as shell scripts.
+6. **The Control Hub (Client):** A React Native mobile application that consumes JSON event streams to render a clean, native UI instead of raw terminal output.
 
 ---
 
@@ -110,6 +111,28 @@ the Tailscale tailnet already gates network reachability, and JWT
 remains the single auth source for `/ws`.
 [`docs/operations.md`](./docs/operations.md) is the operator reference;
 [`infra/RUNBOOK.md`](./infra/RUNBOOK.md) is the deploy walkthrough.
+
+### Phase 7: GitHub MCP Integration — done
+*Objective: Let the mobile chat drive GitHub (issues, PRs, repos, …) the
+same way it drives shell scripts and files, with the same approval gate.*
+- [x] Subprocess-based MCP client embedding the official
+  [github-mcp-server](https://github.com/github/github-mcp-server) — no
+  exposure to its "Go API is unstable" warning.
+- [x] All ~75 tools across 19 toolsets exposed to Gemini via the existing
+  function-calling loop; tool list narrowable via `NOMADDEV_GITHUB_TOOLSETS`.
+- [x] Auto-approval gating: every tool the upstream marks
+  `DestructiveHint=true` (with a verb-prefix fallback) is added to the
+  required-approval set at startup. PRs, issues, file writes all surface the
+  same `ApprovalSheet` the mobile UI already renders for shell scripts.
+- [x] `TokenSource` interface keeps per-user PAT / GitHub App / OAuth as
+  drop-in future implementations.
+- [x] Build-tag-gated (`-tags github`) so default builds stay slim;
+  `NOMADDEV_GITHUB_TOKEN` empty is a silent no-op for development.
+- [x] `nomaddev_github_calls_total{tool,outcome}` counter for per-tool
+  observability.
+
+See [`docs/github.md`](./docs/github.md) for setup, PAT scopes,
+troubleshooting, and the auth-extension seam.
 
 ---
 

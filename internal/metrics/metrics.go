@@ -68,6 +68,20 @@ var (
 	})
 )
 
+// GitHub MCP backend metrics. outcome ∈ {"ok", "error", "denied", "timeout",
+// "canceled", "bad_request"} — same outcome strings the sandbox uses, plus
+// "denied" for the human-approval-denied path. tool is the prefixed name
+// (e.g. "github_create_issue") so dashboards can break down by operation.
+//
+// High-cardinality warning: ~75 tools × 6 outcomes = ~450 series at most,
+// well under Prom's recommended ceiling. If a future GHES build adds many
+// custom tools, narrow via NOMADDEV_GITHUB_TOOLSETS rather than dropping the
+// label.
+var GitHubCallsTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
+	Name: "nomaddev_github_calls_total",
+	Help: "Count of GitHub MCP tool invocations, labeled by tool name and outcome.",
+}, []string{"tool", "outcome"})
+
 func init() {
 	Registry.MustRegister(
 		WSConnectsTotal,
@@ -77,6 +91,7 @@ func init() {
 		SandboxRunSeconds,
 		MiddlewareTurnsTotal,
 		MiddlewareTurnSeconds,
+		GitHubCallsTotal,
 	)
 }
 

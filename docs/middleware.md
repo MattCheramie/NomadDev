@@ -81,10 +81,14 @@ without it.
 | `read_file` | fsops | `{path, max_bytes?}` | auto-granted |
 | `list_dir` | fsops | `{path, depth?}` | auto-granted |
 | `write_patch` | fsops | `{path, content, mode?, create?}` | required |
+| `github_*` (~75 tools) | githubmcp (subprocess) | per-tool schema from upstream MCP server | required for every mutator (`create_`, `update_`, `delete_`, `merge_`, `push_`, …); read-only ops auto-granted |
 
-Each tool has a schema declared in `internal/middleware/tools.go`. The
-schemas are SDK-agnostic — Gemini-specific conversion lives in
-`gemini_tools.go` under the build tag.
+The four base tools have schemas declared in `internal/middleware/tools.go`;
+`github_*` schemas are fetched at orchestrator startup from the upstream
+`github-mcp-server` binary and converted by `internal/githubmcp/schema.go`.
+All schemas are SDK-agnostic — Gemini-specific conversion lives in
+`gemini_tools.go` under the build tag. See [`github.md`](github.md) for the
+GitHub MCP integration in depth.
 
 ### Why the fsops/sandbox split
 

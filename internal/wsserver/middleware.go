@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"log/slog"
+	"strings"
 	"time"
 
 	"github.com/mattcheramie/nomaddev/internal/event"
@@ -15,6 +16,37 @@ import (
 	"github.com/mattcheramie/nomaddev/internal/sandbox"
 	"github.com/mattcheramie/nomaddev/internal/session"
 )
+
+// githubOutcomeForCode maps the event SandboxErr* code returned by classifyExit
+// (and classifyApprovalErr) into the outcome label on nomaddev_github_calls_total.
+// Empty code means "ok".
+func githubOutcomeForCode(code string) string {
+	switch code {
+	case "":
+		return "ok"
+	case event.SandboxErrTimeout:
+		return "timeout"
+	case event.SandboxErrCanceled:
+		return "canceled"
+	case event.SandboxErrBadRequest:
+		return "bad_request"
+	case event.SandboxErrUnauthorized:
+		// classifyApprovalErr maps both ErrApprovalDenied and
+		// ErrApprovalTimeout to SandboxErrUnauthorized; both are "denied"
+		// from a metrics standpoint (the call did not reach GitHub).
+		return "denied"
+	}
+	return "error"
+}
+
+// recordGitHubCall increments nomaddev_github_calls_total when call.Tool is a
+// github_* name. No-op otherwise so non-GitHub tools don't pollute the counter.
+func recordGitHubCall(tool, code string) {
+	if !strings.HasPrefix(tool, "github_") {
+		return
+	}
+	metrics.GitHubCallsTotal.WithLabelValues(tool, githubOutcomeForCode(code)).Inc()
+}
 
 // handleUserIntent is invoked by dispatch for an inbound user.intent envelope.
 // It is non-blocking: a goroutine drives the translator loop and fans events
@@ -210,6 +242,7 @@ func (s *Server) runToolCall(
 	if vErr := middleware.Validate(call.Tool, call.Args); vErr != nil {
 		s.emitResult(sess, client, cmdEnv.ID, time.Now(), -1, event.SandboxErrBadRequest, vErr.Error())
 		_ = s.appendToolTurns(ctx, sess.SID, call, nil, event.SandboxErrBadRequest, vErr.Error())
+		recordGitHubCall(call.Tool, event.SandboxErrBadRequest)
 		return middleware.ToolResult{CallID: call.ID, Tool: call.Tool, Error: event.SandboxErrBadRequest}, true
 	}
 
@@ -235,6 +268,7 @@ func (s *Server) runToolCall(
 			code, msg := classifyApprovalErr(awaitErr)
 			s.emitResult(sess, client, cmdEnv.ID, time.Now(), -1, code, msg)
 			_ = s.appendToolTurns(ctx, sess.SID, call, nil, code, msg)
+			recordGitHubCall(call.Tool, code)
 			if errors.Is(awaitErr, context.Canceled) {
 				return middleware.ToolResult{CallID: call.ID, Tool: call.Tool, Error: event.SandboxErrCanceled}, false
 			}
@@ -256,6 +290,7 @@ func (s *Server) runToolCall(
 		}
 		s.emitResult(sess, client, cmdEnv.ID, started, -1, code, err.Error())
 		_ = s.appendToolTurns(ctx, sess.SID, call, nil, code, err.Error())
+		recordGitHubCall(call.Tool, code)
 		return middleware.ToolResult{CallID: call.ID, Tool: call.Tool, Error: code}, true
 	}
 
@@ -297,6 +332,7 @@ func (s *Server) runToolCall(
 		Error:  exitErrCode,
 	}
 	_ = s.appendToolTurns(ctx, sess.SID, call, output, exitErrCode, exitMsg)
+	recordGitHubCall(call.Tool, exitErrCode)
 	return result, true
 }
 
