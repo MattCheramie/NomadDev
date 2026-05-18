@@ -311,10 +311,32 @@ See [`internal/audit/audit.go`](./internal/audit/audit.go) for the
 event schema and [`internal/wsserver/audit_integration_test.go`](./internal/wsserver/audit_integration_test.go)
 for the end-to-end wiring tests.
 
-**Remaining top-10:** wired biometric approval (8.6), SQLite
-integrity check + migration framework (8.7), `/healthz` dependency
-probes + Compose healthcheck (8.8), GitHub rate-limit
-awareness/retry (8.9), and automated `session.db` backups (8.10).
+#### 8.6 Approval consent — typed confirmation gate — done
+*The original README claimed "explicit biometric approval" but the
+SPA shipped a one-tap Approve button. Native biometrics (Face ID /
+Touch ID) are unavailable in the web-only export, and WebAuthn
+requires HTTPS — which the default deploy doesn't have because
+Tailscale handles transport encryption end-to-end. This phase aligns
+the README with reality and adds a real explicit-consent gate that
+works on the plain-HTTP deploy.*
+- [x] **Typed-confirmation gate** (`ApprovalSheet`): the operator
+  must type the exact tool name (case-insensitive) before the
+  Approve button enables. Disabled state surfaces as
+  `accessibilityState.disabled` so screen readers announce it. Deny
+  remains one-tap with the existing optional reason field.
+- [x] **`requireTypedConfirmation` prop** (default `true`) lets
+  callers opt out (test fixtures, low-risk deployments).
+- [x] **README accuracy fix.** The Security Considerations bullet
+  now describes typed-confirmation as the default and points
+  WebAuthn-based biometric at the TLS-reverse-proxy upgrade path.
+- [x] **WebAuthn is the documented next step** for operators behind
+  TLS termination; it stays out of this phase to keep scope tight
+  and avoid forcing an HTTPS dependency on the default deploy.
+
+**Remaining top-10:** SQLite integrity check + migration framework
+(8.7), `/healthz` dependency probes + Compose healthcheck (8.8),
+GitHub rate-limit awareness/retry (8.9), and automated `session.db`
+backups (8.10).
 
 ---
 
@@ -450,7 +472,7 @@ NomadDev is designed with paranoia as a feature. The public internet never touch
 
 *   **No Open Ports:** Bypasses traditional firewall risks via Tailscale.
 *   **Total Isolation:** Execution occurs entirely within ephemeral Docker containers.
-*   **Human-in-the-Loop:** Destructive commands parsed by the middleware require explicit biometric approval on the mobile client.
+*   **Human-in-the-Loop:** Destructive commands parsed by the middleware require explicit operator approval on the mobile client. The default UX requires the operator to **type the exact tool name** before the Approve button enables — typed confirmation works over plain HTTP via Tailscale (the default deploy). Operators who front the orchestrator with a TLS reverse proxy can layer WebAuthn / platform-biometric authenticators on top; see Phase 8.6 below.
 
 ### Networking and TLS
 
