@@ -363,8 +363,35 @@ binary that doesn't know about the current schema.*
 See [`docs/operations.md`](./docs/operations.md#integrity-check--schema-migrations-phase-87)
 for inspection commands and the migration authoring rules.
 
-**Remaining top-10:** `/healthz` dependency probes + Compose
-healthcheck (8.8), GitHub rate-limit awareness/retry (8.9), and
+#### 8.8 Health probes — `/readyz` + Compose healthcheck — done
+*The old `/healthz` returned 200 even when the SQLite stores were
+unreachable, and `docker-compose.yml` had `healthcheck: disable: true`
+because distroless/static ships no shell or `wget`. Both are fixed
+here.*
+- [x] **New `GET /readyz`** that probes each configured SQLite
+  store (`sessions.db`, `history.db`, the JTI revocation DB) with a
+  2-second per-probe budget and returns
+  `200 {"status":"ok","checks":{...}}` or
+  `503 {"status":"degraded","checks":{"name":"<error>","..."}}`.
+- [x] **`/healthz` stays pure liveness** — always 200 if the
+  process is responding. Restart loops bind to that; alerting binds
+  to `/readyz`.
+- [x] **`-healthcheck <url>` flag** on the orchestrator binary
+  does a 3-second `GET` and exits `0` / `1` — reuses the same
+  binary as its own probe client so distroless/static doesn't need a
+  shell.
+- [x] **`docker-compose.yml`** wires
+  `HEALTHCHECK ["CMD", "/usr/local/bin/orchestrator", "-healthcheck", "http://127.0.0.1:8080/readyz"]`
+  with a 30s interval, 3 retries, 15s start period. Compose flips
+  the container to `unhealthy` after three consecutive failures and
+  `restart: unless-stopped` bounces it.
+- [x] **`PingContext(ctx)`** added to the three SQLite stores so the
+  probe is a cheap `SELECT 1` round-trip, not a write.
+
+See [`docs/operations.md`](./docs/operations.md#liveness-vs-readiness-phase-88)
+for the liveness-vs-readiness contract and the systemd notes.
+
+**Remaining top-10:** GitHub rate-limit awareness/retry (8.9), and
 automated `session.db` backups (8.10).
 
 ---

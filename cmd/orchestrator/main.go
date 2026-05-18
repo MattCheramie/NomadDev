@@ -36,17 +36,50 @@ var version = "dev"
 func main() {
 	listenFlag := flag.String("listen", "", "override NOMADDEV_LISTEN_ADDR")
 	showVersion := flag.Bool("version", false, "print version and exit")
+	healthcheckURL := flag.String("healthcheck", "",
+		"probe the given URL (e.g. http://127.0.0.1:8080/readyz) and exit 0 on 2xx, 1 otherwise. "+
+			"For container HEALTHCHECK directives that have no shell or wget in distroless images.")
 	flag.Parse()
 
 	if *showVersion {
 		fmt.Println(version)
 		return
 	}
+	if *healthcheckURL != "" {
+		// Used by docker-compose / Dockerfile HEALTHCHECK against
+		// distroless/static, which has no shell and no wget. Reuses
+		// the orchestrator binary as the probe client.
+		os.Exit(runHealthcheck(*healthcheckURL))
+	}
 
 	if err := run(*listenFlag); err != nil {
 		fmt.Fprintln(os.Stderr, "orchestrator:", err)
 		os.Exit(1)
 	}
+}
+
+// runHealthcheck does a 3-second GET against url and returns 0 on a
+// 2xx status, 1 otherwise. Intentionally minimal — Compose only needs
+// an exit code.
+func runHealthcheck(url string) int {
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "healthcheck:", err)
+		return 1
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "healthcheck:", err)
+		return 1
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		fmt.Fprintf(os.Stderr, "healthcheck: status %d\n", resp.StatusCode)
+		return 1
+	}
+	return 0
 }
 
 func run(listenOverride string) error {
@@ -141,9 +174,10 @@ func run(listenOverride string) error {
 	)
 
 	srv := wsserver.NewWithOptions(cfg, logger, h, sessions, verifier, runner, mw, wsserver.Options{
-		Issuer:  issuer,
-		Revoker: revoker,
-		Audit:   auditSink,
+		Issuer:    issuer,
+		Revoker:   revoker,
+		Audit:     auditSink,
+		Readiness: buildReadinessProbes(sessions, mw, revoker),
 	})
 	logger.Info("orchestrator: auth",
 		"access_ttl", cfg.Auth.AccessTTL,
@@ -395,4 +429,30 @@ func buildMiddleware(
 		GitHubTools:             ghTools,
 		IsDestructiveGitHubTool: ghDestructive,
 	})
+}
+
+// pinger is the duck-typed interface every SQLite-backed store
+// satisfies. The orchestrator builds a /readyz probe per pinger so a
+// downed DB connection shows up before the next write fails.
+type pinger interface {
+	PingContext(ctx context.Context) error
+}
+
+// buildReadinessProbes assembles the list of dependency probes for
+// /readyz. Stores that aren't backed by SQLite (memory variants in
+// tests) are silently skipped via the type assertion.
+func buildReadinessProbes(sess session.Store, mw *middleware.Service, rev auth.RevocationList) []wsserver.ReadinessProbe {
+	probes := make([]wsserver.ReadinessProbe, 0, 3)
+	if p, ok := sess.(pinger); ok {
+		probes = append(probes, wsserver.ReadinessProbe{Name: "session_db", Check: p.PingContext})
+	}
+	if mw != nil && mw.History != nil {
+		if p, ok := mw.History.(pinger); ok {
+			probes = append(probes, wsserver.ReadinessProbe{Name: "history_db", Check: p.PingContext})
+		}
+	}
+	if p, ok := rev.(pinger); ok {
+		probes = append(probes, wsserver.ReadinessProbe{Name: "revocation_db", Check: p.PingContext})
+	}
+	return probes
 }

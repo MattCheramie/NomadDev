@@ -114,6 +114,11 @@ func NewSQLiteStore(path string, bufferSize, maxBytes int, log *slog.Logger) (*S
 // Close shuts the underlying database. Idempotent.
 func (s *SQLiteStore) Close() error { return s.db.Close() }
 
+// PingContext verifies the connection to the database is still alive,
+// establishing one if necessary. Used by the orchestrator's /readyz
+// probe to surface lost-DB state before the next write fails.
+func (s *SQLiteStore) PingContext(ctx context.Context) error { return s.db.PingContext(ctx) }
+
 // SetClock is for tests.
 func (s *SQLiteStore) SetClock(c Clock) {
 	s.mu.Lock()

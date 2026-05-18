@@ -87,6 +87,38 @@ in the relevant `internal/{auth,history,session}/*.go` file —
 **never edit an existing migration** since older deploys won't
 re-run it on upgrade.
 
+### Liveness vs readiness (Phase 8.8)
+
+Two HTTP endpoints answer "is the orchestrator serving":
+
+- **`GET /healthz`** — *liveness*. Returns `200 {"status":"ok"}` as
+  long as the HTTP listener can respond. Use this for restart
+  decisions (Docker, systemd watchdog) — the process is alive.
+- **`GET /readyz`** — *readiness*. Iterates configured dependency
+  probes (currently the three SQLite stores: `sessions.db`,
+  `history.db`, the revocation DB) with a 2-second per-probe budget,
+  and returns either:
+  - `200 {"status":"ok","checks":{"session_db":"ok",...}}`
+  - `503 {"status":"degraded","checks":{"session_db":"<error msg>",...}}`
+
+  Use this for load-balancer pool membership or alerting — the
+  process is alive AND its dependencies are reachable. A failing
+  probe is a signal to investigate, not necessarily to restart.
+
+The `docker-compose.yml` shipped with this repo wires its
+`HEALTHCHECK` to `orchestrator -healthcheck http://127.0.0.1:8080/readyz`
+— Compose flips the container to `unhealthy` after three consecutive
+failures and `restart: unless-stopped` bounces it. The
+`-healthcheck` flag re-uses the orchestrator binary as its own HTTP
+client because the distroless/static base image has no shell or
+wget.
+
+For systemd, add `WatchdogSec=30` and a periodic `curl -fsS
+http://127.0.0.1:8080/readyz` (or call the binary with
+`-healthcheck`) in a small companion timer unit if you want
+readiness-based restart semantics on top of liveness. The default
+unit relies on the process being alive (Type=simple).
+
 ## Release process
 
 Releases are tag-driven:
