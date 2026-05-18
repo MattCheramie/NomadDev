@@ -141,6 +141,17 @@ type Config struct {
 	ReadTimeout  time.Duration
 	WriteTimeout time.Duration
 	PingInterval time.Duration
+	// MaxMessageBytes caps the size of inbound WebSocket frames. A
+	// frame larger than this gets a 1009 close from gorilla/websocket
+	// before unmarshal so the orchestrator can't OOM on a hostile or
+	// runaway client. 0 = no limit (not recommended).
+	MaxMessageBytes int64
+	// RateLimit is the steady-state envelope-per-second cap per
+	// connection. RateBurst is the bucket size — short bursts above
+	// the rate are OK as long as the average stays below. 0 = no
+	// rate limit (back-compat with deploys that pre-date Phase 8.3).
+	RateLimit float64
+	RateBurst int
 }
 
 // MinSecretBytes is the minimum acceptable JWT secret length (HS256 guidance).
@@ -228,9 +239,12 @@ func Load() (*Config, error) {
 			MaxArgBytes:    envInt("NOMADDEV_GITHUB_MAX_ARG_BYTES", 256*1024),
 			MaxResultBytes: envInt("NOMADDEV_GITHUB_MAX_RESULT_BYTES", 1024*1024),
 		},
-		ReadTimeout:  envDuration("NOMADDEV_READ_TIMEOUT", 60*time.Second),
-		WriteTimeout: envDuration("NOMADDEV_WRITE_TIMEOUT", 10*time.Second),
-		PingInterval: envDuration("NOMADDEV_PING_INTERVAL", 30*time.Second),
+		ReadTimeout:     envDuration("NOMADDEV_READ_TIMEOUT", 60*time.Second),
+		WriteTimeout:    envDuration("NOMADDEV_WRITE_TIMEOUT", 10*time.Second),
+		PingInterval:    envDuration("NOMADDEV_PING_INTERVAL", 30*time.Second),
+		MaxMessageBytes: envInt64("NOMADDEV_WS_MAX_MESSAGE_BYTES", 256*1024),
+		RateLimit:       envFloat("NOMADDEV_WS_RATE_LIMIT", 50),
+		RateBurst:       envInt("NOMADDEV_WS_RATE_BURST", 100),
 	}
 	return cfg, nil
 }

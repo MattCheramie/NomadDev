@@ -31,6 +31,13 @@ var (
 		Name: "nomaddev_ws_active_connections",
 		Help: "Number of currently-connected WebSocket clients.",
 	})
+
+	// WSInboundRejectedTotal counts inbound frames the server refused
+	// to dispatch. reason ∈ {"rate_limited","message_too_large"}.
+	WSInboundRejectedTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "nomaddev_ws_inbound_rejected_total",
+		Help: "Count of inbound WebSocket frames rejected before dispatch, labeled by reason.",
+	}, []string{"reason"})
 )
 
 // Per-envelope metric. kind is the envelope.Type string.
@@ -99,6 +106,7 @@ func init() {
 	Registry.MustRegister(
 		WSConnectsTotal,
 		WSActiveConnections,
+		WSInboundRejectedTotal,
 		SessionEventsTotal,
 		SandboxRunsTotal,
 		SandboxRunSeconds,

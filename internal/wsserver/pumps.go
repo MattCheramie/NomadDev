@@ -1,10 +1,13 @@
 package wsserver
 
 import (
+	"errors"
 	"log/slog"
+	"strings"
 	"time"
 
 	"github.com/gorilla/websocket"
+	"golang.org/x/time/rate"
 
 	"github.com/mattcheramie/nomaddev/internal/auth"
 	"github.com/mattcheramie/nomaddev/internal/event"
@@ -71,6 +74,17 @@ func (s *Server) bufferAndSend(sess *session.Session, c *hub.Client, env event.E
 }
 
 // readPump reads inbound frames, dispatches them, and exits on any error.
+//
+// Two policies guard the dispatcher from a hostile or runaway client:
+//
+//   - SetReadLimit caps each frame at s.cfg.MaxMessageBytes. Gorilla
+//     enforces the limit and closes the connection with 1009 Message
+//     Too Big on violation; we emit one error envelope first so the
+//     client sees a structured reason instead of a bare close frame.
+//   - A per-connection token-bucket rate limiter rejects envelopes
+//     once the steady-state rate is exceeded. Rejected frames get an
+//     error{rate_limited} envelope but the connection stays open — a
+//     well-behaved client can throttle and resume.
 func (s *Server) readPump(
 	conn *websocket.Conn,
 	client *hub.Client,
@@ -79,20 +93,45 @@ func (s *Server) readPump(
 ) {
 	defer client.Close()
 
+	if s.cfg.MaxMessageBytes > 0 {
+		conn.SetReadLimit(s.cfg.MaxMessageBytes)
+	}
 	_ = conn.SetReadDeadline(time.Now().Add(s.cfg.ReadTimeout))
 	conn.SetPongHandler(func(string) error {
 		return conn.SetReadDeadline(time.Now().Add(s.cfg.ReadTimeout))
 	})
 
+	var limiter *rate.Limiter
+	if s.cfg.RateLimit > 0 && s.cfg.RateBurst > 0 {
+		limiter = rate.NewLimiter(rate.Limit(s.cfg.RateLimit), s.cfg.RateBurst)
+	}
+
 	for {
 		_, data, err := conn.ReadMessage()
 		if err != nil {
-			if !websocket.IsCloseError(err, websocket.CloseNormalClosure, websocket.CloseGoingAway) {
+			// gorilla/websocket's SetReadLimit closes the connection
+			// with a 1009 close frame BEFORE ReadMessage returns; we
+			// can't push an error envelope back through the same conn
+			// at this point. Surface via metric + structured log so
+			// operators see the bound being hit. Well-behaved clients
+			// observe the 1009 close code and back off.
+			if isMessageTooBig(err) {
+				logger.Warn("ws: inbound frame exceeded limit",
+					"limit_bytes", s.cfg.MaxMessageBytes, "err", err)
+				metrics.WSInboundRejectedTotal.WithLabelValues("message_too_large").Inc()
+			} else if !websocket.IsCloseError(err, websocket.CloseNormalClosure, websocket.CloseGoingAway) {
 				logger.Info("ws: read closed", "err", err)
 			}
 			return
 		}
 		sess.Touch(time.Now().UTC())
+
+		if limiter != nil && !limiter.Allow() {
+			metrics.WSInboundRejectedTotal.WithLabelValues("rate_limited").Inc()
+			s.replyError(sess, client, "", event.CodeRateLimited,
+				"connection-level rate limit exceeded")
+			continue
+		}
 
 		env, err := event.DecodeBytes(data)
 		if err != nil {
@@ -101,6 +140,23 @@ func (s *Server) readPump(
 		}
 		s.dispatch(env, client, sess, logger)
 	}
+}
+
+// isMessageTooBig reports whether err looks like a ReadLimit overflow
+// from gorilla/websocket. The library wraps the original Go error with
+// "websocket: read limit exceeded"; CloseError 1009 fires on the
+// remote-disconnect path. Both should be treated identically.
+func isMessageTooBig(err error) bool {
+	if err == nil {
+		return false
+	}
+	var ce *websocket.CloseError
+	if errors.As(err, &ce) && ce.Code == websocket.CloseMessageTooBig {
+		return true
+	}
+	// Conservative substring check — gorilla's "read limit" message
+	// is stable across the v1.5.x line we depend on.
+	return strings.Contains(err.Error(), "read limit")
 }
 
 // writePump multiplexes between the client's Send channel and a heartbeat

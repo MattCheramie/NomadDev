@@ -245,11 +245,28 @@ repoint `alpine:3.20` at a malicious manifest between deploys.*
 See [`docs/sandbox.md`](./docs/sandbox.md#threat-model) for the
 verification flow and threat-model rationale.
 
-**Remaining top-10:** WS body size cap + per-connection rate limit
-(8.3), SBOM/cosign/Trivy in releases (8.4), audit log split from
-replay buffer (8.5), wired biometric approval (8.6), SQLite
-integrity check + migration framework (8.7), `/healthz` dependency
-probes + Compose healthcheck (8.8), GitHub rate-limit
+#### 8.3 WebSocket guards — body size cap + per-connection rate limit — done
+*Closes the trivial-DoS surface where a hostile client can either send a
+1 GB envelope (OOM) or stream tens of thousands of small frames a second
+(starve the dispatcher) without hitting any per-server cap.*
+- [x] `NOMADDEV_WS_MAX_MESSAGE_BYTES` (default 256 KiB) bounds inbound
+  frame size via `gorilla/websocket`'s `SetReadLimit`. Oversized
+  frames are closed with the standard 1009 (`message too big`) code
+  and counted on `nomaddev_ws_inbound_rejected_total{reason="message_too_large"}`.
+- [x] `NOMADDEV_WS_RATE_LIMIT` (envelopes/sec) + `NOMADDEV_WS_RATE_BURST`
+  (bucket size) cap inbound envelopes per connection via a token-bucket
+  limiter (`golang.org/x/time/rate`). Rejected frames return a structured
+  `error{code: "rate_limited"}` envelope without dropping the connection —
+  a well-behaved client can throttle and resume.
+- [x] Both knobs default to permissive-but-safe values; set
+  `NOMADDEV_WS_RATE_LIMIT=0` to disable rate limiting entirely.
+- [x] Metric `nomaddev_ws_inbound_rejected_total{reason}` for SLO
+  dashboards and abuse alerts.
+
+**Remaining top-10:** SBOM/cosign/Trivy in releases (8.4), audit log
+split from replay buffer (8.5), wired biometric approval (8.6),
+SQLite integrity check + migration framework (8.7), `/healthz`
+dependency probes + Compose healthcheck (8.8), GitHub rate-limit
 awareness/retry (8.9), and automated `session.db` backups (8.10).
 
 ---
