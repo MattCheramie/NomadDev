@@ -259,23 +259,18 @@ func (s *SQLiteStore) replaceWithSummary(
 	}
 	defer func() { _ = tx.Rollback() }()
 
-	// Build placeholder list for the IN clause. len(victims) is bounded by
-	// the number of user/assistant turns in one session, which the janitor
-	// thresholds keep modest.
-	placeholders := make([]byte, 0, len(victims)*2-1)
-	args := make([]any, 0, len(victims)+1)
-	args = append(args, sid)
-	for i, v := range victims {
-		if i > 0 {
-			placeholders = append(placeholders, ',')
-		}
-		placeholders = append(placeholders, '?')
-		args = append(args, v)
+	// Delete victims one prepared statement at a time so the SQL is a plain
+	// constant string (no dynamic IN clause to satisfy gosec G201). The per-SID
+	// mutex bounds how many rows this loop touches per call.
+	stmt, err := tx.PrepareContext(ctx, `DELETE FROM turns WHERE sid = ? AND turn_idx = ?`)
+	if err != nil {
+		return fmt.Errorf("history: prepare delete: %w", err)
 	}
-	delStmt := fmt.Sprintf(
-		`DELETE FROM turns WHERE sid = ? AND turn_idx IN (%s)`, string(placeholders))
-	if _, err := tx.ExecContext(ctx, delStmt, args...); err != nil {
-		return fmt.Errorf("history: delete victims: %w", err)
+	defer stmt.Close()
+	for _, v := range victims {
+		if _, err := stmt.ExecContext(ctx, sid, v); err != nil {
+			return fmt.Errorf("history: delete victim %d: %w", v, err)
+		}
 	}
 	if _, err := tx.ExecContext(ctx,
 		`INSERT INTO turns(sid, turn_idx, role, parts_json, ts) VALUES (?, ?, ?, ?, ?)`,
