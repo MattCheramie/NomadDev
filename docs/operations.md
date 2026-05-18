@@ -21,6 +21,7 @@ defined in [`internal/metrics/metrics.go`](../internal/metrics/metrics.go).
 | `nomaddev_sandbox_run_seconds`        | histogram | —         | 10 ms → ~40 s buckets                            |
 | `nomaddev_middleware_turns_total`     | counter   | `outcome` | `ok` / `error`                                   |
 | `nomaddev_middleware_turn_seconds`    | histogram | —         | 50 ms → ~3 min buckets                           |
+| `nomaddev_github_calls_total`         | counter   | `tool`, `outcome` | One per `github_*` MCP invocation; outcomes `ok` / `error` / `timeout` / `canceled` / `bad_request` / `denied` |
 
 Suggested alerts:
 - `rate(nomaddev_ws_connects_total{result="unauthorized"}[5m]) > 1` —
@@ -104,6 +105,28 @@ on-disk footprint.
   `command.request` envelopes get `sandbox_unavailable` immediately.
 - Middleware turns: `NOMADDEV_MIDDLEWARE_MAX_CONCURRENT`. Above this,
   new `user.intent` envelopes get a synthetic error `assistant.message`.
+
+### Rotating the GitHub PAT
+The orchestrator's `EnvTokenSource` re-reads `NOMADDEV_GITHUB_TOKEN` on
+every tool call, so rotation is: update the env file, restart the
+service.
+
+```sh
+# Docker compose deploy:
+$EDITOR /etc/nomaddev/.env           # set new NOMADDEV_GITHUB_TOKEN=...
+docker compose -f /etc/nomaddev/docker-compose.yml restart
+
+# Systemd deploy:
+$EDITOR /etc/nomaddev/orchestrator.env
+sudo systemctl restart nomaddev-orchestrator
+```
+
+Verify with the startup log line `orchestrator: github backend ready
+tools=N` (the count is non-zero only when the PAT is valid).
+
+In-flight calls finish under the old credential; the next call uses the
+new one. To pre-emptively revoke the old PAT, do so on
+github.com/settings/tokens **after** confirming the new one works.
 
 ### Troubleshooting checklist
 1. `curl /healthz` returns 200.
