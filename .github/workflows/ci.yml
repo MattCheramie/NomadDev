@@ -218,8 +218,14 @@ jobs:
           NOMADDEV_SANDBOX_RUNTIME: mock
           NOMADDEV_AUTH_REVOCATION_BACKEND: memory
           NOMADDEV_AUDIT_BACKEND: stderr
+          # The default workspace path /var/lib/nomaddev/work isn't
+          # writable on a stock GitHub-hosted runner; the middleware
+          # builder MkdirAll's it and fails silently in the background
+          # process if we don't override. RUNNER_TEMP is always
+          # writable and ephemeral.
+          NOMADDEV_SANDBOX_WORKSPACE_DIR: ${{ runner.temp }}/nomaddev-work
         run: |
-          ./bin/orchestrator -listen 127.0.0.1:8080 &
+          ./bin/orchestrator -listen 127.0.0.1:8080 > orchestrator.log 2>&1 &
           echo $! > orchestrator.pid
           # Wait for /healthz to come up — gives the binary a fair
           # window to bind before Playwright starts hitting it.
@@ -230,7 +236,14 @@ jobs:
             fi
             sleep 0.5
           done
-          curl -fsS http://127.0.0.1:8080/healthz
+          # If /healthz still isn't responding, dump the orchestrator
+          # log so the failure mode is visible — silent-background-exit
+          # is what we hit on the first CI run.
+          if ! curl -fsS http://127.0.0.1:8080/healthz; then
+            echo "::error::orchestrator failed to bind; recent log:"
+            tail -50 orchestrator.log || true
+            exit 1
+          fi
       - name: mint JWT for the test
         id: jwt
         env:
