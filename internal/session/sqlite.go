@@ -13,6 +13,7 @@ import (
 	// toolchain required at build time. Already pulled in by internal/history.
 	_ "modernc.org/sqlite"
 
+	"github.com/mattcheramie/nomaddev/internal/dbutil"
 	"github.com/mattcheramie/nomaddev/internal/event"
 )
 
@@ -44,24 +45,33 @@ type SQLiteStore struct {
 	sessions map[string]*Session
 }
 
-const createSessionSchema = `
-CREATE TABLE IF NOT EXISTS sessions (
-    sid        TEXT    PRIMARY KEY,
-    created_at INTEGER NOT NULL,
-    last_seen  INTEGER NOT NULL
-);
-CREATE TABLE IF NOT EXISTS session_events (
-    sid      TEXT    NOT NULL,
-    idx      INTEGER NOT NULL,
-    env_id   TEXT    NOT NULL,
-    env_json BLOB    NOT NULL,
-    size     INTEGER NOT NULL,
-    ts       INTEGER NOT NULL,
-    PRIMARY KEY (sid, idx)
-);
-CREATE INDEX IF NOT EXISTS session_events_sid_env_id
-    ON session_events(sid, env_id);
-`
+// migrations is the forward-only schema chain for the session store.
+// Append a new Migration{Version: N+1, ...} for any schema change.
+// Existing migrations must not be edited — deploys on the older
+// version won't re-run them.
+var migrations = []dbutil.Migration{
+	{
+		Version: 1,
+		Stmts: []string{
+			`CREATE TABLE IF NOT EXISTS sessions (
+                sid        TEXT    PRIMARY KEY,
+                created_at INTEGER NOT NULL,
+                last_seen  INTEGER NOT NULL
+            )`,
+			`CREATE TABLE IF NOT EXISTS session_events (
+                sid      TEXT    NOT NULL,
+                idx      INTEGER NOT NULL,
+                env_id   TEXT    NOT NULL,
+                env_json BLOB    NOT NULL,
+                size     INTEGER NOT NULL,
+                ts       INTEGER NOT NULL,
+                PRIMARY KEY (sid, idx)
+            )`,
+			`CREATE INDEX IF NOT EXISTS session_events_sid_env_id
+                ON session_events(sid, env_id)`,
+		},
+	},
+}
 
 // NewSQLiteStore opens (or creates) the database at path, sets the same
 // PRAGMAs used by internal/history/sqlite.go, and bootstraps the schema.
@@ -82,9 +92,13 @@ func NewSQLiteStore(path string, bufferSize, maxBytes int, log *slog.Logger) (*S
 			return nil, fmt.Errorf("session: pragma %q: %w", p, err)
 		}
 	}
-	if _, err := db.Exec(createSessionSchema); err != nil {
+	if err := dbutil.IntegrityCheck(context.Background(), db); err != nil {
 		_ = db.Close()
-		return nil, fmt.Errorf("session: schema bootstrap: %w", err)
+		return nil, fmt.Errorf("session: %w", err)
+	}
+	if err := dbutil.Migrate(context.Background(), db, migrations, log); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("session: migrate: %w", err)
 	}
 	return &SQLiteStore{
 		db:         db,

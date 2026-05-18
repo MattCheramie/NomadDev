@@ -54,6 +54,39 @@ orchestrator logs a warning and falls back to the in-memory store. The
 `docker compose logs`) for `session: sqlite open failed, falling back to
 memory` to detect this.
 
+### Integrity check + schema migrations (Phase 8.7)
+
+Every SQLite-backed store (`sessions.db`, `history.db`, the JTI
+revocation DB) runs the following on every orchestrator start, in
+order:
+
+1. `PRAGMA integrity_check` — refuses to boot if SQLite reports
+   anything other than `ok`. Catches page-level corruption that a
+   normal query path might miss until the orchestrator is already
+   writing.
+2. `PRAGMA user_version` is read; any forward-only migrations from
+   [`internal/dbutil`](../internal/dbutil/dbutil.go) at versions
+   higher than the current value are applied. Each migration runs
+   in a transaction that also bumps `user_version`, so a failure
+   rolls back atomically and the same migration is retried on the
+   next boot.
+3. If `user_version` is **higher** than the latest migration this
+   binary supports, the constructor returns `ErrSchemaTooNew` and
+   the orchestrator refuses to start. Operators see a clear "binary
+   downgrade detected" error instead of silent data loss.
+
+To inspect a database's schema version manually:
+
+```sh
+sqlite3 /var/lib/nomaddev/sessions.db 'PRAGMA user_version;'
+sqlite3 /var/lib/nomaddev/sessions.db 'PRAGMA integrity_check;'
+```
+
+Adding a new migration is a single append to the `migrations` slice
+in the relevant `internal/{auth,history,session}/*.go` file —
+**never edit an existing migration** since older deploys won't
+re-run it on upgrade.
+
 ## Release process
 
 Releases are tag-driven:
