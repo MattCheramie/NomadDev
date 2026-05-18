@@ -26,6 +26,7 @@ import (
 	"github.com/mattcheramie/nomaddev/internal/middleware"
 	"github.com/mattcheramie/nomaddev/internal/sandbox"
 	"github.com/mattcheramie/nomaddev/internal/session"
+	"github.com/mattcheramie/nomaddev/internal/tracing"
 	"github.com/mattcheramie/nomaddev/internal/wsserver"
 )
 
@@ -109,6 +110,27 @@ func run(listenOverride string) error {
 	go h.Run(rootCtx)
 
 	sessions := buildSessionStore(rootCtx, cfg, logger)
+
+	// Phase 11.2: OpenTelemetry tracing. No-op when disabled, so the
+	// rest of the codebase can call otel.Tracer(...) safely.
+	traceShutdown, err := tracing.Init(rootCtx, tracing.Config{
+		Enabled:        cfg.Tracing.Enabled,
+		Endpoint:       cfg.Tracing.Endpoint,
+		ServiceName:    cfg.Tracing.ServiceName,
+		ServiceVersion: firstNonEmpty(cfg.Tracing.ServiceVersion, version),
+		SampleRatio:    cfg.Tracing.SampleRatio,
+		Insecure:       cfg.Tracing.Insecure,
+	}, logger)
+	if err != nil {
+		return fmt.Errorf("tracing: %w", err)
+	}
+	defer func() {
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := traceShutdown(shutdownCtx); err != nil {
+			logger.Warn("orchestrator: tracing shutdown", "err", err)
+		}
+	}()
 
 	auditSink, err := audit.Open(cfg.Audit.Backend, cfg.Audit.Path, logger)
 	if err != nil {
@@ -467,4 +489,15 @@ func buildReadinessProbes(sess session.Store, mw *middleware.Service, rev auth.R
 		probes = append(probes, wsserver.ReadinessProbe{Name: "revocation_db", Check: p.PingContext})
 	}
 	return probes
+}
+
+// firstNonEmpty returns the first non-empty arg, or "" if none. Used to
+// resolve the tracing service-version from cfg → main.version → "".
+func firstNonEmpty(s ...string) string {
+	for _, v := range s {
+		if v != "" {
+			return v
+		}
+	}
+	return ""
 }

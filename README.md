@@ -643,7 +643,7 @@ target per-fsops session isolation (engine refactor), a real
 total-memory pool model (only if a multi-tenant deploy hits the
 worst-case sizing), and per-tool scopes on the JWT.
 
-### Phase 11: Production hardening — in progress
+### Phase 11: Production hardening — done
 *Objective: Work the Production-hardening lens — the last remaining
 lens from the missing-features review. Operator-facing observability,
 deployment automation, and the docs that turn the orchestrator from
@@ -692,13 +692,39 @@ write it."*
   network-attached audit), and ships a `/etc/logrotate.d/nomaddev`
   recipe for the file-backend audit log using `copytruncate`.
 
-**Remaining Phase-11 follow-up:** OpenTelemetry tracing. Wire
-`go.opentelemetry.io/otel` spans at the user.intent → translator →
-dispatcher → runner boundaries with a configurable OTLP exporter
-endpoint. Own PR because it brings a meaningful module-graph
-expansion (otel/otel-sdk/otel-otlp packages) and instrumentation
-threading; the doc + config items in this PR don't need any of
-that to be useful.
+#### 11.2 OpenTelemetry tracing — done
+- [x] **New `internal/tracing` package.** `Init(ctx, Config, log)`
+  wires the global `TracerProvider` with an OTLP/HTTP exporter
+  and returns a Shutdown hook callers defer unconditionally
+  (no-op when disabled). Quiet fallback on misconfiguration —
+  a typo in the OTLP URL logs a warning and disables tracing
+  instead of taking the orchestrator down.
+- [x] **Default off.** `NOMADDEV_OTEL_ENABLED=false` is the
+  shipping default; `otel.Tracer(...)` returns a noop tracer
+  at every call site so the codebase pays only the
+  tens-of-nanoseconds tracer-noop cost when tracing is off.
+- [x] **First span: `ws.dispatch.<envelope.type>`.** One root
+  span per inbound envelope on the dispatcher entry point with
+  `envelope.type`, `session.sub`, `session.sid` attributes. Gives
+  operators immediate trace-side visibility per turn / per
+  command.request without spreading instrumentation through
+  every package; future Phase-11.3 can add child spans on
+  sandbox.Exec / githubmcp.Call when the trace shape stabilizes.
+- [x] **Config knobs.** `NOMADDEV_OTEL_OTLP_ENDPOINT` (collector
+  URL), `NOMADDEV_OTEL_SERVICE_NAME` / `_VERSION` (resource
+  attributes), `NOMADDEV_OTEL_SAMPLE_RATIO` (0.0–1.0, parent-based
+  head sampling), `NOMADDEV_OTEL_INSECURE` (plain-HTTP collector
+  on a Tailscale tailnet, default true). Documented in
+  `.env.example` and tested in `internal/tracing/tracing_test.go`
+  (disabled-default, bad-endpoint, defaults-filled-in).
+
+**Phase 11: Production hardening — done.** Both batches (11.1
+observability + IaC + privacy + ops docs, 11.2 OpenTelemetry
+tracing) shipped. Future tracing follow-ups: child spans on
+sandbox.Exec / middleware turn / githubmcp.Call to make the
+flame-graph view useful end-to-end; trace-context propagation
+from the SPA into the WS upgrade (`traceparent` HTTP header) so
+mobile-side timing lines up with server-side spans.
 
 ---
 

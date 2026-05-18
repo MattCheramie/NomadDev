@@ -253,6 +253,41 @@ isn't necessary; tracked in
 [`docs/adr/0001-record-architecture-decisions.md`](./adr/0001-record-architecture-decisions.md)
 as a candidate ADR-2.
 
+### OpenTelemetry tracing (Phase 11.2)
+
+Tracing is **off** by default — `otel.Tracer(...)` returns a noop
+tracer at every call site so the codebase pays only the
+tens-of-nanoseconds tracer-noop cost. Flip on per host:
+
+```sh
+# /etc/nomaddev/env
+NOMADDEV_OTEL_ENABLED=true
+NOMADDEV_OTEL_OTLP_ENDPOINT=otel-collector.tailnet:4318
+NOMADDEV_OTEL_INSECURE=true            # plain HTTP over Tailscale
+NOMADDEV_OTEL_SAMPLE_RATIO=1.0         # tighten in production
+NOMADDEV_OTEL_SERVICE_NAME=nomaddev-orchestrator
+```
+
+```sh
+sudo systemctl restart nomaddev-orchestrator
+journalctl -u nomaddev-orchestrator | grep 'tracing: enabled'
+```
+
+What's instrumented in 11.2: one root span per inbound envelope at
+`ws.dispatch.<envelope.type>` with `envelope.type`, `session.sub`,
+`session.sid` attributes. That's the smallest useful surface;
+child spans on `sandbox.Exec` / `middleware.turn` /
+`githubmcp.Call` are a follow-up Phase. Operators who want
+end-to-end timing today should pair this with the Phase 11.1
+Grafana dashboard — Prometheus already exposes the per-stage
+latency histograms.
+
+**Why a quiet-fallback default.** If the OTLP endpoint is a typo,
+`tracing.Init` logs a warning and disables tracing rather than
+crashing the orchestrator. The configured collector being down is
+a tracing-pipeline problem, not an orchestrator availability
+problem.
+
 ## Release process
 
 Releases are tag-driven:
