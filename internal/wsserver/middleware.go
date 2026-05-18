@@ -305,6 +305,7 @@ func (s *Server) runToolCall(
 	ch, err := s.mw.Dispatcher.Dispatch(dispatchCtx, call, middleware.DispatchOptions{
 		Timeout:       s.mw.Config.DefaultTimeout,
 		SandboxLimits: s.mw.Config.SandboxLimits,
+		SessionID:     client.SID,
 	})
 	if err != nil {
 		code := event.SandboxErrInternal

@@ -149,11 +149,12 @@ func run(listenOverride string) error {
 			MemoryBytes: cfg.Sandbox.Memory,
 			PidsLimit:   cfg.Sandbox.PidsLimit,
 		},
-		ReadonlyRoot:  cfg.Sandbox.ReadOnlyRootfs,
-		Network:       cfg.Sandbox.Network,
-		PreferRunsc:   cfg.Sandbox.PreferRunsc,
-		RequireDigest: cfg.Sandbox.RequireDigest,
-		Logger:        logger,
+		ReadonlyRoot:        cfg.Sandbox.ReadOnlyRootfs,
+		Network:             cfg.Sandbox.Network,
+		PreferRunsc:         cfg.Sandbox.PreferRunsc,
+		RequireDigest:       cfg.Sandbox.RequireDigest,
+		PerSessionWorkspace: cfg.Sandbox.PerSessionWorkspace,
+		Logger:              logger,
 	})
 	if err != nil {
 		return fmt.Errorf("sandbox: %w", err)

@@ -558,11 +558,12 @@ that needs `diffoscope` for the next attempt — captured in
 [`claude/dx-tooling`](#)'s revert commit, which records the
 investigator-friendly diagnostic context.
 
-### Phase 10: Security gaps not in the top-10 — in progress
+### Phase 10: Security gaps not in the top-10 — done
 *Objective: Work the Security-gaps-beyond-top-10 lens from the
 review's wider gap list — items the original top-10 prioritization
 left for follow-up because they're either narrower in blast radius
-or carry more architectural weight.*
+or carry more architectural weight. Both batches (10.1 + 10.2)
+shipped.*
 
 #### 10.1 Origin allowlist + CSP + JWT rotation grace + script-content redaction — done
 - [x] **`CheckOrigin` allowlist.** `gorilla/websocket`'s upgrader
@@ -598,13 +599,49 @@ or carry more architectural weight.*
   purpose: prose-shaped fields (`body`, `description`) don't get
   the scanner; `script` / `command` keys do.
 
-**Remaining Phase-10 follow-ups:** per-session sandbox workspace
-isolation (mkdir-per-SID + plumb-through bind mount — substantial
-sandbox-runner change), user-namespace remapping (Docker daemon
-feature flag + per-deploy config), and a total-memory cross-session
-quota (the existing per-runner `MaxConcurrent` semaphore already
-caps run count globally; the gap is per-job memory accounting on
-top of that).
+#### 10.2 Per-session workspace isolation + ops docs for userns + quota — done
+- [x] **Per-session sandbox workspace.** New
+  `NOMADDEV_SANDBOX_PER_SESSION_WORKSPACE` flag (default false for
+  back-compat). When true, the docker runner bind-mounts
+  `<WorkspaceDir>/<sanitized-sid>/` at `/work` instead of the
+  shared root. `sandbox.ExecRequest.SessionID` carries the SID
+  from the WS layer through both the direct command.request path
+  and the middleware tool-dispatcher path. The SID is sanitized
+  (alphanumerics + `-_.`, capped at 64 bytes, `..` collapsed to
+  `__`) so a malformed claim can't escape the workspace root.
+- [x] **`sanitizeSID` tested in 4 scenarios** covering allowed
+  characters, path-traversal collapse, shell-meta stripping, and
+  the 64-byte length cap.
+- [x] **Known limitation captured.** `fsops` still operates on the
+  shared root — per-fsops isolation is a separate plumb-through
+  that's deferred because the engine is a Service-level singleton
+  today. Documented in
+  [`docs/sandbox.md`](./docs/sandbox.md#per-session-workspace-isolation-phase-102)
+  so multi-tenant operators know to treat sandbox isolation as
+  defense-in-depth on top of per-user PAT scoping rather than a
+  complete boundary.
+- [x] **User-namespace remapping documented** in
+  [`docs/sandbox.md`](./docs/sandbox.md#user-namespace-remapping-phase-10-doc).
+  Daemon-level config (`/etc/docker/daemon.json` with
+  `"userns-remap": "default"`); the orchestrator can't drive this
+  from inside, but the doc captures the workspace-ownership
+  trade-off (`chown 100000:100000` vs running orchestrator as
+  `dockremap`).
+- [x] **Total-resource budgeting documented** in
+  [`docs/sandbox.md`](./docs/sandbox.md#total-resource-budgeting-phase-10-doc).
+  Worst-case container RSS is `MAX_CONCURRENT × MEMORY`; the
+  existing semaphore caps concurrent runs. Added a sizing table
+  for the common deploy profiles (CX22, CAX11, multi-tenant). A
+  pool-style "total memory budget" model is architecturally
+  bigger than per-run caps; the per-run × concurrent product
+  covers the same blast radius for any realistic deploy.
+
+**Phase 10: Security gaps not in the top-10 — done.** Both batches
+(10.1 wire + auth + redaction hardening, 10.2 per-session isolation
++ userns / quota docs) shipped. Future security follow-ups would
+target per-fsops session isolation (engine refactor), a real
+total-memory pool model (only if a multi-tenant deploy hits the
+worst-case sizing), and per-tool scopes on the JWT.
 
 ---
 

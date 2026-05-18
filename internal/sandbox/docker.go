@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"os"
 	"path/filepath"
 	"strings"
 	"time"
@@ -29,6 +30,7 @@ type DockerRunner struct {
 	image          string
 	expectedDigest string // non-empty when image was pinned via @sha256:...
 	workspaceDir   string
+	perSessionWS   bool // bind-mount <workspaceDir>/<sid>/ when ExecRequest.SessionID is set
 	defaultTimeout time.Duration
 	limits         ResourceLimits
 	readonlyRoot   bool
@@ -51,7 +53,15 @@ type DockerRunnerOptions struct {
 	// this in production to refuse to boot on a tag-only ref that
 	// would be vulnerable to a registry-tag race.
 	RequireDigest bool
-	Logger        *slog.Logger
+	// PerSessionWorkspace, when true, scopes the bind-mounted /work
+	// volume to a per-SID subdirectory of WorkspaceDir so two
+	// sessions can't see each other's files. The subdir is created
+	// on first use with mode 0o700. ExecRequest.SessionID drives
+	// the path; empty SessionID falls back to the shared root.
+	// Default false for back-compat — existing single-tenant
+	// deploys keep the shared workspace.
+	PerSessionWorkspace bool
+	Logger              *slog.Logger
 }
 
 // NewDockerRunner constructs a DockerRunner and probes the daemon for runsc.
@@ -76,6 +86,7 @@ func NewDockerRunner(ctx context.Context, opts DockerRunnerOptions) (*DockerRunn
 		image:          opts.Image,
 		expectedDigest: digest,
 		workspaceDir:   opts.WorkspaceDir,
+		perSessionWS:   opts.PerSessionWorkspace,
 		defaultTimeout: opts.DefaultTimeout,
 		limits:         opts.Limits,
 		readonlyRoot:   opts.ReadonlyRoot,
@@ -217,9 +228,22 @@ func (r *DockerRunner) runOne(
 		},
 	}
 	if r.workspaceDir != "" {
+		mountSrc := r.workspaceDir
+		if r.perSessionWS && req.SessionID != "" {
+			// Each SID gets its own subdir. Created at 0o700 so the
+			// orchestrator user owns it; the container runs as a
+			// different uid (or namespace-remapped uid when the
+			// daemon is configured for that — see docs/sandbox.md).
+			mountSrc = filepath.Join(r.workspaceDir, sanitizeSID(req.SessionID))
+			if err := os.MkdirAll(mountSrc, 0o700); err != nil {
+				out <- ExecChunk{Stream: StreamExit, ExitCode: -1,
+					Err: fmt.Errorf("per-session workspace mkdir: %w", err)}
+				return
+			}
+		}
 		hostCfg.Mounts = append(hostCfg.Mounts, mount.Mount{
 			Type:   mount.TypeBind,
-			Source: r.workspaceDir,
+			Source: mountSrc,
 			Target: "/work",
 		})
 	}

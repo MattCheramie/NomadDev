@@ -44,6 +44,12 @@ type ExecRequest struct {
 	WorkingDir string
 	Timeout    time.Duration
 	Limits     ResourceLimits
+	// SessionID, when set AND the runner was constructed with
+	// PerSessionWorkspace=true, scopes the bind-mounted workspace
+	// to <WorkspaceDir>/<SessionID> so two sessions can't see each
+	// other's files. Empty (default) preserves the shared-root
+	// behavior — back-compat for direct callers like cmd/sandbox.
+	SessionID string
 }
 
 // ResourceLimits maps to Docker HostConfig fields. Zero values disable the
@@ -82,3 +88,36 @@ var ErrOOM = errors.New("sandbox: out of memory")
 // container could start. Wrap it with %w so the caller can inspect the
 // underlying engine error via errors.Unwrap.
 var ErrImagePull = errors.New("sandbox: image pull failed")
+
+// sanitizeSID returns sid with unsafe path characters replaced so it
+// can be joined into a workspace path. The orchestrator already
+// constrains SIDs to JWT-claim shapes (URL-safe-ish), but defense
+// in depth: drop anything that could traverse the workspace root,
+// and cap length so a maliciously-crafted SID can't blow PATH_MAX.
+func sanitizeSID(sid string) string {
+	if sid == "" {
+		return ""
+	}
+	const maxLen = 64
+	b := make([]byte, 0, len(sid))
+	for i := 0; i < len(sid) && len(b) < maxLen; i++ {
+		c := sid[i]
+		switch {
+		case c >= 'a' && c <= 'z',
+			c >= 'A' && c <= 'Z',
+			c >= '0' && c <= '9',
+			c == '-' || c == '_' || c == '.':
+			// `.` is allowed once but `..` collapses to `_` so a
+			// constructed SID like "../etc" can't escape the root.
+			if c == '.' && len(b) > 0 && b[len(b)-1] == '.' {
+				b[len(b)-1] = '_'
+				b = append(b, '_')
+				continue
+			}
+			b = append(b, c)
+		default:
+			b = append(b, '_')
+		}
+	}
+	return string(b)
+}

@@ -77,6 +77,76 @@ The Docker runner's defaults are intentionally paranoid:
 | `NOMADDEV_SANDBOX_PREFER_RUNSC` | `true` | `HostConfig.Runtime` when daemon advertises `runsc` |
 | `NOMADDEV_SANDBOX_IMAGE` | `alpine:3.20` | container image |
 | `NOMADDEV_SANDBOX_WORKSPACE_DIR` | `/var/lib/nomaddev/work` | host path bind-mounted at `/work` |
+| `NOMADDEV_SANDBOX_PER_SESSION_WORKSPACE` | `false` | Phase 10.2: per-SID workspace subdir |
+
+### Total-resource budgeting (Phase 10 doc)
+
+The sandbox enforces per-run caps, not a host-wide budget. With
+defaults (`MEMORY=256MiB`, `MAX_CONCURRENT=4`), the worst-case
+memory footprint is `MAX_CONCURRENT × MEMORY` = **1 GiB** of
+container RSS, plus the orchestrator process itself (~50 MiB
+steady state) and any cached SPA bundle. Size the host accordingly:
+
+| Profile | `MAX_CONCURRENT` | `MEMORY` | Worst-case container RSS |
+|---|---|---|---|
+| Single-tenant dev | 4 | 256 MiB | 1 GiB |
+| Hetzner CX22 (2 GiB) | 4 | 256 MiB | 1 GiB (50% headroom) |
+| Hetzner CAX11 (4 GiB) | 8 | 384 MiB | 3 GiB |
+| Multi-tenant (≥ 4 GiB) | 8 | 256 MiB + per-session WS | 2 GiB |
+
+A "total memory pool" model (track allocations across runs, refuse
+new starts when sum exceeds budget) is an architecturally bigger
+change than the per-run caps; the documented sizing approach
+covers the same blast radius for any realistic deploy.
+
+### Per-session workspace isolation (Phase 10.2)
+
+Without `NOMADDEV_SANDBOX_PER_SESSION_WORKSPACE=true`, every
+session shares the same `<WorkspaceDir>` bind-mount at `/work`. A
+multi-tenant deploy where two operators run scripts that touch
+`/work/foo` will see each other's files. Setting the knob to true
+makes the runner bind-mount `<WorkspaceDir>/<sanitized-sid>/`
+instead (mode 0o700, created on first use). The SID is sanitized
+to a path-safe identifier (alphanumerics, `-_.`, capped at 64
+bytes) before joining; `..` traversal is collapsed to `__`.
+
+**Known limitation.** The `fsops` engine (read_file / write_patch
+/ list_dir) still operates on the unscoped root. Per-fsops
+isolation is a separate plumb-through that's deferred to a later
+phase because the engine is a Service-level singleton today. For
+single-operator deploys this is a non-issue; multi-tenant
+operators should treat the per-session sandbox isolation as
+defense-in-depth on top of per-user PAT scoping (see
+`docs/github.md`) rather than a complete isolation boundary.
+
+### User-namespace remapping (Phase 10 doc)
+
+Docker's [`userns-remap`](https://docs.docker.com/engine/security/userns-remap/)
+maps container UIDs to a sub-range on the host so a process
+running as `root` inside the container is an unprivileged user
+outside it. Stronger isolation than the default
+`NoNewPrivileges` + `ReadonlyRootfs` posture, and pairs well with
+the per-session workspace from above.
+
+NomadDev doesn't control daemon config from within the
+orchestrator — set this once per host:
+
+```sh
+# /etc/docker/daemon.json
+{
+  "userns-remap": "default"
+}
+```
+
+then `sudo systemctl restart docker`. The Docker daemon creates a
+`dockremap` user with a 65536-uid sub-range; container root maps
+to `dockremap`'s `subuid` start, which has no privileges on the
+host. **Note:** the orchestrator's bind-mounted `WorkspaceDir`
+needs to be writable by that mapped UID, which usually means
+either creating it owned by `dockremap` (`chown 100000:100000`)
+or running the orchestrator as `dockremap` itself. The systemd
+unit's `User=nomaddev` runs as a different uid by default; the
+operator picks one or the other.
 
 ## Runtime selection
 
