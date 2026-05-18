@@ -50,3 +50,23 @@ test('Deny forwards the typed reason', () => {
   expect(onDeny).toHaveBeenCalledWith('too risky');
   expect(onApprove).not.toHaveBeenCalled();
 });
+
+test('shows the GITHUB badge for github_* tools', () => {
+  const { getByLabelText, getByText } = render(
+    <ApprovalSheet
+      request={makeRequest({ tool: 'github_create_pull_request' })}
+      onApprove={() => undefined}
+      onDeny={() => undefined}
+    />,
+  );
+  getByLabelText('github-badge');
+  getByText('GITHUB');
+  getByText('github_create_pull_request');
+});
+
+test('does not show the GITHUB badge for non-github tools', () => {
+  const { queryByLabelText } = render(
+    <ApprovalSheet request={makeRequest()} onApprove={() => undefined} onDeny={() => undefined} />,
+  );
+  expect(queryByLabelText('github-badge')).toBeNull();
+});

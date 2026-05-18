@@ -130,6 +130,12 @@ same way it drives shell scripts and files, with the same approval gate.*
   `NOMADDEV_GITHUB_TOKEN` empty is a silent no-op for development.
 - [x] `nomaddev_github_calls_total{tool,outcome}` counter for per-tool
   observability.
+- [x] Mobile `ApprovalSheet` surfaces a **GITHUB** badge for `github_*`
+  tools so operators instantly distinguish remote-state approvals from
+  local sandbox/fsops ones.
+- [x] Opt-in live round-trip test (`make test-github-live`) that drives
+  the real upstream binary; CI skips silently when the PAT env var and
+  binary aren't present.
 
 See [`docs/github.md`](./docs/github.md) for setup, PAT scopes,
 troubleshooting, and the auth-extension seam.

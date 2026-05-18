@@ -9,7 +9,7 @@ SPA_DIST := internal/wsserver/dist
 # otherwise discover and try to test.
 GO_PACKAGES = $(shell go list ./... | grep -v '/mobile/node_modules/')
 
-.PHONY: build build-docker build-gemini build-github build-all run test test-race test-docker test-gemini test-github \
+.PHONY: build build-docker build-gemini build-github build-all run test test-race test-docker test-gemini test-github test-github-live \
         lint fmt vet tidy clean ci \
         build-mobile build-full dev-mobile clean-mobile test-mobile \
         docker-image docker-up docker-down quickstart-docker quickstart-systemd \
@@ -65,6 +65,12 @@ test-gemini:
 
 test-github:
 	go test -tags github -race -count=1 ./internal/githubmcp/...
+
+# Opt-in live round-trip against a real github-mcp-server subprocess.
+# Requires NOMADDEV_GITHUB_TOKEN exported and the upstream binary on PATH
+# (or NOMADDEV_GITHUB_MCP_BIN). Skips silently otherwise — safe for CI.
+test-github-live:
+	go test -tags github -race -count=1 -run TestLive ./internal/githubmcp/...
 
 run: build
 	./$(BIN_DIR)/orchestrator
