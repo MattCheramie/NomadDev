@@ -38,7 +38,7 @@ this is how it ended" without needing to interpret a bare `event.error`.
 
 | Env var | Default | Effect |
 |---|---|---|
-| `NOMADDEV_APPROVAL_REQUIRED_TOOLS` | `execute_script,write_patch` | Comma-separated list of tool names that need approval. |
+| `NOMADDEV_APPROVAL_REQUIRED_TOOLS` | `execute_script,write_patch,apply_code_patch` | Comma-separated list of tool names that need approval. |
 | `NOMADDEV_APPROVAL_TIMEOUT` | `60s` | How long to wait for grant/deny. Timeout → `sandbox_unauthorized`. |
 | `NOMADDEV_APPROVAL_AUTO_GRANT` | `false` | Dev-only escape hatch — bypasses approval for **every** tool. Never set in production. |
 | `NOMADDEV_APPROVAL_GATE_DIRECT_COMMANDS` | `true` | Also gate `command.request` envelopes the client sends directly (not just middleware-driven ones). Set `false` for debug flows. |
@@ -59,6 +59,34 @@ See `docs/events.md` for the full schema. Quick reference:
 // C→S — refuse.
 {"id":"01HX-D","type":"tool.approval.denied","ts":"...","correlation_id":"01HX-A","payload":{"reason":"too risky"}}
 ```
+
+## Diff preview (`apply_code_patch`)
+
+For `apply_code_patch` calls the `tool.approval.request` payload carries an
+extra optional field, `preview`, with the dry-run output of the edit:
+
+```json
+"payload": {
+  "tool": "apply_code_patch",
+  "args": {"file_path": "x.go", "search_string": "old", "replace_string": "new"},
+  "reason": "edits a file via search/replace",
+  "pending_command_id": "01HX-cmd",
+  "timeout_ms": 60000,
+  "preview": {
+    "path": "x.go",
+    "line_number": 42,
+    "unified_diff": "--- a/x.go\n+++ b/x.go\n@@ -39,3 +39,3 @@\n ctx\n-old\n+new\n ctx\n"
+  }
+}
+```
+
+The preview is produced by `Engine.PreviewApplyCodePatch` *before* the
+approval envelope is sent — no file is touched, and an ambiguous or missing
+`search_string` short-circuits to `sandbox_bad_request` so the operator is
+never asked to approve an edit that can't apply. The mobile ApprovalSheet
+renders the diff with `+`/`-` colourisation; the typed-confirmation gate is
+unchanged. The field is omitted (`omitempty`) for every tool that doesn't
+generate a preview.
 
 ## Routing inside the orchestrator
 

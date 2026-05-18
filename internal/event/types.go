@@ -168,6 +168,12 @@ type ToolApprovalRequestPayload struct {
 	Reason           string         `json:"reason,omitempty"`
 	PendingCommandID string         `json:"pending_command_id"`
 	TimeoutMs        int            `json:"timeout_ms"`
+	// Preview carries an optional tool-specific dry-run payload that the
+	// ApprovalSheet can render alongside the raw args. Populated for
+	// apply_code_patch with {path, line_number, unified_diff} so the
+	// operator approves the actual change, not just the search/replace
+	// strings. Omitted for every tool that doesn't generate a preview.
+	Preview map[string]any `json:"preview,omitempty"`
 }
 
 // ToolApprovalGrantedPayload is sent C→S to allow the pending tool call.

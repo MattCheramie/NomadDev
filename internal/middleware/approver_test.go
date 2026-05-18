@@ -24,6 +24,17 @@ func TestApprover_RequiresApproval_DefaultPolicy(t *testing.T) {
 	}
 }
 
+func TestApprover_RequiresApproval_ApplyCodePatch(t *testing.T) {
+	p := NewPolicyApprover([]string{ToolApplyCodePatch}, false, time.Second)
+	req, reason := p.RequiresApproval(ToolApplyCodePatch, nil)
+	if !req {
+		t.Fatal("apply_code_patch should require approval")
+	}
+	if reason != "edits a file via search/replace" {
+		t.Errorf("reason = %q", reason)
+	}
+}
+
 func TestApprover_AutoGrantBypasses(t *testing.T) {
 	p := NewPolicyApprover([]string{ToolExecuteScript}, true, time.Second)
 	if req, _ := p.RequiresApproval(ToolExecuteScript, nil); req {

@@ -283,6 +283,18 @@ func (s *Server) runToolCall(
 
 	// 3. Approval round-trip if the policy demands it.
 	if required, reason := s.mw.Approver.RequiresApproval(call.Tool, call.Args); required {
+		// 3a. Build any tool-specific preview the ApprovalSheet should show.
+		//     For apply_code_patch this is a dry-run unified-diff render; a
+		//     non-unique or missing search anchor short-circuits here without
+		//     ever bothering the operator.
+		preview, perr := s.buildApprovalPreview(ctx, call.Tool, call.Args)
+		if perr != nil {
+			s.emitResult(sess, client, cmdEnv.ID, time.Now(), -1, event.SandboxErrBadRequest, perr.Error())
+			_ = s.appendToolTurns(ctx, sess.SID, call, nil, event.SandboxErrBadRequest, perr.Error())
+			recordGitHubCall(call.Tool, event.SandboxErrBadRequest, time.Time{})
+			return middleware.ToolResult{CallID: call.ID, Tool: call.Tool, Error: event.SandboxErrBadRequest}, true
+		}
+
 		approvalID := event.NewID()
 		s.mw.Approver.Register(approvalID)
 		defer s.mw.Approver.Cancel(approvalID)
@@ -298,6 +310,7 @@ func (s *Server) runToolCall(
 			Reason:           reason,
 			PendingCommandID: cmdEnv.ID,
 			TimeoutMs:        timeoutMs,
+			Preview:          preview,
 		})
 		reqEnv.ID = approvalID
 		s.bufferAndSend(sess, client, reqEnv)

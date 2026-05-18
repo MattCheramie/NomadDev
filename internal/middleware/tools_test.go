@@ -6,16 +6,16 @@ import (
 	"testing"
 )
 
-func TestTools_DefaultTools_FourEntries(t *testing.T) {
+func TestTools_DefaultTools_AllEntries(t *testing.T) {
 	specs := DefaultTools()
-	if len(specs) != 4 {
-		t.Fatalf("want 4 tools, got %d", len(specs))
+	if len(specs) != 5 {
+		t.Fatalf("want 5 tools, got %d", len(specs))
 	}
 	seen := map[string]bool{}
 	for _, s := range specs {
 		seen[s.Name] = true
 	}
-	for _, want := range []string{ToolExecuteScript, ToolReadFile, ToolListDir, ToolWritePatch} {
+	for _, want := range []string{ToolExecuteScript, ToolReadFile, ToolListDir, ToolWritePatch, ToolApplyCodePatch} {
 		if !seen[want] {
 			t.Errorf("DefaultTools missing %q", want)
 		}
@@ -87,6 +87,51 @@ func TestValidate_WritePatch_RejectMissingContent(t *testing.T) {
 func TestValidate_WritePatch_RejectBadMode(t *testing.T) {
 	err := Validate(ToolWritePatch, map[string]any{
 		"path": "x.txt", "content": "hi", "mode": "rewrite",
+	})
+	if !errors.Is(err, ErrToolValidation) {
+		t.Fatalf("want ErrToolValidation, got %v", err)
+	}
+}
+
+func TestValidate_ApplyCodePatch_OK(t *testing.T) {
+	if err := Validate(ToolApplyCodePatch, map[string]any{
+		"file_path":      "x.go",
+		"search_string":  "old",
+		"replace_string": "new",
+	}); err != nil {
+		t.Fatalf("Validate: %v", err)
+	}
+}
+
+func TestValidate_ApplyCodePatch_AllowsEmptyReplace(t *testing.T) {
+	// replace_string="" is a valid pure deletion.
+	if err := Validate(ToolApplyCodePatch, map[string]any{
+		"file_path":      "x.go",
+		"search_string":  "old",
+		"replace_string": "",
+	}); err != nil {
+		t.Fatalf("Validate: %v", err)
+	}
+}
+
+func TestValidate_ApplyCodePatch_RejectMissingFields(t *testing.T) {
+	cases := []map[string]any{
+		{"search_string": "a", "replace_string": "b"},
+		{"file_path": "x", "replace_string": "b"},
+		{"file_path": "x", "search_string": "a"},
+	}
+	for i, args := range cases {
+		if err := Validate(ToolApplyCodePatch, args); !errors.Is(err, ErrToolValidation) {
+			t.Errorf("case %d: want ErrToolValidation, got %v", i, err)
+		}
+	}
+}
+
+func TestValidate_ApplyCodePatch_RejectNonStringReplace(t *testing.T) {
+	err := Validate(ToolApplyCodePatch, map[string]any{
+		"file_path":      "x",
+		"search_string":  "a",
+		"replace_string": 42,
 	})
 	if !errors.Is(err, ErrToolValidation) {
 		t.Fatalf("want ErrToolValidation, got %v", err)

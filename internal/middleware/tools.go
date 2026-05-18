@@ -9,10 +9,11 @@ import (
 // Tool name constants. The middleware speaks these; the sandbox runner
 // recognizes ToolExecuteScript; fsops recognizes the remaining three.
 const (
-	ToolExecuteScript = "execute_script"
-	ToolReadFile      = "read_file"
-	ToolListDir       = "list_dir"
-	ToolWritePatch    = "write_patch"
+	ToolExecuteScript  = "execute_script"
+	ToolReadFile       = "read_file"
+	ToolListDir        = "list_dir"
+	ToolWritePatch     = "write_patch"
+	ToolApplyCodePatch = "apply_code_patch"
 )
 
 // ErrToolValidation is returned by Validate when the args don't satisfy a
@@ -99,6 +100,21 @@ func DefaultTools() []ToolSpec {
 				Required: []string{"path", "content"},
 			},
 		},
+		{
+			Name: ToolApplyCodePatch,
+			Description: "Apply a single search/replace edit to a UTF-8 text file inside the workspace. " +
+				"search_string must occur exactly once in the target file. " +
+				"Requires human approval; a unified-diff preview is rendered in the ApprovalSheet before the write.",
+			Parameters: Schema{
+				Type: "object",
+				Properties: map[string]*Schema{
+					"file_path":      {Type: "string", Description: "file path relative to the workspace root"},
+					"search_string":  {Type: "string", Description: "anchor that must occur exactly once in the file"},
+					"replace_string": {Type: "string", Description: "replacement text; may be empty for pure deletion"},
+				},
+				Required: []string{"file_path", "search_string", "replace_string"},
+			},
+		},
 	}
 }
 
@@ -112,7 +128,7 @@ const GitHubToolPrefix = "github_"
 // the upstream server at dispatch time, so this layer only does a prefix check.
 func KnownTool(name string) bool {
 	switch name {
-	case ToolExecuteScript, ToolReadFile, ToolListDir, ToolWritePatch:
+	case ToolExecuteScript, ToolReadFile, ToolListDir, ToolWritePatch, ToolApplyCodePatch:
 		return true
 	}
 	return strings.HasPrefix(name, GitHubToolPrefix)
@@ -133,6 +149,8 @@ func Validate(tool string, args map[string]any) error {
 		return validateListDir(args)
 	case ToolWritePatch:
 		return validateWritePatch(args)
+	case ToolApplyCodePatch:
+		return validateApplyCodePatch(args)
 	}
 	if strings.HasPrefix(tool, GitHubToolPrefix) {
 		return nil
@@ -196,6 +214,25 @@ func validateWritePatch(args map[string]any) error {
 		default:
 			return fmt.Errorf("%w: mode must be 'overwrite' or 'append'", ErrToolValidation)
 		}
+	}
+	return nil
+}
+
+func validateApplyCodePatch(args map[string]any) error {
+	if _, err := reqString(args, "file_path"); err != nil {
+		return err
+	}
+	if _, err := reqString(args, "search_string"); err != nil {
+		return err
+	}
+	// replace_string may be the empty string (pure deletion) but must be present
+	// and of string type.
+	v, ok := args["replace_string"]
+	if !ok {
+		return fmt.Errorf("%w: missing %q", ErrToolValidation, "replace_string")
+	}
+	if _, ok := v.(string); !ok {
+		return fmt.Errorf("%w: %q must be a string", ErrToolValidation, "replace_string")
 	}
 	return nil
 }

@@ -59,6 +59,14 @@ export type ApprovalRequest = {
   args: Record<string, unknown>;
   reason?: string;
   deadlineMs: number;
+  // Optional tool-specific dry-run payload. Populated for apply_code_patch
+  // with a unified-diff preview so the ApprovalSheet shows the operator the
+  // actual edit, not just the raw search/replace strings.
+  preview?: {
+    path: string;
+    line_number: number;
+    unified_diff: string;
+  };
 };
 
 export type AppState = {
@@ -183,10 +191,12 @@ export const useStore = create<AppState>((set, get) => ({
       case EventToolApprovalRequest: {
         const p = env.payload as ToolApprovalRequestPayload;
         const deadlineMs = Date.now() + (p.timeout_ms ?? 60_000);
+        const preview = p.preview as ApprovalRequest['preview'] | undefined;
         set((st) => ({
           pendingApprovals: [...st.pendingApprovals, {
             envelopeId: env.id, pendingCommandId: p.pending_command_id,
             tool: p.tool, args: p.args, reason: p.reason, deadlineMs,
+            preview,
           }],
         }));
         // Mark the tool call as awaiting approval.

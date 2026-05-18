@@ -87,9 +87,9 @@ func TestFactory_GitHubBackend_WiresDispatcherToolsAndApproval(t *testing.T) {
 		t.Fatalf("NewService: %v", err)
 	}
 
-	// Tools merged: DefaultTools (4) + github tools (3).
-	if got := len(svc.AvailableTools()); got != 7 {
-		t.Fatalf("AvailableTools count = %d, want 7", got)
+	// Tools merged: DefaultTools (5) + github tools (3).
+	if got := len(svc.AvailableTools()); got != 8 {
+		t.Fatalf("AvailableTools count = %d, want 8", got)
 	}
 
 	// Dispatcher routes github_* to the fake caller.
@@ -139,8 +139,8 @@ func TestFactory_NoGitHub_DefaultsPreserved(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewService: %v", err)
 	}
-	if got := len(svc.AvailableTools()); got != 4 {
-		t.Fatalf("AvailableTools count = %d, want 4 (DefaultTools)", got)
+	if got := len(svc.AvailableTools()); got != 5 {
+		t.Fatalf("AvailableTools count = %d, want 5 (DefaultTools)", got)
 	}
 	cd := svc.Dispatcher.(*CompositeDispatcher)
 	if cd.GitHub != nil {

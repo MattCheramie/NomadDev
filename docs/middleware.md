@@ -16,7 +16,7 @@ internal/middleware        Translator interface + MockTranslator + GeminiTransla
 internal/middleware/...    ToolDispatcher (composite over sandbox + fsops)
 internal/middleware/...    PolicyApprover (RequiresApproval/Register/Signal/Await)
 internal/history           Store interface + MemoryStore + SQLiteStore
-internal/fsops             Native filesystem ops for read_file/list_dir/write_patch
+internal/fsops             Native filesystem ops for read_file/list_dir/write_patch/apply_code_patch
 internal/wsserver/middleware.go   handleUserIntent + runIntent + runToolCall
 ```
 
@@ -81,9 +81,10 @@ without it.
 | `read_file` | fsops | `{path, max_bytes?}` | auto-granted |
 | `list_dir` | fsops | `{path, depth?}` | auto-granted |
 | `write_patch` | fsops | `{path, content, mode?, create?}` | required |
+| `apply_code_patch` | fsops | `{file_path, search_string, replace_string}` | required (with dry-run diff preview in the ApprovalSheet) |
 | `github_*` (~75 tools) | githubmcp (subprocess) | per-tool schema from upstream MCP server | required for every mutator (`create_`, `update_`, `delete_`, `merge_`, `push_`, …); read-only ops auto-granted |
 
-The four base tools have schemas declared in `internal/middleware/tools.go`;
+The five base tools have schemas declared in `internal/middleware/tools.go`;
 `github_*` schemas are fetched at orchestrator startup from the upstream
 `github-mcp-server` binary and converted by `internal/githubmcp/schema.go`.
 All schemas are SDK-agnostic — Gemini-specific conversion lives in
@@ -92,8 +93,9 @@ GitHub MCP integration in depth.
 
 ### Why the fsops/sandbox split
 
-`read_file`, `list_dir`, `write_patch` are pure filesystem ops on the
-orchestrator's existing workspace directory (the same path the Docker
+`read_file`, `list_dir`, `write_patch`, and `apply_code_patch` are pure
+filesystem ops on the orchestrator's existing workspace directory (the
+same path the Docker
 runner bind-mounts at `/work`). Running them through a container would add
 hundreds of milliseconds of latency for ops that take microseconds
 natively, with no security benefit — the trust boundary is identical
@@ -105,6 +107,20 @@ knows about `execute_script`.
 `internal/fsops.Engine` enforces path safety: no absolute paths, no `..`
 components (rejected up-front before any normalization), and symlinks must
 resolve inside the workspace root.
+
+### `apply_code_patch` — surgical edit with a preview-gated approval
+
+Unlike `write_patch`, which overwrites whole files, `apply_code_patch` performs
+a single search/replace edit. The engine verifies `search_string` occurs
+**exactly once** in the target — zero or multiple matches fail fast with
+`sandbox.ErrBadRequest` — and computes a one-hunk unified diff before the
+file is touched. The wsserver approval pipeline calls
+`Engine.PreviewApplyCodePatch` to run this dry-run *before* sending the
+`tool.approval.request` envelope, attaches the diff to the new
+`preview` field, and the mobile ApprovalSheet renders it with `+`/`-`
+colourisation so the operator approves the actual change rather than opaque
+strings. The post-approval dispatch re-runs the same single-match check on
+the freshly-read file to close the time-of-check/time-of-use window.
 
 ## History
 

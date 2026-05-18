@@ -284,7 +284,7 @@ func TestLoad_AppliesApprovalDefaults(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
-	want := map[string]bool{"execute_script": true, "write_patch": true}
+	want := map[string]bool{"execute_script": true, "write_patch": true, "apply_code_patch": true}
 	got := map[string]bool{}
 	for _, t := range cfg.Approval.RequiredTools {
 		got[t] = true

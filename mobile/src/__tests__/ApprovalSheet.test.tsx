@@ -117,3 +117,30 @@ test('does not show the GITHUB badge for non-github tools', () => {
   );
   expect(queryByLabelText('github-badge')).toBeNull();
 });
+
+test('renders the diff preview when apply_code_patch supplies one', () => {
+  const unified = `--- a/x.go\n+++ b/x.go\n@@ -1,3 +1,3 @@\n alpha\n-beta\n+BETA\n gamma\n`;
+  const { getByLabelText, getByText, queryByText } = render(
+    <ApprovalSheet
+      request={makeRequest({
+        tool: 'apply_code_patch',
+        args: { file_path: 'x.go', search_string: 'beta', replace_string: 'BETA' },
+        preview: { path: 'x.go', line_number: 2, unified_diff: unified },
+      })}
+      onApprove={() => undefined}
+      onDeny={() => undefined}
+    />,
+  );
+  getByLabelText('diff-preview');
+  getByText('x.go:2');
+  // Added/removed lines render verbatim.
+  expect(queryByText('-beta')).not.toBeNull();
+  expect(queryByText('+BETA')).not.toBeNull();
+});
+
+test('omits the diff preview block when no preview is attached', () => {
+  const { queryByLabelText } = render(
+    <ApprovalSheet request={makeRequest()} onApprove={() => undefined} onDeny={() => undefined} />,
+  );
+  expect(queryByLabelText('diff-preview')).toBeNull();
+});

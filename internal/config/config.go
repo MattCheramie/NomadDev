@@ -333,7 +333,7 @@ func Load() (*Config, error) {
 			},
 		},
 		Approval: ApprovalConfig{
-			RequiredTools:      envCSV("NOMADDEV_APPROVAL_REQUIRED_TOOLS", []string{"execute_script", "write_patch"}),
+			RequiredTools:      envCSV("NOMADDEV_APPROVAL_REQUIRED_TOOLS", []string{"execute_script", "write_patch", "apply_code_patch"}),
 			Timeout:            envDuration("NOMADDEV_APPROVAL_TIMEOUT", 60*time.Second),
 			AutoGrant:          envBool("NOMADDEV_APPROVAL_AUTO_GRANT", false),
 			GateDirectCommands: envBool("NOMADDEV_APPROVAL_GATE_DIRECT_COMMANDS", true),

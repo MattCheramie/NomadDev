@@ -7,6 +7,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/mattcheramie/nomaddev/internal/sandbox"
@@ -299,6 +300,188 @@ func TestFSOps_WritePatch_RejectInvalidMode(t *testing.T) {
 	_, exit := collect(t, ch)
 	if !errors.Is(exit.Err, sandbox.ErrBadRequest) {
 		t.Fatalf("expected ErrBadRequest, got %v", exit.Err)
+	}
+}
+
+// --- apply_code_patch ------------------------------------------------------
+
+func TestFSOps_ApplyCodePatch_HappyPath(t *testing.T) {
+	e, dir := newEngine(t)
+	original := "alpha\nbeta gamma\ndelta\nepsilon\n"
+	if err := os.WriteFile(filepath.Join(dir, "x.txt"), []byte(original), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	ch, _ := e.Run(context.Background(), Call{
+		Tool: ToolApplyCodePatch,
+		Args: map[string]any{
+			"file_path":      "x.txt",
+			"search_string":  "beta gamma",
+			"replace_string": "BETA GAMMA",
+		},
+	}, Limits{})
+	out, exit := collect(t, ch)
+	if exit.ExitCode != 0 {
+		t.Fatalf("exit = %+v", exit)
+	}
+	var r applyCodePatchResult
+	if err := json.Unmarshal(out.Bytes(), &r); err != nil {
+		t.Fatalf("json: %v", err)
+	}
+	if r.LineNumber != 2 {
+		t.Errorf("line number = %d, want 2", r.LineNumber)
+	}
+	if r.Path != "x.txt" {
+		t.Errorf("path = %q", r.Path)
+	}
+	if !strings.Contains(r.UnifiedDiff, "-beta gamma") || !strings.Contains(r.UnifiedDiff, "+BETA GAMMA") {
+		t.Errorf("unified_diff missing +/- lines: %q", r.UnifiedDiff)
+	}
+	got, _ := os.ReadFile(filepath.Join(dir, "x.txt"))
+	if string(got) != "alpha\nBETA GAMMA\ndelta\nepsilon\n" {
+		t.Errorf("file contents = %q", got)
+	}
+}
+
+func TestFSOps_ApplyCodePatch_NoMatch(t *testing.T) {
+	e, dir := newEngine(t)
+	original := "alpha\nbeta\n"
+	_ = os.WriteFile(filepath.Join(dir, "x.txt"), []byte(original), 0o644)
+	ch, _ := e.Run(context.Background(), Call{
+		Tool: ToolApplyCodePatch,
+		Args: map[string]any{
+			"file_path":      "x.txt",
+			"search_string":  "missing",
+			"replace_string": "nope",
+		},
+	}, Limits{})
+	_, exit := collect(t, ch)
+	if !errors.Is(exit.Err, sandbox.ErrBadRequest) {
+		t.Fatalf("expected ErrBadRequest, got %v", exit.Err)
+	}
+	got, _ := os.ReadFile(filepath.Join(dir, "x.txt"))
+	if string(got) != original {
+		t.Errorf("file mutated despite error: %q", got)
+	}
+}
+
+func TestFSOps_ApplyCodePatch_MultipleMatches(t *testing.T) {
+	e, dir := newEngine(t)
+	original := "x\nfoo\ny\nfoo\nz\n"
+	_ = os.WriteFile(filepath.Join(dir, "x.txt"), []byte(original), 0o644)
+	ch, _ := e.Run(context.Background(), Call{
+		Tool: ToolApplyCodePatch,
+		Args: map[string]any{
+			"file_path":      "x.txt",
+			"search_string":  "foo",
+			"replace_string": "bar",
+		},
+	}, Limits{})
+	_, exit := collect(t, ch)
+	if !errors.Is(exit.Err, sandbox.ErrBadRequest) {
+		t.Fatalf("expected ErrBadRequest, got %v", exit.Err)
+	}
+	got, _ := os.ReadFile(filepath.Join(dir, "x.txt"))
+	if string(got) != original {
+		t.Errorf("file mutated despite error: %q", got)
+	}
+}
+
+func TestFSOps_ApplyCodePatch_RejectEscape_DotDot(t *testing.T) {
+	e, _ := newEngine(t)
+	ch, _ := e.Run(context.Background(), Call{
+		Tool: ToolApplyCodePatch,
+		Args: map[string]any{
+			"file_path":      "../etc/passwd",
+			"search_string":  "anything",
+			"replace_string": "x",
+		},
+	}, Limits{})
+	_, exit := collect(t, ch)
+	if !errors.Is(exit.Err, sandbox.ErrBadRequest) {
+		t.Fatalf("expected ErrBadRequest, got %v", exit.Err)
+	}
+}
+
+func TestFSOps_ApplyCodePatch_EmptyReplace(t *testing.T) {
+	e, dir := newEngine(t)
+	_ = os.WriteFile(filepath.Join(dir, "x.txt"), []byte("keep [REMOVE] tail"), 0o644)
+	ch, _ := e.Run(context.Background(), Call{
+		Tool: ToolApplyCodePatch,
+		Args: map[string]any{
+			"file_path":      "x.txt",
+			"search_string":  "[REMOVE] ",
+			"replace_string": "",
+		},
+	}, Limits{})
+	_, exit := collect(t, ch)
+	if exit.ExitCode != 0 {
+		t.Fatalf("exit = %+v", exit)
+	}
+	got, _ := os.ReadFile(filepath.Join(dir, "x.txt"))
+	if string(got) != "keep tail" {
+		t.Errorf("file contents = %q", got)
+	}
+}
+
+func TestFSOps_ApplyCodePatch_RejectMissingFile(t *testing.T) {
+	e, _ := newEngine(t)
+	ch, _ := e.Run(context.Background(), Call{
+		Tool: ToolApplyCodePatch,
+		Args: map[string]any{
+			"file_path":      "nope.txt",
+			"search_string":  "x",
+			"replace_string": "y",
+		},
+	}, Limits{})
+	_, exit := collect(t, ch)
+	if !errors.Is(exit.Err, sandbox.ErrBadRequest) {
+		t.Fatalf("expected ErrBadRequest, got %v", exit.Err)
+	}
+}
+
+func TestFSOps_PreviewApplyCodePatch_NoWrite(t *testing.T) {
+	e, dir := newEngine(t)
+	original := "alpha\nbeta\n"
+	target := filepath.Join(dir, "x.txt")
+	_ = os.WriteFile(target, []byte(original), 0o644)
+	before, _ := os.Stat(target)
+
+	pv, err := e.PreviewApplyCodePatch(context.Background(), map[string]any{
+		"file_path":      "x.txt",
+		"search_string":  "beta",
+		"replace_string": "BETA",
+	})
+	if err != nil {
+		t.Fatalf("PreviewApplyCodePatch: %v", err)
+	}
+	if pv.LineNumber != 2 {
+		t.Errorf("preview line = %d, want 2", pv.LineNumber)
+	}
+	if !strings.Contains(pv.UnifiedDiff, "-beta") || !strings.Contains(pv.UnifiedDiff, "+BETA") {
+		t.Errorf("preview unified_diff missing +/- lines: %q", pv.UnifiedDiff)
+	}
+
+	// File untouched.
+	got, _ := os.ReadFile(target)
+	if string(got) != original {
+		t.Errorf("preview wrote to file: %q", got)
+	}
+	after, _ := os.Stat(target)
+	if !after.ModTime().Equal(before.ModTime()) {
+		t.Errorf("preview changed mtime: %v -> %v", before.ModTime(), after.ModTime())
+	}
+}
+
+func TestFSOps_PreviewApplyCodePatch_PropagatesValidationErrors(t *testing.T) {
+	e, dir := newEngine(t)
+	_ = os.WriteFile(filepath.Join(dir, "x.txt"), []byte("foo foo"), 0o644)
+	_, err := e.PreviewApplyCodePatch(context.Background(), map[string]any{
+		"file_path":      "x.txt",
+		"search_string":  "foo",
+		"replace_string": "bar",
+	})
+	if !errors.Is(err, sandbox.ErrBadRequest) {
+		t.Fatalf("expected ErrBadRequest, got %v", err)
 	}
 }
 

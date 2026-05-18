@@ -133,6 +133,10 @@ export type ToolApprovalRequestPayload = {
   reason?: string;
   pending_command_id: string;
   timeout_ms: number;
+  // Optional tool-specific dry-run payload. apply_code_patch attaches
+  // {path, line_number, unified_diff} so the ApprovalSheet renders the
+  // actual edit. Omitted for tools that don't generate a preview.
+  preview?: Record<string, unknown>;
 };
 
 export type ToolApprovalGrantedPayload = Record<string, never>;
