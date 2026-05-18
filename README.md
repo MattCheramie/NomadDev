@@ -333,10 +333,39 @@ works on the plain-HTTP deploy.*
   TLS termination; it stays out of this phase to keep scope tight
   and avoid forcing an HTTPS dependency on the default deploy.
 
-**Remaining top-10:** SQLite integrity check + migration framework
-(8.7), `/healthz` dependency probes + Compose healthcheck (8.8),
-GitHub rate-limit awareness/retry (8.9), and automated `session.db`
-backups (8.10).
+#### 8.7 SQLite integrity check + forward-only migrations — done
+*Protects existing user state from a bad upgrade. The previous code
+ran `CREATE TABLE IF NOT EXISTS` and called it done — fine for a
+fresh deploy, useless for catching a corrupted page mid-upgrade
+or refusing to start when an operator accidentally downgrades to a
+binary that doesn't know about the current schema.*
+- [x] **`PRAGMA integrity_check` on every store**
+  (`sessions.db`, `history.db`, the JTI revocation DB).
+  Constructors refuse to boot on anything other than `ok` —
+  page-level corruption that a normal query path might miss
+  surfaces immediately at startup.
+- [x] **Forward-only migration framework**
+  ([`internal/dbutil`](./internal/dbutil/dbutil.go)). Each store
+  declares a `[]dbutil.Migration` slice keyed by `Version`.
+  Migrations run in their own transaction that also bumps
+  `PRAGMA user_version` — a failed migration rolls back atomically
+  and the same step retries on the next boot. Versions must be
+  contiguous starting at 1.
+- [x] **Refuse-to-boot on accidental downgrade.** If
+  `user_version > max(migrations)`, the constructor returns
+  `ErrSchemaTooNew` instead of silently writing to a schema it
+  doesn't understand.
+- [x] **Cross-package integration test** confirms every real store
+  bumps `user_version` to ≥ 1 on first open and stays at the same
+  version after a restart, catching the failure mode where a future
+  maintainer wires a migration list but forgets to call `Migrate`.
+
+See [`docs/operations.md`](./docs/operations.md#integrity-check--schema-migrations-phase-87)
+for inspection commands and the migration authoring rules.
+
+**Remaining top-10:** `/healthz` dependency probes + Compose
+healthcheck (8.8), GitHub rate-limit awareness/retry (8.9), and
+automated `session.db` backups (8.10).
 
 ---
 

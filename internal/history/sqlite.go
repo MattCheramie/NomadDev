@@ -10,6 +10,8 @@ import (
 	// modernc.org/sqlite is the pure-Go SQLite driver — no cgo, no C
 	// toolchain required at build time.
 	_ "modernc.org/sqlite"
+
+	"github.com/mattcheramie/nomaddev/internal/dbutil"
 )
 
 // SQLiteStore persists turns to a single SQLite database file. The schema is
@@ -23,20 +25,32 @@ type SQLiteStore struct {
 	sids   map[string]*sync.Mutex
 }
 
-const createSchema = `
-CREATE TABLE IF NOT EXISTS turns (
-    sid        TEXT    NOT NULL,
-    turn_idx   INTEGER NOT NULL,
-    role       TEXT    NOT NULL,
-    parts_json BLOB    NOT NULL,
-    ts         INTEGER NOT NULL,
-    PRIMARY KEY (sid, turn_idx)
-);
-CREATE INDEX IF NOT EXISTS turns_sid_ts ON turns(sid, ts);
-`
+// migrations is the forward-only schema chain for the history store.
+// New schema changes append a new Migration{Version: N+1, ...} — never
+// rewrite an existing one (older deploys won't re-run it on upgrade).
+// See internal/dbutil for the application semantics and integrity-check
+// hook.
+var migrations = []dbutil.Migration{
+	{
+		Version: 1,
+		Stmts: []string{
+			`CREATE TABLE IF NOT EXISTS turns (
+                sid        TEXT    NOT NULL,
+                turn_idx   INTEGER NOT NULL,
+                role       TEXT    NOT NULL,
+                parts_json BLOB    NOT NULL,
+                ts         INTEGER NOT NULL,
+                PRIMARY KEY (sid, turn_idx)
+            )`,
+			`CREATE INDEX IF NOT EXISTS turns_sid_ts ON turns(sid, ts)`,
+		},
+	},
+}
 
 // NewSQLiteStore opens (or creates) the database at path, sets the
-// recommended PRAGMAs, and bootstraps the schema.
+// recommended PRAGMAs, runs the integrity check, and applies any
+// pending schema migrations. Returns an error if the database is
+// corrupt or on a schema newer than this binary supports.
 func NewSQLiteStore(path string) (*SQLiteStore, error) {
 	db, err := sql.Open("sqlite", path)
 	if err != nil {
@@ -57,9 +71,13 @@ func NewSQLiteStore(path string) (*SQLiteStore, error) {
 			return nil, fmt.Errorf("history: pragma %q: %w", p, err)
 		}
 	}
-	if _, err := db.Exec(createSchema); err != nil {
+	if err := dbutil.IntegrityCheck(context.Background(), db); err != nil {
 		_ = db.Close()
-		return nil, fmt.Errorf("history: schema bootstrap: %w", err)
+		return nil, fmt.Errorf("history: %w", err)
+	}
+	if err := dbutil.Migrate(context.Background(), db, migrations, nil); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("history: migrate: %w", err)
 	}
 	return &SQLiteStore{db: db, sids: make(map[string]*sync.Mutex)}, nil
 }

@@ -10,6 +10,8 @@ import (
 	"time"
 
 	_ "modernc.org/sqlite"
+
+	"github.com/mattcheramie/nomaddev/internal/dbutil"
 )
 
 // RevocationList tracks JTIs that must no longer be accepted, even if their
@@ -130,24 +132,36 @@ type SQLiteRevocationList struct {
 	log *slog.Logger
 }
 
-const createRevocationSchema = `
-CREATE TABLE IF NOT EXISTS revoked_tokens (
-    jti    TEXT    PRIMARY KEY,
-    exp_at INTEGER NOT NULL
-) STRICT;
-CREATE INDEX IF NOT EXISTS idx_revoked_tokens_exp ON revoked_tokens(exp_at);
-`
+// revocationMigrations is the forward-only schema chain for the
+// revocation store. Append-only — never edit a published version.
+var revocationMigrations = []dbutil.Migration{
+	{
+		Version: 1,
+		Stmts: []string{
+			`CREATE TABLE IF NOT EXISTS revoked_tokens (
+                jti    TEXT    PRIMARY KEY,
+                exp_at INTEGER NOT NULL
+            ) STRICT`,
+			`CREATE INDEX IF NOT EXISTS idx_revoked_tokens_exp ON revoked_tokens(exp_at)`,
+		},
+	},
+}
 
-// NewSQLiteRevocationList opens path and creates the schema if needed.
+// NewSQLiteRevocationList opens path, integrity-checks it, and applies
+// any pending schema migrations.
 func NewSQLiteRevocationList(path string, log *slog.Logger) (*SQLiteRevocationList, error) {
 	db, err := sql.Open("sqlite", path+"?_pragma=journal_mode(WAL)&_pragma=busy_timeout(5000)")
 	if err != nil {
 		return nil, fmt.Errorf("auth: open revocation db: %w", err)
 	}
 	db.SetMaxOpenConns(1)
-	if _, err := db.Exec(createRevocationSchema); err != nil {
+	if err := dbutil.IntegrityCheck(context.Background(), db); err != nil {
 		_ = db.Close()
-		return nil, fmt.Errorf("auth: revocation schema: %w", err)
+		return nil, fmt.Errorf("auth: revocation db: %w", err)
+	}
+	if err := dbutil.Migrate(context.Background(), db, revocationMigrations, log); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("auth: revocation migrate: %w", err)
 	}
 	return &SQLiteRevocationList{db: db, log: log}, nil
 }
