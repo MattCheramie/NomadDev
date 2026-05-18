@@ -20,6 +20,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"math/rand"
 	"os"
 	"os/exec"
 	"strings"
@@ -29,6 +30,7 @@ import (
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
+	"github.com/mattcheramie/nomaddev/internal/metrics"
 	"github.com/mattcheramie/nomaddev/internal/middleware"
 	"github.com/mattcheramie/nomaddev/internal/sandbox"
 )
@@ -409,10 +411,8 @@ func (c *Client) Call(ctx context.Context, call middleware.ToolCall, opts middle
 	}
 
 	bare := UnprefixedName(call.Tool)
-	result, err := session.CallTool(callCtx, &mcp.CallToolParams{
-		Name:      bare,
-		Arguments: call.Args,
-	})
+	params := &mcp.CallToolParams{Name: bare, Arguments: call.Args}
+	result, err := session.CallTool(callCtx, params)
 	if err != nil {
 		// Context cancellation / deadline must round-trip cleanly so
 		// classifyExit maps to SandboxErrTimeout / SandboxErrCanceled.
@@ -437,10 +437,7 @@ func (c *Client) Call(ctx context.Context, call middleware.ToolCall, opts middle
 			// One retry. If this also fails, surface the error to the
 			// model — endless retries on a poison call are worse than a
 			// graceful turn-level error.
-			result, err = session.CallTool(callCtx, &mcp.CallToolParams{
-				Name:      bare,
-				Arguments: call.Args,
-			})
+			result, err = session.CallTool(callCtx, params)
 			if err != nil {
 				if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
 					return c.contextErrorChunk(err), nil
@@ -450,6 +447,16 @@ func (c *Client) Call(ctx context.Context, call middleware.ToolCall, opts middle
 		} else {
 			return c.errorChunk(err.Error()), nil
 		}
+	}
+
+	// Phase 8.9: GitHub rate-limit retry. The upstream surfaces a
+	// 429 / secondary-rate-limit / abuse-detection failure as a
+	// CallToolResult with IsError=true and human-readable text we
+	// can pattern-match. Loop with bounded exponential backoff
+	// (honoring any Retry-After hint in the message) up to the
+	// configured max attempts before surfacing the error.
+	if c.opts.RateLimitRetries > 0 {
+		result = c.callWithRateLimitRetry(callCtx, session, params, result, bare)
 	}
 
 	payload, marshalErr := encodeResult(result)
@@ -474,6 +481,104 @@ func (c *Client) Call(ctx context.Context, call middleware.ToolCall, opts middle
 	ch <- sandbox.ExecChunk{Stream: sandbox.StreamExit, ExitCode: exitCode}
 	close(ch)
 	return ch, nil
+}
+
+// callWithRateLimitRetry inspects result for a GitHub rate-limit
+// failure and, if one is present, re-issues the same tool call up to
+// c.opts.RateLimitRetries times with exponential backoff. Returns
+// either the eventual success result, a fresh non-rate-limit failure,
+// or the last rate-limit result if the budget was exhausted (so the
+// model still sees the upstream's diagnostic message instead of a
+// silent drop).
+//
+// Bumps nomaddev_github_rate_limit_retries_total per attempt
+// (outcome=retried) and once more on the give-up path
+// (outcome=gave_up) so dashboards can alert on either pattern.
+func (c *Client) callWithRateLimitRetry(
+	ctx context.Context, session *mcp.ClientSession,
+	params *mcp.CallToolParams, first *mcp.CallToolResult, toolBare string,
+) *mcp.CallToolResult {
+	if !shouldRetryRateLimit(first) {
+		return first
+	}
+	rng := rand.New(rand.NewSource(time.Now().UnixNano()))
+	base := c.opts.RateLimitBaseBackoff
+	if base <= 0 {
+		base = time.Second
+	}
+	result := first
+	for attempt := 1; attempt <= c.opts.RateLimitRetries; attempt++ {
+		hint := retryHintFromResult(result)
+		wait := nextBackoff(attempt, base, hint, rng)
+		c.logger.Warn("githubmcp: rate-limited, backing off",
+			"tool", toolBare, "attempt", attempt, "wait", wait,
+			"hint", hint, "max_retries", c.opts.RateLimitRetries)
+		metrics.GitHubRateLimitRetriesTotal.WithLabelValues("retried").Inc()
+
+		select {
+		case <-time.After(wait):
+		case <-ctx.Done():
+			// Caller deadline / cancel wins over the retry budget.
+			c.logger.Warn("githubmcp: rate-limit retry aborted by ctx",
+				"tool", toolBare, "err", ctx.Err())
+			metrics.GitHubRateLimitRetriesTotal.WithLabelValues("gave_up").Inc()
+			return result
+		}
+
+		next, err := session.CallTool(ctx, params)
+		if err != nil {
+			// Transport error during a rate-limit retry: hand back
+			// the original rate-limit result so the model sees the
+			// useful message (and the transport error didn't actually
+			// happen at the GitHub layer — likely ctx-bound here).
+			return result
+		}
+		if !shouldRetryRateLimit(next) {
+			// Recovered (either success or a different non-retryable
+			// error). Surface the new result.
+			return next
+		}
+		result = next
+	}
+	c.logger.Warn("githubmcp: rate-limit retries exhausted",
+		"tool", toolBare, "retries", c.opts.RateLimitRetries)
+	metrics.GitHubRateLimitRetriesTotal.WithLabelValues("gave_up").Inc()
+	return result
+}
+
+// shouldRetryRateLimit walks the result content for any of the
+// package's rate-limit markers (see ratelimit.go). Returns true only
+// for results explicitly tagged IsError=true so a tool that
+// legitimately returns prose containing the word "rate limit" — say,
+// a GitHub Discussions search result — doesn't get retried.
+func shouldRetryRateLimit(r *mcp.CallToolResult) bool {
+	if r == nil || !r.IsError {
+		return false
+	}
+	for _, c := range r.Content {
+		if tc, ok := c.(*mcp.TextContent); ok {
+			if looksLikeRateLimitText(tc.Text) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// retryHintFromResult extracts the first Retry-After hint found in
+// the result's text content, or 0 if none.
+func retryHintFromResult(r *mcp.CallToolResult) time.Duration {
+	if r == nil {
+		return 0
+	}
+	for _, c := range r.Content {
+		if tc, ok := c.(*mcp.TextContent); ok {
+			if d := parseRetryAfter(tc.Text); d > 0 {
+				return d
+			}
+		}
+	}
+	return 0
 }
 
 // truncatePayload replaces an oversized encodeResult JSON with a smaller

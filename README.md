@@ -391,8 +391,37 @@ here.*
 See [`docs/operations.md`](./docs/operations.md#liveness-vs-readiness-phase-88)
 for the liveness-vs-readiness contract and the systemd notes.
 
-**Remaining top-10:** GitHub rate-limit awareness/retry (8.9), and
-automated `session.db` backups (8.10).
+#### 8.9 GitHub MCP rate-limit awareness + bounded retry — done
+*Until now, a primary or secondary GitHub rate-limit during a
+github_* tool call surfaced straight to the model mid-turn — the
+biggest source of "your assistant just died" failures under any
+serious workload.*
+- [x] **Pattern-matches the upstream's error text** (`api rate
+  limit exceeded`, `secondary rate limit`, `abuse detection`,
+  `rate limit reset at`, …) — the `github-mcp-server` subprocess
+  can't pass headers through stdio, so the marker scan is the only
+  signal we have.
+- [x] **Bounded exponential backoff with jitter** between retries
+  (`NOMADDEV_GITHUB_RATE_LIMIT_BASE_BACKOFF`, default `1s`; capped
+  at 30s). The upstream's `Retry-After` hint, when surfaced in the
+  error text, takes precedence over the calculated value.
+- [x] **`NOMADDEV_GITHUB_RATE_LIMIT_RETRIES`** caps re-invocations
+  (default 3). Setting to 0 disables retry entirely (pre-8.9
+  behavior — first rate-limit error surfaces to the model).
+- [x] **`nomaddev_github_rate_limit_retries_total{outcome}`** —
+  `outcome ∈ {retried, gave_up}`. Alert on a non-zero `gave_up`
+  rate or a spike in `retried` and you know the PAT scope or tool
+  mix is hitting the API too hard.
+- [x] **Caller-ctx honored mid-backoff** — if the user.intent
+  ctx fires while we're sleeping for a retry, we surface the
+  rate-limit message immediately and bump `gave_up` rather than
+  blocking past the turn budget.
+- [x] **Marker-matcher and backoff helpers are tag-free** so the
+  default-build suite covers them; the
+  `*mcp.CallToolResult`-aware wrappers live under `-tags github`
+  with their own test file.
+
+**Remaining top-10:** automated `session.db` backups (8.10).
 
 ---
 

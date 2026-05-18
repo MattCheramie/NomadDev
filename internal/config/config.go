@@ -135,6 +135,13 @@ type GitHubConfig struct {
 	StartTimeout   time.Duration // NOMADDEV_GITHUB_START_TIMEOUT (how long to wait for initialize handshake)
 	MaxArgBytes    int           // NOMADDEV_GITHUB_MAX_ARG_BYTES (cap on a single tool's JSON-marshaled args; 0 = unlimited, default 256 KiB)
 	MaxResultBytes int           // NOMADDEV_GITHUB_MAX_RESULT_BYTES (cap on the JSON payload returned to the model; 0 = unlimited, default 1 MiB)
+	// RateLimitRetries caps re-invocations of a tool call when GitHub
+	// reports a primary / secondary rate limit. 0 disables retry
+	// (pre-8.9 behavior); default 3 in Load().
+	RateLimitRetries int // NOMADDEV_GITHUB_RATE_LIMIT_RETRIES
+	// RateLimitBaseBackoff seeds the exponential schedule (base, 2*base,
+	// 4*base, … capped at 30s). Default 1s.
+	RateLimitBaseBackoff time.Duration // NOMADDEV_GITHUB_RATE_LIMIT_BASE_BACKOFF
 }
 
 // Config is the full set of knobs the orchestrator reads at startup.
@@ -245,16 +252,18 @@ func Load() (*Config, error) {
 			Dir:     os.Getenv("NOMADDEV_SPA_DIR"),
 		},
 		GitHub: GitHubConfig{
-			Token:          os.Getenv("NOMADDEV_GITHUB_TOKEN"),
-			UserTokensPath: os.Getenv("NOMADDEV_GITHUB_USER_TOKENS_PATH"),
-			BinaryPath:     os.Getenv("NOMADDEV_GITHUB_MCP_BIN"),
-			Toolsets:       envCSV("NOMADDEV_GITHUB_TOOLSETS", []string{"all"}),
-			ReadOnly:       envBool("NOMADDEV_GITHUB_READ_ONLY", false),
-			Host:           os.Getenv("NOMADDEV_GITHUB_HOST"),
-			LockdownMode:   envBool("NOMADDEV_GITHUB_LOCKDOWN", false),
-			StartTimeout:   envDuration("NOMADDEV_GITHUB_START_TIMEOUT", 15*time.Second),
-			MaxArgBytes:    envInt("NOMADDEV_GITHUB_MAX_ARG_BYTES", 256*1024),
-			MaxResultBytes: envInt("NOMADDEV_GITHUB_MAX_RESULT_BYTES", 1024*1024),
+			Token:                os.Getenv("NOMADDEV_GITHUB_TOKEN"),
+			UserTokensPath:       os.Getenv("NOMADDEV_GITHUB_USER_TOKENS_PATH"),
+			BinaryPath:           os.Getenv("NOMADDEV_GITHUB_MCP_BIN"),
+			Toolsets:             envCSV("NOMADDEV_GITHUB_TOOLSETS", []string{"all"}),
+			ReadOnly:             envBool("NOMADDEV_GITHUB_READ_ONLY", false),
+			Host:                 os.Getenv("NOMADDEV_GITHUB_HOST"),
+			LockdownMode:         envBool("NOMADDEV_GITHUB_LOCKDOWN", false),
+			StartTimeout:         envDuration("NOMADDEV_GITHUB_START_TIMEOUT", 15*time.Second),
+			MaxArgBytes:          envInt("NOMADDEV_GITHUB_MAX_ARG_BYTES", 256*1024),
+			MaxResultBytes:       envInt("NOMADDEV_GITHUB_MAX_RESULT_BYTES", 1024*1024),
+			RateLimitRetries:     envInt("NOMADDEV_GITHUB_RATE_LIMIT_RETRIES", 3),
+			RateLimitBaseBackoff: envDuration("NOMADDEV_GITHUB_RATE_LIMIT_BASE_BACKOFF", time.Second),
 		},
 		ReadTimeout:     envDuration("NOMADDEV_READ_TIMEOUT", 60*time.Second),
 		WriteTimeout:    envDuration("NOMADDEV_WRITE_TIMEOUT", 10*time.Second),
