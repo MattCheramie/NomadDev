@@ -100,6 +100,18 @@ var (
 		Help:    "Wall-clock duration of one GitHub MCP tool dispatch, end-to-end from runToolCall entry to terminal chunk.",
 		Buckets: prometheus.ExponentialBuckets(0.05, 2, 12), // 50ms → ~3min
 	})
+
+	// GitHubRateLimitRetriesTotal counts rate-limit retry events.
+	// outcome ∈ {"retried", "gave_up"}: "retried" increments once per
+	// scheduled backoff, "gave_up" increments once when the retry
+	// budget is exhausted or the caller's ctx fires mid-backoff.
+	// Alert on a non-zero "gave_up" rate or a spike in "retried" —
+	// either means the PAT scope or tool mix is hitting the API too
+	// hard.
+	GitHubRateLimitRetriesTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "nomaddev_github_rate_limit_retries_total",
+		Help: "Count of GitHub MCP rate-limit retry events, labeled by outcome.",
+	}, []string{"outcome"})
 )
 
 func init() {
@@ -114,6 +126,7 @@ func init() {
 		MiddlewareTurnSeconds,
 		GitHubCallsTotal,
 		GitHubCallSeconds,
+		GitHubRateLimitRetriesTotal,
 	)
 }
 

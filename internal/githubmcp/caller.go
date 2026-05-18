@@ -84,4 +84,18 @@ type Options struct {
 	// truncated with a head-preserved marker the model can still parse.
 	// Zero disables the cap.
 	MaxResultBytes int
+
+	// RateLimitRetries is the max number of times Call will re-issue a
+	// tool invocation that came back tagged as a GitHub rate-limit
+	// error (primary or secondary). Zero (the explicit "off" value)
+	// surfaces the first rate-limit failure to the model directly —
+	// back-compat with pre-8.9 behavior. Default 3 in the orchestrator
+	// config layer.
+	RateLimitRetries int
+
+	// RateLimitBaseBackoff seeds the exponential-backoff schedule
+	// between retries (base, 2*base, 4*base, … capped). The upstream's
+	// Retry-After hint, when surfaced in the error text, takes
+	// precedence over the calculated value.
+	RateLimitBaseBackoff time.Duration
 }

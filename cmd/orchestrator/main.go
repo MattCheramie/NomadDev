@@ -328,15 +328,17 @@ func buildGitHub(ctx context.Context, cfg *config.Config, logger *slog.Logger) (
 		return nil, nil, nil, nil, err
 	}
 	client, err := githubmcp.New(ctx, githubmcp.Options{
-		Token:          tokenSource,
-		BinaryPath:     cfg.GitHub.BinaryPath,
-		Toolsets:       cfg.GitHub.Toolsets,
-		ReadOnly:       cfg.GitHub.ReadOnly,
-		Host:           cfg.GitHub.Host,
-		LockdownMode:   cfg.GitHub.LockdownMode,
-		StartTimeout:   cfg.GitHub.StartTimeout,
-		MaxArgBytes:    cfg.GitHub.MaxArgBytes,
-		MaxResultBytes: cfg.GitHub.MaxResultBytes,
+		Token:                tokenSource,
+		BinaryPath:           cfg.GitHub.BinaryPath,
+		Toolsets:             cfg.GitHub.Toolsets,
+		ReadOnly:             cfg.GitHub.ReadOnly,
+		Host:                 cfg.GitHub.Host,
+		LockdownMode:         cfg.GitHub.LockdownMode,
+		StartTimeout:         cfg.GitHub.StartTimeout,
+		MaxArgBytes:          cfg.GitHub.MaxArgBytes,
+		MaxResultBytes:       cfg.GitHub.MaxResultBytes,
+		RateLimitRetries:     cfg.GitHub.RateLimitRetries,
+		RateLimitBaseBackoff: cfg.GitHub.RateLimitBaseBackoff,
 	})
 	if err != nil {
 		return nil, nil, nil, nil, err
