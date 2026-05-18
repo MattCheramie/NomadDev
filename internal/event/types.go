@@ -34,12 +34,18 @@ const (
 )
 
 // Error codes returned in an EventError payload.
+//
+// Oversized inbound frames are NOT signaled via an EventError payload
+// because gorilla/websocket's SetReadLimit closes the connection with
+// a 1009 close frame before the handler can ship a structured reply;
+// clients should treat 1009 itself as the "message too large" signal.
 const (
 	CodeUnknownType    = "unknown_type"
 	CodeBadEnvelope    = "bad_envelope"
 	CodeNotImplemented = "not_implemented"
 	CodeInternal       = "internal"
 	CodeUnauthorized   = "unauthorized"
+	CodeRateLimited    = "rate_limited"
 )
 
 // Sandbox-specific error codes carried inside a CommandResultPayload.Error.
