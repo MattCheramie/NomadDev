@@ -774,6 +774,46 @@ tracing story is now complete: end-to-end spans from any
 otel-instrumented upstream through the orchestrator and out to
 the sandbox / GitHub MCP tool.
 
+### Phase 12: residual follow-ups — in progress
+
+#### 12.1 Per-tool JWT scopes + query-string traceparent + reproducible-build report — done
+- [x] **Per-tool JWT scopes.** New `internal/auth/scopes.go` plus
+  scope checks at both dispatch entry points (the direct
+  `command.request` path and the middleware tool-dispatch path).
+  Two-tier policy: tokens whose `scopes` list has **no** `tools:`
+  entry are **legacy-permissive** (pre-12 mints keep working);
+  once any `tools:<x>` is named, strict mode kicks in and only
+  listed tools are allowed. `tools:*` is the wildcard;
+  `tools:github` authorizes the whole `github_*` family;
+  per-tool `tools:github_<name>` always wins over the family
+  scope. 7 unit tests pin the policy. Documented in
+  [`docs/auth.md`](./docs/auth.md#per-tool-scopes-phase-12).
+- [x] **`traceparent` via query string.** The browser
+  WebSocket API doesn't let JS set custom upgrade headers, so
+  the SPA can't ship a `traceparent` header. New
+  `wsHandler` fallback: when the upgrade carries no
+  `traceparent` header, the orchestrator extracts it from
+  `?traceparent=…` on the URL instead. Header wins on both
+  being present so a transparent reverse proxy can override.
+  Pinned by a second propagation test using an in-memory
+  exporter.
+- [x] **Reproducible-build report-only CI job.** Picks up the
+  PR #32 deferral. New `reproducible-build-report` job in
+  `ci.yml` builds the orchestrator twice with the release-workflow
+  flags, runs `diffoscope` against the two binaries when the
+  hashes mismatch, and uploads the report as a 14-day artifact.
+  **Non-blocking** (`continue-on-error: true`) so a real
+  reproducibility regression doesn't bounce unrelated PRs —
+  the artifact is the deliverable.
+
+**Remaining Phase-12 follow-ups:** SPA-side `traceparent` mint
++ inject (mobile change — pairs with 12.1's query-string fallback);
+per-fsops session isolation (engine refactor — multi-tenant
+strict mode only); pool-style memory quota (only if a multi-tenant
+deploy hits the worst-case sizing); mobile native build (Expo
+EAS — separate infra); WebAuthn behind TLS (significant; needs a
+server-side ceremony + browser API integration).
+
 ---
 
 ## 🚀 Running the orchestrator

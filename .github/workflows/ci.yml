@@ -276,6 +276,75 @@ jobs:
             mobile/test-results/
           retention-days: 7
 
+  reproducible-build-report:
+    name: reproducible build (report-only)
+    # Phase 12.1: report-only diffoscope investigation, deferred from
+    # PR #32 where the build-twice-and-compare check failed in CI but
+    # passed locally. This job builds the orchestrator twice with the
+    # release-workflow flags, runs diffoscope against the two
+    # binaries when they differ, and uploads the report as an
+    # artifact. Non-blocking: the job ALWAYS exits 0 so a real
+    # reproducibility regression doesn't bounce unrelated PRs. The
+    # investigator's job is to download the report and figure out
+    # which section diverged.
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: install diffoscope
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq diffoscope
+      - name: build twice
+        env:
+          GOOS: linux
+          GOARCH: amd64
+          CGO_ENABLED: '0'
+          SOURCE_DATE_EPOCH: '1700000000'
+        run: |
+          mkdir -p out1 out2
+          go clean -cache
+          go build -trimpath -tags "gemini github" \
+            -ldflags "-s -w -buildid= -X main.version=ci-reproducible" \
+            -o out1/orchestrator ./cmd/orchestrator
+          go clean -cache
+          go build -trimpath -tags "gemini github" \
+            -ldflags "-s -w -buildid= -X main.version=ci-reproducible" \
+            -o out2/orchestrator ./cmd/orchestrator
+      - name: compare + diffoscope report
+        run: |
+          h1=$(sha256sum out1/orchestrator | awk '{print $1}')
+          h2=$(sha256sum out2/orchestrator | awk '{print $1}')
+          echo "build 1: $h1"
+          echo "build 2: $h2"
+          if [ "$h1" = "$h2" ]; then
+            echo "reproducible ✓"
+            echo "RESULT=match" >> "$GITHUB_ENV"
+            exit 0
+          fi
+          echo "RESULT=mismatch" >> "$GITHUB_ENV"
+          # Capped at 5min so an enormous diff doesn't hang the job.
+          # Output both --text (greppable) and --html (clickable) so
+          # the operator can pick.
+          timeout 300 diffoscope --text diff.txt --html diff.html \
+            out1/orchestrator out2/orchestrator || true
+          # Always succeed — this is a report job.
+          true
+      - name: upload diff (on mismatch)
+        if: env.RESULT == 'mismatch'
+        uses: actions/upload-artifact@v4
+        with:
+          name: reproducible-build-diff
+          path: |
+            diff.txt
+            diff.html
+          retention-days: 14
+          if-no-files-found: warn
+
   govulncheck:
     name: govulncheck
     # Catches known Go-module vulnerabilities (golang.org/x/vuln) before

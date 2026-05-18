@@ -8,6 +8,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/mattcheramie/nomaddev/internal/audit"
+	"github.com/mattcheramie/nomaddev/internal/auth"
 	"github.com/mattcheramie/nomaddev/internal/event"
 	"github.com/mattcheramie/nomaddev/internal/githubmcp"
 	"github.com/mattcheramie/nomaddev/internal/history"
@@ -249,6 +251,25 @@ func (s *Server) runToolCall(
 		Args: event.RedactArgs(call.Args),
 	})
 	s.bufferAndSend(sess, client, cmdEnv)
+
+	// 1a. Phase 12 per-tool scope check. Same legacy-permissive policy as
+	//     the direct command.request path (see handleCommandRequest in
+	//     sandbox.go): if the token has no `tools:` scope, every tool is
+	//     allowed; once any `tools:<x>` is present, only listed tools are.
+	if !auth.HasToolScope(client.Scopes, call.Tool) {
+		s.audit.Log(ctx, audit.Event{
+			Kind: audit.KindApprovalDeny, Outcome: audit.OutcomeDeny,
+			Sub: client.Sub, Sid: client.SID, Tool: call.Tool,
+			Message: "scope-deny: token lacks tools:" + call.Tool,
+		})
+		s.emitResult(sess, client, cmdEnv.ID, time.Now(), -1,
+			event.SandboxErrUnauthorized,
+			"token lacks tools:"+call.Tool+" scope")
+		_ = s.appendToolTurns(ctx, sess.SID, call, nil,
+			event.SandboxErrUnauthorized, "scope-deny")
+		recordGitHubCall(call.Tool, event.SandboxErrUnauthorized, time.Time{})
+		return middleware.ToolResult{CallID: call.ID, Tool: call.Tool, Error: event.SandboxErrUnauthorized}, true
+	}
 
 	// 2. Validate args before approval — bad args are a fast-fail, not a
 	//    human approval question. No latency recorded for github_* here:
