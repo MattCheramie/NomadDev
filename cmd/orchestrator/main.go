@@ -186,6 +186,27 @@ func buildSessionStore(ctx context.Context, cfg *config.Config, logger *slog.Log
 	}
 }
 
+// buildGitHubTokenSource picks the credential resolution strategy from
+// config. When NOMADDEV_GITHUB_USER_TOKENS_PATH is set, the per-user file
+// loader fronts the env fallback so multi-user deploys can issue each user
+// their own PAT without code changes. Otherwise the env source is used
+// directly — same behavior as before this knob existed.
+func buildGitHubTokenSource(cfg *config.Config, logger *slog.Logger) (githubmcp.TokenSource, error) {
+	env := githubmcp.EnvTokenSource{Var: "NOMADDEV_GITHUB_TOKEN"}
+	if cfg.GitHub.UserTokensPath == "" {
+		return env, nil
+	}
+	if _, err := os.Stat(cfg.GitHub.UserTokensPath); err != nil {
+		return nil, fmt.Errorf("per-user tokens file %q: %w", cfg.GitHub.UserTokensPath, err)
+	}
+	logger.Info("orchestrator: github per-user tokens enabled",
+		"path", cfg.GitHub.UserTokensPath)
+	return &githubmcp.PerUserTokenSource{
+		Path:     cfg.GitHub.UserTokensPath,
+		Fallback: env,
+	}, nil
+}
+
 // buildGitHub constructs the GitHub MCP backend. Returns (nil, nil, nil, nil,
 // nil) when no token is configured — the orchestrator boots without GitHub
 // tools. The returned close func, when non-nil, must be deferred so the
@@ -201,15 +222,20 @@ func buildGitHub(ctx context.Context, cfg *config.Config, logger *slog.Logger) (
 	if cfg.GitHub.Token == "" {
 		return nil, nil, nil, nil, nil
 	}
+	tokenSource, err := buildGitHubTokenSource(cfg, logger)
+	if err != nil {
+		return nil, nil, nil, nil, err
+	}
 	client, err := githubmcp.New(ctx, githubmcp.Options{
-		Token:        githubmcp.EnvTokenSource{Var: "NOMADDEV_GITHUB_TOKEN"},
-		BinaryPath:   cfg.GitHub.BinaryPath,
-		Toolsets:     cfg.GitHub.Toolsets,
-		ReadOnly:     cfg.GitHub.ReadOnly,
-		Host:         cfg.GitHub.Host,
-		LockdownMode: cfg.GitHub.LockdownMode,
-		StartTimeout: cfg.GitHub.StartTimeout,
-		MaxArgBytes:  cfg.GitHub.MaxArgBytes,
+		Token:          tokenSource,
+		BinaryPath:     cfg.GitHub.BinaryPath,
+		Toolsets:       cfg.GitHub.Toolsets,
+		ReadOnly:       cfg.GitHub.ReadOnly,
+		Host:           cfg.GitHub.Host,
+		LockdownMode:   cfg.GitHub.LockdownMode,
+		StartTimeout:   cfg.GitHub.StartTimeout,
+		MaxArgBytes:    cfg.GitHub.MaxArgBytes,
+		MaxResultBytes: cfg.GitHub.MaxResultBytes,
 	})
 	if err != nil {
 		return nil, nil, nil, nil, err

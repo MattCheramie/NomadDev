@@ -86,14 +86,16 @@ type SPAConfig struct {
 // Operators opt in by setting NOMADDEV_GITHUB_TOKEN; everything else has a
 // safe default.
 type GitHubConfig struct {
-	Token        string        // NOMADDEV_GITHUB_TOKEN (fine-grained PAT recommended)
-	BinaryPath   string        // NOMADDEV_GITHUB_MCP_BIN, default "" → look up "github-mcp-server" on PATH
-	Toolsets     []string      // NOMADDEV_GITHUB_TOOLSETS (default ["all"])
-	ReadOnly     bool          // NOMADDEV_GITHUB_READ_ONLY (default false; approval gate is primary)
-	Host         string        // NOMADDEV_GITHUB_HOST (default ""; set for GitHub Enterprise Server)
-	LockdownMode bool          // NOMADDEV_GITHUB_LOCKDOWN (default false)
-	StartTimeout time.Duration // NOMADDEV_GITHUB_START_TIMEOUT (how long to wait for initialize handshake)
-	MaxArgBytes  int           // NOMADDEV_GITHUB_MAX_ARG_BYTES (cap on a single tool's JSON-marshaled args; 0 = unlimited, default 256 KiB)
+	Token          string        // NOMADDEV_GITHUB_TOKEN (fine-grained PAT recommended)
+	UserTokensPath string        // NOMADDEV_GITHUB_USER_TOKENS_PATH (JSON file mapping sub → PAT for per-user tokens)
+	BinaryPath     string        // NOMADDEV_GITHUB_MCP_BIN, default "" → look up "github-mcp-server" on PATH
+	Toolsets       []string      // NOMADDEV_GITHUB_TOOLSETS (default ["all"])
+	ReadOnly       bool          // NOMADDEV_GITHUB_READ_ONLY (default false; approval gate is primary)
+	Host           string        // NOMADDEV_GITHUB_HOST (default ""; set for GitHub Enterprise Server)
+	LockdownMode   bool          // NOMADDEV_GITHUB_LOCKDOWN (default false)
+	StartTimeout   time.Duration // NOMADDEV_GITHUB_START_TIMEOUT (how long to wait for initialize handshake)
+	MaxArgBytes    int           // NOMADDEV_GITHUB_MAX_ARG_BYTES (cap on a single tool's JSON-marshaled args; 0 = unlimited, default 256 KiB)
+	MaxResultBytes int           // NOMADDEV_GITHUB_MAX_RESULT_BYTES (cap on the JSON payload returned to the model; 0 = unlimited, default 1 MiB)
 }
 
 // Config is the full set of knobs the orchestrator reads at startup.
@@ -177,14 +179,16 @@ func Load() (*Config, error) {
 			Dir:     os.Getenv("NOMADDEV_SPA_DIR"),
 		},
 		GitHub: GitHubConfig{
-			Token:        os.Getenv("NOMADDEV_GITHUB_TOKEN"),
-			BinaryPath:   os.Getenv("NOMADDEV_GITHUB_MCP_BIN"),
-			Toolsets:     envCSV("NOMADDEV_GITHUB_TOOLSETS", []string{"all"}),
-			ReadOnly:     envBool("NOMADDEV_GITHUB_READ_ONLY", false),
-			Host:         os.Getenv("NOMADDEV_GITHUB_HOST"),
-			LockdownMode: envBool("NOMADDEV_GITHUB_LOCKDOWN", false),
-			StartTimeout: envDuration("NOMADDEV_GITHUB_START_TIMEOUT", 15*time.Second),
-			MaxArgBytes:  envInt("NOMADDEV_GITHUB_MAX_ARG_BYTES", 256*1024),
+			Token:          os.Getenv("NOMADDEV_GITHUB_TOKEN"),
+			UserTokensPath: os.Getenv("NOMADDEV_GITHUB_USER_TOKENS_PATH"),
+			BinaryPath:     os.Getenv("NOMADDEV_GITHUB_MCP_BIN"),
+			Toolsets:       envCSV("NOMADDEV_GITHUB_TOOLSETS", []string{"all"}),
+			ReadOnly:       envBool("NOMADDEV_GITHUB_READ_ONLY", false),
+			Host:           os.Getenv("NOMADDEV_GITHUB_HOST"),
+			LockdownMode:   envBool("NOMADDEV_GITHUB_LOCKDOWN", false),
+			StartTimeout:   envDuration("NOMADDEV_GITHUB_START_TIMEOUT", 15*time.Second),
+			MaxArgBytes:    envInt("NOMADDEV_GITHUB_MAX_ARG_BYTES", 256*1024),
+			MaxResultBytes: envInt("NOMADDEV_GITHUB_MAX_RESULT_BYTES", 1024*1024),
 		},
 		ReadTimeout:  envDuration("NOMADDEV_READ_TIMEOUT", 60*time.Second),
 		WriteTimeout: envDuration("NOMADDEV_WRITE_TIMEOUT", 10*time.Second),

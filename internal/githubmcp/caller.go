@@ -77,4 +77,11 @@ type Options struct {
 	// rejected with sandbox.ErrBadRequest before the subprocess sees it,
 	// so a runaway prompt doesn't OOM the stdio pipe.
 	MaxArgBytes int
+
+	// MaxResultBytes caps the JSON-encoded result the upstream sends back
+	// to the model. A get_file_contents that returns a 50 MB blob would
+	// otherwise blow Gemini's context window; oversized results are
+	// truncated with a head-preserved marker the model can still parse.
+	// Zero disables the cap.
+	MaxResultBytes int
 }

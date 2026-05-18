@@ -11,17 +11,21 @@ import (
 type Client struct {
 	ID   string // unique per socket
 	SID  string // session id (sticky across reconnects)
+	Sub  string // authenticated user identity (JWT sub claim); empty for unauth contexts
 	Send chan event.Envelope
 
 	closeOnce sync.Once
 	closed    chan struct{}
 }
 
-// NewClient returns a Client with a buffered Send channel.
-func NewClient(id, sid string, sendBuf int) *Client {
+// NewClient returns a Client with a buffered Send channel. sub may be empty
+// when the caller doesn't need per-user routing (e.g., test fixtures); the
+// real wsserver path always sets it from claims.Sub.
+func NewClient(id, sid, sub string, sendBuf int) *Client {
 	return &Client{
 		ID:     id,
 		SID:    sid,
+		Sub:    sub,
 		Send:   make(chan event.Envelope, sendBuf),
 		closed: make(chan struct{}),
 	}

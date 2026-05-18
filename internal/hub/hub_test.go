@@ -44,7 +44,7 @@ func TestHub_RegisterAndSend(t *testing.T) {
 	h, cancel := runHub(t)
 	defer cancel()
 
-	c := NewClient("c1", "sess-1", 4)
+	c := NewClient("c1", "sess-1", "matt", 4)
 	h.Register(c)
 
 	env, _ := event.NewEnvelope(event.EventPing, nil)
@@ -62,7 +62,7 @@ func TestHub_DuplicateSID_ReplacesOldClient(t *testing.T) {
 	h, cancel := runHub(t)
 	defer cancel()
 
-	old := NewClient("c1", "sess-1", 4)
+	old := NewClient("c1", "sess-1", "matt", 4)
 	h.Register(old)
 
 	probe, _ := event.NewEnvelope(event.EventPing, nil)
@@ -71,7 +71,7 @@ func TestHub_DuplicateSID_ReplacesOldClient(t *testing.T) {
 	}
 	<-old.Send // drain probe
 
-	newer := NewClient("c2", "sess-1", 4)
+	newer := NewClient("c2", "sess-1", "matt", 4)
 	h.Register(newer)
 
 	// old should receive session.replaced then be closed
@@ -102,7 +102,7 @@ func TestHub_Unregister(t *testing.T) {
 	h, cancel := runHub(t)
 	defer cancel()
 
-	c := NewClient("c1", "sess-1", 4)
+	c := NewClient("c1", "sess-1", "matt", 4)
 	h.Register(c)
 
 	probe, _ := event.NewEnvelope(event.EventPing, nil)
@@ -132,7 +132,7 @@ func TestHub_GracefulShutdownClosesClients(t *testing.T) {
 	done := make(chan struct{})
 	go func() { h.Run(ctx); close(done) }()
 
-	c := NewClient("c1", "sess-1", 4)
+	c := NewClient("c1", "sess-1", "matt", 4)
 	h.Register(c)
 	probe, _ := event.NewEnvelope(event.EventPing, nil)
 	_ = awaitRegistered(t, h, "sess-1", probe)

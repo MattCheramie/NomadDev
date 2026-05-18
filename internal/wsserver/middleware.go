@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/mattcheramie/nomaddev/internal/event"
+	"github.com/mattcheramie/nomaddev/internal/githubmcp"
 	"github.com/mattcheramie/nomaddev/internal/history"
 	"github.com/mattcheramie/nomaddev/internal/hub"
 	"github.com/mattcheramie/nomaddev/internal/metrics"
@@ -294,8 +295,14 @@ func (s *Server) runToolCall(
 
 	// 4. Dispatch. The dispatcher returns an ExecChunk channel mirroring the
 	//    sandbox.Runner contract; we reuse emitChunk / emitResult.
+	//
+	//    Thread the authenticated user's sub through ctx so the GitHub MCP
+	//    backend's per-user TokenSource (when configured) can resolve the
+	//    right PAT. No-op for sandbox / fsops tools: they don't inspect the
+	//    sub. Empty client.Sub leaves the ctx untouched.
 	started := time.Now()
-	ch, err := s.mw.Dispatcher.Dispatch(ctx, call, middleware.DispatchOptions{
+	dispatchCtx := githubmcp.WithUserSub(ctx, client.Sub)
+	ch, err := s.mw.Dispatcher.Dispatch(dispatchCtx, call, middleware.DispatchOptions{
 		Timeout:       s.mw.Config.DefaultTimeout,
 		SandboxLimits: s.mw.Config.SandboxLimits,
 	})
