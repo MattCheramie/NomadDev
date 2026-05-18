@@ -79,6 +79,10 @@ type JSONSink struct {
 	w        io.Writer
 	closer   io.Closer
 	fallback *slog.Logger
+	// path is set by Open() when backend=file so Reopen() can
+	// reopen the same path on SIGHUP. Empty for stderr/stdout/io.Writer
+	// sinks — Reopen on those is a no-op.
+	path string
 }
 
 // NewJSONSink returns a JSONSink that writes to w. If w implements
@@ -123,6 +127,39 @@ func (s *JSONSink) Close() error {
 	return s.closer.Close()
 }
 
+// Reopen closes and re-opens the underlying file at the same path.
+// Intended for SIGHUP-driven log rotation: external tooling
+// (logrotate) renames audit.log → audit.log.1, then HUPs the
+// orchestrator; we re-open at the original path and continue
+// writing to a fresh fd. Non-file sinks (stderr / stdout / a
+// plain io.Writer) are a no-op — the caller can still invoke
+// Reopen unconditionally.
+func (s *JSONSink) Reopen() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.path == "" {
+		return nil
+	}
+	if s.closer != nil {
+		_ = s.closer.Close()
+	}
+	f, err := os.OpenFile(s.path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
+	if err != nil {
+		return fmt.Errorf("audit: reopen %q: %w", s.path, err)
+	}
+	s.w = f
+	s.closer = f
+	return nil
+}
+
+// Reopener is implemented by Sinks that support post-rotation
+// reopen. NoopSink doesn't implement this (Reopen would have
+// nothing to do); use the type-assertion idiom on the cmd/orchestrator
+// side to call it conditionally.
+type Reopener interface {
+	Reopen() error
+}
+
 // Open builds a Sink per (backend, path). Backends:
 //
 //   - "" / "none"  — NoopSink (silent; pre-Phase-8.5 default).
@@ -155,7 +192,11 @@ func Open(backend, path string, fallback *slog.Logger) (Sink, error) {
 		if err != nil {
 			return nil, fmt.Errorf("audit: open %q: %w", path, err)
 		}
-		return NewJSONSink(f, fallback), nil
+		s := NewJSONSink(f, fallback)
+		// Stash the path so Reopen() can use it on SIGHUP. Stderr /
+		// stdout sinks leave path empty; Reopen on those is a no-op.
+		s.path = path
+		return s, nil
 	default:
 		return nil, fmt.Errorf("audit: unknown backend %q (want none|stderr|stdout|file)", backend)
 	}

@@ -143,6 +143,32 @@ func run(listenOverride string) error {
 	}()
 	logger.Info("orchestrator: audit", "backend", cfg.Audit.Backend, "path", cfg.Audit.Path)
 
+	// SIGHUP triggers an audit-log reopen — the canonical interface
+	// for cooperating with logrotate. Stderr / stdout / noop sinks
+	// implement Reopen as a no-op so the handler is uniform. Lives
+	// for the orchestrator's lifetime; signal.Stop runs on shutdown
+	// to avoid leaking the goroutine if the process is killed via
+	// SIGTERM during a HUP-storm.
+	hupCh := make(chan os.Signal, 1)
+	signal.Notify(hupCh, syscall.SIGHUP)
+	defer signal.Stop(hupCh)
+	go func() {
+		for {
+			select {
+			case <-rootCtx.Done():
+				return
+			case <-hupCh:
+				if r, ok := auditSink.(audit.Reopener); ok {
+					if err := r.Reopen(); err != nil {
+						logger.Warn("orchestrator: audit reopen failed", "err", err)
+					} else {
+						logger.Info("orchestrator: audit reopened on SIGHUP")
+					}
+				}
+			}
+		}
+	}()
+
 	revoker := buildRevocationList(rootCtx, cfg, logger)
 	defer func() {
 		if err := revoker.Close(); err != nil {

@@ -234,13 +234,14 @@ The audit log needs `logrotate`. Drop the following at
     missingok
     notifempty
     create 0600 nomaddev nomaddev
-    # SIGHUP would tell the orchestrator to reopen the file. We
-    # don't ship a SIGHUP handler today (Phase 11 doc), so
-    # `copytruncate` is the simpler path: rotate the rotated
-    # file, truncate the live one, the orchestrator keeps writing
-    # to the same fd. Loses the in-flight buffer (typically
-    # < 1 KiB) but doesn't need code changes.
-    copytruncate
+    # Phase 11.3: SIGHUP tells the orchestrator to close audit.log
+    # and reopen at the same path. logrotate ships the rotated
+    # file with the existing fd; the post-HUP open lands in a
+    # fresh file, so no events get truncated and no in-flight
+    # buffer is lost.
+    postrotate
+        systemctl kill --signal=SIGHUP nomaddev-orchestrator.service > /dev/null 2>&1 || true
+    endscript
 }
 ```
 
@@ -248,10 +249,10 @@ The audit log needs `logrotate`. Drop the following at
 hook on Ubuntu / Debian — no additional cron entry needed. Verify
 with `sudo logrotate -d /etc/logrotate.d/nomaddev` (dry run).
 
-A future Phase will add a SIGHUP-reopen handler so `copytruncate`
-isn't necessary; tracked in
-[`docs/adr/0001-record-architecture-decisions.md`](./adr/0001-record-architecture-decisions.md)
-as a candidate ADR-2.
+The SIGHUP-reopen handler landed in Phase 11.3 — a manual rotation
+test is `sudo systemctl kill --signal=SIGHUP nomaddev-orchestrator`
+which should produce `audit: reopened on SIGHUP` in the journal
+without dropping any in-flight events.
 
 ### OpenTelemetry tracing (Phase 11.2)
 
@@ -273,14 +274,27 @@ sudo systemctl restart nomaddev-orchestrator
 journalctl -u nomaddev-orchestrator | grep 'tracing: enabled'
 ```
 
-What's instrumented in 11.2: one root span per inbound envelope at
-`ws.dispatch.<envelope.type>` with `envelope.type`, `session.sub`,
-`session.sid` attributes. That's the smallest useful surface;
-child spans on `sandbox.Exec` / `middleware.turn` /
-`githubmcp.Call` are a follow-up Phase. Operators who want
-end-to-end timing today should pair this with the Phase 11.1
-Grafana dashboard — Prometheus already exposes the per-stage
-latency histograms.
+What's instrumented today:
+
+- **`ws.dispatch.<envelope.type>`** (Phase 11.2) — one root span
+  per inbound envelope, with `envelope.type` / `session.sub` /
+  `session.sid` attributes.
+- **`sandbox.exec`** (Phase 11.3) — per sandbox run, with
+  `sandbox.tool` / `sandbox.session_id` / `sandbox.shell` /
+  `sandbox.timeout_ms` attributes. Wraps the docker bind-mount
+  setup + container lifecycle so the span's wall-clock covers
+  the full run.
+- **`github.call`** (Phase 11.3) — per `github_*` tool call, with
+  `github.tool` / `github.session_id` attributes. Args are
+  deliberately omitted from span attributes — they'd dwarf trace
+  storage and could leak secrets.
+
+These spans don't yet chain into the `ws.dispatch` root because the
+dispatcher's context isn't threaded into `runner.Exec` /
+`Client.Call`; that's a follow-up refactor (see README's
+remaining-Phase-11 list). For per-stage timing today, pair the
+trace surface with the Phase 11.1 Grafana dashboard — Prometheus
+already exposes per-stage latency histograms.
 
 **Why a quiet-fallback default.** If the OTLP endpoint is a typo,
 `tracing.Init` logs a warning and disables tracing rather than

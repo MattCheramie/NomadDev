@@ -19,6 +19,9 @@ import (
 	"github.com/docker/docker/api/types/strslice"
 	"github.com/docker/docker/client"
 	"github.com/docker/docker/pkg/stdcopy"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
 )
 
 // DockerRunner runs each Exec in a fresh, single-shot container. It uses the
@@ -156,6 +159,21 @@ func (r *DockerRunner) runOne(
 
 	ctx, cancel := context.WithTimeout(parentCtx, timeout)
 	defer cancel()
+
+	// Phase 11.3: per-run span. Noop when tracing is disabled.
+	// Attributes capture the tool, session, shell, and timeout —
+	// enough to correlate with the wsserver dispatch span and the
+	// Prometheus latency histogram.
+	tracer := otel.Tracer("nomaddev/sandbox/docker")
+	ctx, span := tracer.Start(ctx, "sandbox.exec",
+		trace.WithAttributes(
+			attribute.String("sandbox.tool", req.Tool),
+			attribute.String("sandbox.session_id", req.SessionID),
+			attribute.String("sandbox.shell", shell),
+			attribute.Int64("sandbox.timeout_ms", timeout.Milliseconds()),
+		),
+	)
+	defer span.End()
 
 	// 1. Pull the image if it isn't already cached locally. Inspecting first
 	//    keeps a tight per-exec timeout (e.g. TestDocker_TimeoutKills's 500ms)
