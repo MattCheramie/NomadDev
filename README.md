@@ -189,10 +189,12 @@ troubleshooting, and the auth-extension seam. The GitHub MCP
 integration is 100% feature-complete; future work tracks upstream
 catalogue growth, not capability gaps.
 
-### Phase 8: Security hardening — in progress
+### Phase 8: Security hardening — done
 *Objective: Work the prioritized top-10 from the missing-features
 review at `/root/.claude/plans/review-this-repository-and-delegated-moon.md`.
-Each numbered subsection ships independently.*
+Each numbered subsection shipped independently as its own PR. 10/10
+complete; the review's wider gap list (~50 items grouped by lens)
+remains the backlog source.*
 
 #### 8.1 Auth — access/refresh + revocation — done
 *Closes the "stolen JWT is good until expiry" gap and stops forcing
@@ -421,7 +423,50 @@ serious workload.*
   `*mcp.CallToolResult`-aware wrappers live under `-tags github`
   with their own test file.
 
-**Remaining top-10:** automated `session.db` backups (8.10).
+#### 8.10 Automated SQLite backups — done
+*The previous deploy mentioned `sqlite3 .backup` as a footnote and
+left scheduling to the operator. Now the systemd quickstart installs
+a daily backup timer; the Docker path inherits the same script via
+documented host-cron usage.*
+- [x] **`infra/scripts/nomaddev-backup.sh`** — uses
+  `sqlite3 .backup` (online API, safe with concurrent writers) for
+  each of the three SQLite stores
+  (`sessions.db`, `history.db`, `revocations.db`); verifies every
+  snapshot with `PRAGMA integrity_check` *before* gzipping, so a
+  corrupt source DB fails the timer rather than poisoning the
+  archive directory; prunes archives older than the configurable
+  retention horizon.
+- [x] **`nomaddev-backup.service` + `.timer`** — a `Type=oneshot`
+  unit driven by a daily timer with `RandomizedDelaySec=15min` and
+  `Persistent=true` (a host that was offline at 03:00 runs the
+  missed backup on next boot).
+- [x] **`quickstart-systemd.sh`** installs the script to
+  `/usr/local/bin/nomaddev-backup`, drops the service + timer in
+  place, ensures `sqlite3` is present (via `apt-get`), and enables
+  the timer. The done-message surfaces the timer next-run, snapshot
+  destination, and retention.
+- [x] **Configurable via env vars** —
+  `NOMADDEV_BACKUP_DIR` (default `${DATA_DIR}/backups`) and
+  `NOMADDEV_BACKUP_RETENTION_DAYS` (default 14). Operators on
+  external storage (NFS, object-store gateway) point
+  `NOMADDEV_BACKUP_DIR` at the mount and the existing systemd
+  hardening (`ProtectSystem=strict`, explicit `ReadWritePaths`)
+  keeps the unit tight.
+- [x] **Restore procedure documented** in
+  [`docs/operations.md`](./docs/operations.md#automated-sqlite-backups-phase-810)
+  — stop the orchestrator, decompress the chosen snapshot, swap
+  files, restart. The orchestrator's startup integrity check
+  (Phase 8.7) catches any inconsistency in the restored file before
+  it accepts writes.
+
+---
+
+### Top-10 from the missing-features review: complete
+
+All ten items from the review's `/root/.claude/plans/review-this-repository-and-delegated-moon.md`
+top-10 are now shipped (8.1 through 8.10). The review's wider gap
+list still has ~50 unaddressed items grouped by lens — see the plan
+file for the inventory.
 
 ---
 

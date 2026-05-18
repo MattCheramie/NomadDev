@@ -1,0 +1,16 @@
+[Unit]
+Description=Daily NomadDev SQLite snapshot
+Documentation=https://github.com/MattCheramie/NomadDev/blob/main/docs/operations.md
+
+[Timer]
+# Fire once per day. RandomizedDelaySec spreads the load if multiple
+# NomadDev hosts share infrastructure; Persistent=true means a host
+# that was offline at the scheduled time runs the missed backup on
+# next boot rather than waiting until the next cycle.
+OnCalendar=daily
+RandomizedDelaySec=15min
+Persistent=true
+Unit=nomaddev-backup.service
+
+[Install]
+WantedBy=timers.target
