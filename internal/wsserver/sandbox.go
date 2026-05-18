@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/mattcheramie/nomaddev/internal/audit"
+	"github.com/mattcheramie/nomaddev/internal/auth"
 	"github.com/mattcheramie/nomaddev/internal/event"
 	"github.com/mattcheramie/nomaddev/internal/hub"
 	"github.com/mattcheramie/nomaddev/internal/metrics"
@@ -44,6 +45,23 @@ func (s *Server) handleCommandRequest(
 	if p.Tool == "" {
 		s.emitResult(sess, client, env.ID, time.Now(),
 			-1, event.SandboxErrBadRequest, "missing tool")
+		return
+	}
+
+	// Phase 12: per-tool JWT scope check. Tokens whose scopes
+	// don't mention any `tools:` prefix are legacy-permissive
+	// (back-compat with pre-12 mints); tokens that name even one
+	// `tools:<x>` go strict-mode and the dispatcher honors the
+	// allowlist. See auth.HasToolScope for the policy.
+	if !auth.HasToolScope(client.Scopes, p.Tool) {
+		s.audit.Log(context.Background(), audit.Event{
+			Kind: audit.KindApprovalDeny, Outcome: audit.OutcomeDeny,
+			Sub: client.Sub, Sid: client.SID, Tool: p.Tool,
+			Message: "scope-deny: token lacks tools:" + p.Tool,
+		})
+		s.emitResult(sess, client, env.ID, time.Now(),
+			-1, event.SandboxErrUnauthorized,
+			"token lacks tools:"+p.Tool+" scope")
 		return
 	}
 

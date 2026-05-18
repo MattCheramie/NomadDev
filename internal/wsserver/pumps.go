@@ -36,7 +36,7 @@ func (s *Server) runConnection(
 	sess *session.Session,
 	logger *slog.Logger,
 ) {
-	client := hub.NewClient(clientID, claims.Sid, claims.Sub, sendBuf)
+	client := hub.NewClientWithScopes(clientID, claims.Sid, claims.Sub, claims.Scopes, sendBuf)
 	s.hub.Register(client)
 
 	// Send hello synchronously through the session/buffer path so it's part of

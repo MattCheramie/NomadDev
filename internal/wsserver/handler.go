@@ -67,17 +67,29 @@ func (s *Server) wsHandler(w http.ResponseWriter, r *http.Request) {
 	sess := s.sessions.GetOrCreate(claims.Sid)
 	sess.Touch(time.Now().UTC())
 
-	// Phase 11.4: extract `traceparent` (W3C trace context) from the
-	// upgrade headers BEFORE the connection's lifetime begins. The
-	// returned context carries the remote trace + span ID; per-envelope
-	// dispatch spans link to it as parents, so a Playwright /
-	// otel-instrumented browser client sees the orchestrator's spans
-	// in the same trace.
+	// Phase 11.4 / 12.1: extract `traceparent` (W3C trace context).
+	// First from the upgrade headers (canonical path for non-browser
+	// clients), then from the ?traceparent=… query string as a
+	// fallback for browser SPAs — the WebSocket API doesn't let the
+	// browser set custom headers on the upgrade, so the SPA encodes
+	// the trace context as a URL query param the orchestrator picks
+	// up before invoking the propagator. Header wins on both being
+	// present so a transparent reverse proxy can override.
 	//
 	// Detached from r.Context() because the request is gone the moment
 	// Upgrade returns — the connection outlives the HTTP request.
+	hdrs := r.Header
+	if hdrs.Get("traceparent") == "" {
+		if qp := r.URL.Query().Get("traceparent"); qp != "" {
+			hdrs = hdrs.Clone()
+			hdrs.Set("traceparent", qp)
+			if ts := r.URL.Query().Get("tracestate"); ts != "" {
+				hdrs.Set("tracestate", ts)
+			}
+		}
+	}
 	connCtx := otel.GetTextMapPropagator().Extract(
-		context.Background(), propagation.HeaderCarrier(r.Header))
+		context.Background(), propagation.HeaderCarrier(hdrs))
 
 	s.runConnection(connCtx, conn, clientID, claims, sess, logger)
 }

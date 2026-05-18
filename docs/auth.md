@@ -24,11 +24,10 @@ deferred until there's a reason for them.
 - `sub` — user id.
 - `sid` — **session id**. Reused across reconnects so the server can locate
   the buffered session (see `internal/session/`).
-- `scopes` — `orchestrator:connect` is the only scope today. It gates the
-  WebSocket upgrade itself; once connected, the client may send
-  `command.request` (Phase 3 sandbox) without an additional scope check.
-  Per-tool scopes (e.g. `sandbox:exec`, `sandbox:read`) are deferred until a
-  multi-tenant deployment needs to enforce them.
+- `scopes` — JWT scope claim. `orchestrator:connect` gates the WS
+  upgrade itself. Phase 12 added per-tool authorization via
+  `tools:<name>` scopes; see [Per-tool scopes](#per-tool-scopes-phase-12)
+  below for the policy.
 - `kind` — `access` or `refresh`. Access tokens are presented at `/ws`;
   refresh tokens are only valid at `POST /auth/refresh`. Empty / missing
   is treated as `access` (back-compat with tokens minted before Phase 8).
@@ -231,3 +230,36 @@ scope for this repo. If you do front the orchestrator with a TLS
 reverse proxy, point `-server-url` at the proxy URL when minting QR
 codes; the SPA's WS client already adapts `https://` → `wss://`
 (`mobile/src/hooks/useWebSocket.ts:19`).
+
+## Per-tool scopes (Phase 12)
+
+Tokens carry a `scopes` claim that the dispatcher consults before
+invoking a tool. The policy is two-tier:
+
+- **Legacy-permissive.** If the scope set has **no** `tools:` entry
+  (e.g. the typical pre-12 mint of `scopes=[orchestrator:connect]`),
+  every tool is allowed. Pre-12 tokens keep working.
+- **Strict.** Once the scope set names **any** `tools:<x>`, strict
+  mode kicks in: only listed tools are permitted. Use
+  `tools:*` to authorize every tool explicitly, or
+  `tools:github` to authorize the whole `github_*` family. A
+  more specific `tools:github_<name>` always wins over the
+  family scope — if you mint only `tools:github_get_me`, the
+  sibling `github_create_pull_request` is denied.
+
+Mint scoped tokens via `gen-jwt -scopes`:
+
+```sh
+# Restrict an operator to read-only fsops + GitHub status reads.
+go run ./scripts/gen-jwt -sub alice \
+    -scopes 'orchestrator:connect,tools:read_file,tools:list_dir,tools:github_get_me'
+
+# Wildcard (back-compat for shops migrating off legacy-permissive).
+go run ./scripts/gen-jwt -sub matt \
+    -scopes 'orchestrator:connect,tools:*'
+```
+
+Denied tool calls land on the existing approval-card error path
+with `SandboxErrUnauthorized` and emit an `approval.denied` audit
+event with `message: "scope-deny: ..."` so a SIEM dashboard can
+distinguish operator denials from scope-driven denials.

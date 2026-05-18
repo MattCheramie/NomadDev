@@ -135,3 +135,101 @@ func TestTrace_DispatchSpanInheritsTraceparent(t *testing.T) {
 		t.Fatalf("no ws.dispatch span observed; got %d spans", len(exp.GetSpans()))
 	}
 }
+
+// Phase 12.1: when the upgrade carries no traceparent header but
+// the URL has ?traceparent=… (browser SPA path — the WebSocket
+// API doesn't let JS set custom headers), the orchestrator must
+// still chain the dispatch span under the supplied parent.
+func TestTrace_QueryStringTraceparentFallback(t *testing.T) {
+	exp := tracetest.NewInMemoryExporter()
+	tp := sdktrace.NewTracerProvider(
+		sdktrace.WithSyncer(exp),
+		sdktrace.WithSampler(sdktrace.AlwaysSample()),
+	)
+	prevTP := otel.GetTracerProvider()
+	prevProp := otel.GetTextMapPropagator()
+	otel.SetTracerProvider(tp)
+	otel.SetTextMapPropagator(propagation.NewCompositeTextMapPropagator(
+		propagation.TraceContext{}, propagation.Baggage{},
+	))
+	t.Cleanup(func() {
+		otel.SetTracerProvider(prevTP)
+		otel.SetTextMapPropagator(prevProp)
+	})
+
+	cfg := &config.Config{
+		ListenAddr:   "127.0.0.1:0",
+		JWTSecret:    []byte(testSecret),
+		LogLevel:     slog.LevelInfo,
+		Session:      config.SessionConfig{BufferSize: 32, MaxBytes: 1 << 20},
+		Sandbox:      config.SandboxConfig{DefaultTimeout: 2 * time.Second, MaxConcurrent: 4},
+		Approval:     config.ApprovalConfig{Timeout: 2 * time.Second},
+		ReadTimeout:  10 * time.Second,
+		WriteTimeout: 2 * time.Second,
+		PingInterval: 30 * time.Second,
+	}
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	h := hub.New(logger)
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	go h.Run(ctx)
+	sessions := session.NewMemoryStore(cfg.Session.BufferSize, cfg.Session.MaxBytes)
+	verifier := auth.NewVerifier(cfg.JWTSecret)
+	srv := New(cfg, logger, h, sessions, verifier, nil, nil)
+	ts := httptest.NewServer(srv.Handler())
+	t.Cleanup(ts.Close)
+
+	issuer := auth.NewIssuer(cfg.JWTSecret, time.Hour)
+	tok, _ := issuer.Sign("matt", "sess-1", nil)
+
+	parentTID, _ := trace.TraceIDFromHex("a0a1a2a3a4a5a6a7a8a9aaabacadaeaf")
+	parentSID, _ := trace.SpanIDFromHex("b0b1b2b3b4b5b6b7")
+	parentSC := trace.NewSpanContext(trace.SpanContextConfig{
+		TraceID:    parentTID,
+		SpanID:     parentSID,
+		TraceFlags: trace.FlagsSampled,
+		Remote:     true,
+	})
+	carrier := propagation.HeaderCarrier(http.Header{})
+	otel.GetTextMapPropagator().Inject(
+		trace.ContextWithSpanContext(context.Background(), parentSC),
+		carrier,
+	)
+
+	// Encode the traceparent in the URL — NOT in a header.
+	hdrs := http.Header{}
+	hdrs.Set("Authorization", "Bearer "+tok)
+	u, _ := url.Parse(ts.URL)
+	u.Scheme = "ws"
+	u.Path = "/ws"
+	q := u.Query()
+	q.Set("traceparent", carrier.Get("traceparent"))
+	u.RawQuery = q.Encode()
+
+	conn, _, err := websocket.DefaultDialer.Dial(u.String(), hdrs)
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer conn.Close()
+	_ = readEnv(t, conn)
+
+	ping, _ := event.NewEnvelope(event.EventPing, event.PingPayload{Nonce: "n1"})
+	writeEnv(t, conn, ping)
+	_ = readEnv(t, conn)
+	time.Sleep(100 * time.Millisecond)
+
+	found := false
+	for _, s := range exp.GetSpans() {
+		if !strings.HasPrefix(s.Name, "ws.dispatch") {
+			continue
+		}
+		if s.SpanContext.TraceID() != parentTID {
+			t.Errorf("query-string fallback: TraceID = %s, want %s",
+				s.SpanContext.TraceID(), parentTID)
+		}
+		found = true
+	}
+	if !found {
+		t.Fatal("no ws.dispatch span observed via query-string traceparent")
+	}
+}
