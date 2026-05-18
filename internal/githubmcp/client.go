@@ -29,6 +29,9 @@ import (
 	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
 
 	"github.com/mattcheramie/nomaddev/internal/metrics"
 	"github.com/mattcheramie/nomaddev/internal/middleware"
@@ -378,6 +381,18 @@ func (c *Client) ListTools(_ context.Context) ([]middleware.ToolSpec, error) {
 func (c *Client) Call(ctx context.Context, call middleware.ToolCall, opts middleware.DispatchOptions) (<-chan sandbox.ExecChunk, error) {
 	c.callMu.Lock()
 	defer c.callMu.Unlock()
+
+	// Phase 11.3: per-call span. Noop when tracing is disabled.
+	// Attributes are intentionally narrow (tool, session) — arg
+	// values would dwarf the trace storage and leak secrets.
+	tracer := otel.Tracer("nomaddev/githubmcp")
+	ctx, span := tracer.Start(ctx, "github.call",
+		trace.WithAttributes(
+			attribute.String("github.tool", call.Tool),
+			attribute.String("github.session_id", opts.SessionID),
+		),
+	)
+	defer span.End()
 
 	c.sessionMu.RLock()
 	session := c.session

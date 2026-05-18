@@ -145,3 +145,71 @@ func TestJSONSink_Close_NonCloserWriterOK(t *testing.T) {
 		t.Fatalf("Close: %v", err)
 	}
 }
+
+func TestJSONSink_Reopen_FileBackend(t *testing.T) {
+	// Simulates SIGHUP-driven log rotation. Open a file sink, write
+	// once, rename the file (the way logrotate does), call Reopen,
+	// write again. The post-rotate write must land in a freshly-created
+	// file at the original path — not in the renamed one.
+	dir := t.TempDir()
+	path := filepath.Join(dir, "audit.log")
+	s, err := Open("file", path, nil)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	t.Cleanup(func() { _ = s.Close() })
+
+	s.Log(context.Background(), Event{Kind: KindWSConnect, Sub: "before"})
+
+	rotated := path + ".1"
+	if err := os.Rename(path, rotated); err != nil {
+		t.Fatalf("rename: %v", err)
+	}
+
+	reopener, ok := s.(Reopener)
+	if !ok {
+		t.Fatal("file sink should implement Reopener")
+	}
+	if err := reopener.Reopen(); err != nil {
+		t.Fatalf("Reopen: %v", err)
+	}
+
+	s.Log(context.Background(), Event{Kind: KindWSConnect, Sub: "after"})
+
+	// audit.log.1 should have "before" only.
+	rotatedBytes, _ := os.ReadFile(rotated)
+	if !strings.Contains(string(rotatedBytes), `"before"`) {
+		t.Errorf("rotated file missing pre-HUP event: %q", rotatedBytes)
+	}
+	if strings.Contains(string(rotatedBytes), `"after"`) {
+		t.Errorf("post-HUP event leaked into rotated file: %q", rotatedBytes)
+	}
+
+	// audit.log should have "after" only (fresh file).
+	freshBytes, _ := os.ReadFile(path)
+	if !strings.Contains(string(freshBytes), `"after"`) {
+		t.Errorf("post-HUP event missing from reopened file: %q", freshBytes)
+	}
+	if strings.Contains(string(freshBytes), `"before"`) {
+		t.Errorf("pre-HUP event leaked into reopened file: %q", freshBytes)
+	}
+}
+
+func TestJSONSink_Reopen_NonFileSinkNoop(t *testing.T) {
+	// Stderr / stdout / a plain io.Writer should treat Reopen as a
+	// no-op so the cmd/orchestrator SIGHUP handler can call it
+	// unconditionally.
+	s := NewJSONSink(io.Discard, nil)
+	if err := s.Reopen(); err != nil {
+		t.Errorf("Reopen on non-file sink: %v", err)
+	}
+	// Stderr backend (via Open) also returns the no-path JSONSink.
+	stderrSink, _ := Open("stderr", "", nil)
+	r, ok := stderrSink.(Reopener)
+	if !ok {
+		t.Fatal("stderr sink should implement Reopener (no-op)")
+	}
+	if err := r.Reopen(); err != nil {
+		t.Errorf("Reopen on stderr sink: %v", err)
+	}
+}

@@ -718,13 +718,37 @@ write it."*
   `.env.example` and tested in `internal/tracing/tracing_test.go`
   (disabled-default, bad-endpoint, defaults-filled-in).
 
-**Phase 11: Production hardening — done.** Both batches (11.1
-observability + IaC + privacy + ops docs, 11.2 OpenTelemetry
-tracing) shipped. Future tracing follow-ups: child spans on
-sandbox.Exec / middleware turn / githubmcp.Call to make the
-flame-graph view useful end-to-end; trace-context propagation
-from the SPA into the WS upgrade (`traceparent` HTTP header) so
-mobile-side timing lines up with server-side spans.
+#### 11.3 SIGHUP-reopen for the audit log + child spans — done
+- [x] **`SIGHUP` reopens `audit.log`.** New
+  `audit.Reopener` interface; `JSONSink.Reopen()` closes the
+  current file and opens a fresh fd at the same path. Non-file
+  sinks (`stderr` / `stdout` / `noop`) treat Reopen as a no-op
+  so the SIGHUP handler in `cmd/orchestrator/main.go` calls it
+  unconditionally. The logrotate recipe in
+  [`docs/operations.md`](./docs/operations.md#log-rotation-phase-11-doc)
+  swaps `copytruncate` for a `postrotate` SIGHUP — no events
+  truncated, no in-flight buffer lost.
+- [x] **`sandbox.exec` span** (Phase 11.3) on the docker runner
+  with `sandbox.tool` / `sandbox.session_id` / `sandbox.shell` /
+  `sandbox.timeout_ms` attributes. Wraps the bind-mount + container
+  lifecycle so the span's wall-clock covers the full run.
+- [x] **`github.call` span** (Phase 11.3) on the GitHub MCP
+  client with `github.tool` / `github.session_id` attributes.
+  Args are deliberately omitted from span attributes — they'd
+  dwarf trace storage and could leak secrets.
+- [x] **Two new audit tests** pin the file-Reopen path
+  (write, rename, reopen, write — pre-HUP event in the rotated
+  file, post-HUP event in the fresh file) and the
+  non-file-sink no-op invariant.
+
+**Phase 11: Production hardening — done.** Three batches shipped
+(11.1 observability + IaC + privacy + ops docs, 11.2 OpenTelemetry
+wiring + dispatch span, 11.3 SIGHUP-reopen + per-tool child spans).
+Remaining tracing follow-ups: thread the dispatch context through
+`runner.Exec` / `Client.Call` so the per-tool spans chain under
+the dispatch root for a useful flame-graph view; trace-context
+propagation from the SPA into the WS upgrade (`traceparent` HTTP
+header) so mobile-side timing lines up with server-side spans.
 
 ---
 
