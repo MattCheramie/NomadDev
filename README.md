@@ -509,12 +509,35 @@ wider gap list. Small, cohesive items that unblock contributors.*
   auto-grant approvals → wsclient one-shot tool call). Avoids
   burning the live-CI PAT rate budget for contributor exploration.
 
-**Remaining DX-lens follow-ups:** mobile E2E (Playwright/Cypress)
-covering the onboarding-to-first-turn path; chaos / failure-injection
-tests for GitHub subprocess crash + Docker daemon loss; a small
-session/history CLI export tool for audit / legal-hold dumps;
-reproducible-build verification (`-trimpath` is set; assert
-bit-for-bit on every release).
+#### 9.3 Session-export CLI + SQLite chaos tests — done
+- [x] **`cmd/session-export`** — small Go binary that dumps one
+  SID's data from `sessions.db` or `history.db` as JSON Lines.
+  Opens the DB **read-only** so a running orchestrator isn't
+  disturbed; auto-detects which store the file is via
+  `sqlite_master`. 7 tests cover SID filtering, both auto-detect
+  paths, the both-tables ambiguity case, and explicit-`-kind`
+  override on the wrong store.
+- [x] **SQLite chaos / failure-injection tests.** New
+  `internal/dbutil/chaos_test.go` covers four real-world failure
+  modes: bit-flip corruption (integrity_check surfaces
+  `ErrIntegrityCheckFailed`), half-truncated file (integrity_check
+  or first read fails), non-SQLite file at the configured path
+  (Ping fails cleanly), and atomic-rollback of a partially-applied
+  migration (`alpha` table must not exist + `user_version` must
+  not bump).
+
+**Remaining DX-lens follow-ups:**
+- Mobile E2E (Playwright/Cypress) covering the onboarding-to-first-turn
+  path — its own PR because the Node test stack is independent of
+  everything else.
+- **Reproducible-build verification** — attempted in this PR (see
+  reverted commit on `claude/dx-tooling`) but Go-on-`ubuntu-latest`
+  consistently produced different sha256s across two builds with
+  `-trimpath -ldflags "-s -w -buildid="`, even though the same
+  flags are bit-identical on developer machines. The next attempt
+  should use `diffoscope` to identify exactly which section
+  differs (likely a `runtime/debug.BuildInfo` non-determinism or
+  a module-extraction-order quirk) before re-adding the check.
 
 ---
 
