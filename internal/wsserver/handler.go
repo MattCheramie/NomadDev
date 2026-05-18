@@ -1,9 +1,13 @@
 package wsserver
 
 import (
+	"context"
 	"net/http"
 	"strings"
 	"time"
+
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/propagation"
 
 	"github.com/mattcheramie/nomaddev/internal/audit"
 	"github.com/mattcheramie/nomaddev/internal/event"
@@ -63,7 +67,19 @@ func (s *Server) wsHandler(w http.ResponseWriter, r *http.Request) {
 	sess := s.sessions.GetOrCreate(claims.Sid)
 	sess.Touch(time.Now().UTC())
 
-	s.runConnection(conn, clientID, claims, sess, logger)
+	// Phase 11.4: extract `traceparent` (W3C trace context) from the
+	// upgrade headers BEFORE the connection's lifetime begins. The
+	// returned context carries the remote trace + span ID; per-envelope
+	// dispatch spans link to it as parents, so a Playwright /
+	// otel-instrumented browser client sees the orchestrator's spans
+	// in the same trace.
+	//
+	// Detached from r.Context() because the request is gone the moment
+	// Upgrade returns — the connection outlives the HTTP request.
+	connCtx := otel.GetTextMapPropagator().Extract(
+		context.Background(), propagation.HeaderCarrier(r.Header))
+
+	s.runConnection(connCtx, conn, clientID, claims, sess, logger)
 }
 
 // extractToken pulls the JWT from either the bearer subprotocol or the

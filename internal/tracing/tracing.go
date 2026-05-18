@@ -20,6 +20,7 @@ import (
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/exporters/otlp/otlptrace"
 	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp"
+	"go.opentelemetry.io/otel/propagation"
 	"go.opentelemetry.io/otel/sdk/resource"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	semconv "go.opentelemetry.io/otel/semconv/v1.26.0"
@@ -118,6 +119,16 @@ func Init(ctx context.Context, cfg Config, log *slog.Logger) (Shutdown, error) {
 		)),
 	)
 	otel.SetTracerProvider(tp)
+	// W3C trace-context + baggage propagators so traceparent headers
+	// on inbound requests (e.g. the SPA's /ws upgrade in a future
+	// browser-side instrumentation, or curl --header
+	// "traceparent: ...") lift into the span hierarchy. Default
+	// propagator is a no-op — the extract call in wsHandler would
+	// silently lose every parent context.
+	otel.SetTextMapPropagator(propagation.NewCompositeTextMapPropagator(
+		propagation.TraceContext{},
+		propagation.Baggage{},
+	))
 
 	if log != nil {
 		log.Info("tracing: enabled",

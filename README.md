@@ -741,14 +741,38 @@ write it."*
   file, post-HUP event in the fresh file) and the
   non-file-sink no-op invariant.
 
-**Phase 11: Production hardening — done.** Three batches shipped
+#### 11.4 Trace-context propagation + dispatcher ctx-threading — done
+- [x] **`traceparent` extraction at upgrade.** `wsHandler` calls
+  `otel.GetTextMapPropagator().Extract` against the upgrade
+  headers BEFORE the connection's lifetime begins; the resulting
+  `connCtx` is threaded into `runConnection` → `readPump` →
+  `dispatch`. A traceparent from an otel-instrumented client
+  (browser SPA, curl `--header`, sibling service) lands as the
+  parent of the `ws.dispatch.<envelope.type>` span.
+- [x] **W3C propagator registered.** `tracing.Init` now installs a
+  composite `TraceContext{} + Baggage{}` propagator — the default
+  is no-op, so without this the extract call would silently lose
+  every parent context.
+- [x] **Dispatcher ctx threaded through to runners.**
+  `handleCommandRequest` / `handleUserIntent` now take a
+  `dispatchCtx` from `dispatch`; both derive their per-job
+  cancel-ctx (`execCtx` / `turnCtx`) from it instead of
+  `context.Background()`. The 11.3 `sandbox.exec` and
+  `github.call` spans now chain under the `ws.dispatch` root
+  → flame-graph view shows the full upstream → dispatch → tool
+  tree end-to-end.
+- [x] **New `trace_propagation_test.go`** uses the otel
+  in-memory exporter to assert that a synthetic `traceparent`
+  on the upgrade lands on the dispatch span's `TraceID` and
+  `Parent.SpanID` — pins the contract.
+
+**Phase 11: Production hardening — done.** Four batches shipped
 (11.1 observability + IaC + privacy + ops docs, 11.2 OpenTelemetry
-wiring + dispatch span, 11.3 SIGHUP-reopen + per-tool child spans).
-Remaining tracing follow-ups: thread the dispatch context through
-`runner.Exec` / `Client.Call` so the per-tool spans chain under
-the dispatch root for a useful flame-graph view; trace-context
-propagation from the SPA into the WS upgrade (`traceparent` HTTP
-header) so mobile-side timing lines up with server-side spans.
+wiring + dispatch span, 11.3 SIGHUP-reopen + per-tool child spans,
+11.4 trace propagation + dispatcher ctx threading). The
+tracing story is now complete: end-to-end spans from any
+otel-instrumented upstream through the orchestrator and out to
+the sandbox / GitHub MCP tool.
 
 ---
 
