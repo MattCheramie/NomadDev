@@ -15,6 +15,18 @@ import (
 	nlog "github.com/mattcheramie/nomaddev/internal/log"
 )
 
+// AuditConfig governs the structured audit-log sink, which is separate
+// from the per-session replay buffer. Backend selects where security
+// events (ws connects, auth failures, token refresh/revoke, approval
+// grant/deny) are emitted as JSON-Lines for SIEM / syslog / Loki
+// pickup. Default "stderr" surfaces them in the orchestrator's stderr
+// stream alongside the regular slog output, prefixed by the kind
+// field so operators can filter.
+type AuditConfig struct {
+	Backend string // "none" | "stderr" | "stdout" | "file"
+	Path    string // file path when Backend == "file"
+}
+
 // AuthConfig governs JWT token lifetimes and the revocation list. The
 // revocation list lets operators revoke a leaked JWT before it expires
 // naturally; refresh tokens let mobile clients keep a long-lived
@@ -131,6 +143,7 @@ type Config struct {
 	JWTSecret    []byte
 	LogLevel     slog.Level
 	Auth         AuthConfig
+	Audit        AuditConfig
 	Session      SessionConfig
 	Sandbox      SandboxConfig
 	Middleware   MiddlewareConfig
@@ -171,6 +184,10 @@ func Load() (*Config, error) {
 		ListenAddr: envOr("NOMADDEV_LISTEN_ADDR", ":8080"),
 		JWTSecret:  secret,
 		LogLevel:   nlog.ParseLevel(envOr("NOMADDEV_LOG_LEVEL", "info")),
+		Audit: AuditConfig{
+			Backend: envOr("NOMADDEV_AUDIT_BACKEND", "stderr"),
+			Path:    envOr("NOMADDEV_AUDIT_PATH", "/var/lib/nomaddev/audit.log"),
+		},
 		Auth: AuthConfig{
 			AccessTTL:  envDuration("NOMADDEV_AUTH_ACCESS_TTL", time.Hour),
 			RefreshTTL: envDuration("NOMADDEV_AUTH_REFRESH_TTL", 30*24*time.Hour),

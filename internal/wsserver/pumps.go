@@ -259,10 +259,10 @@ func (s *Server) dispatch(
 		s.handleUserIntent(env, client, sess, logger)
 
 	case event.EventToolApprovalGranted:
-		s.routeApproval(env, true)
+		s.routeApproval(env, client, true)
 
 	case event.EventToolApprovalDenied:
-		s.routeApproval(env, false)
+		s.routeApproval(env, client, false)
 
 	case event.EventUserCommand:
 		s.handleUserCommand(env, client, sess, logger)

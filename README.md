@@ -284,11 +284,37 @@ this repo on a tag push and contains no known HIGH/CRITICAL CVEs.*
   `cosign verify-attestation` with the exact
   `--certificate-identity-regexp` operators should require.
 
-**Remaining top-10:** audit log split from replay buffer (8.5), wired
-biometric approval (8.6), SQLite integrity check + migration
-framework (8.7), `/healthz` dependency probes + Compose healthcheck
-(8.8), GitHub rate-limit awareness/retry (8.9), and automated
-`session.db` backups (8.10).
+#### 8.5 Audit log — split from replay buffer — done
+*Until now the per-session replay buffer doubled as an audit trail —
+fine for client reconnect, useless for "who did what when" queries
+without scraping every SID's ring buffer. This carves out a dedicated
+JSON-Lines sink so security tooling has one stable stream to consume.*
+- [x] **New `internal/audit` package.** `Event` struct, `Sink`
+  interface (`Log`, `Close`), and four backends: `none` (silent),
+  `stderr` (default — interleaves with regular slog, grep by `kind`),
+  `stdout` (sidecar-friendly), `file` (append-only at `0o600`,
+  parent dir created at `0o700`).
+- [x] **Wired into the four security-critical paths:**
+  `ws.connect` (sub, sid, remote, jti), `ws.auth_failed` (remote,
+  reason), `auth.refresh` and `auth.revoke` (sub, sid, jti,
+  token_kind), and `approval.granted` / `approval.denied` (sub, sid,
+  approval id, deny reason). Each line is self-contained JSON —
+  pipe straight into `jq`, promtail, or a SIEM agent.
+- [x] **Defaults to `stderr`** so operators see audit events from
+  the first boot without configuring a path; flip to `file` for
+  durable per-deploy logs.
+- [x] **Audit calls never block or fail the action they record.**
+  Write errors fall back to slog rather than propagating; the
+  approval grant/deny flow proceeds whether or not the sink wrote.
+
+See [`internal/audit/audit.go`](./internal/audit/audit.go) for the
+event schema and [`internal/wsserver/audit_integration_test.go`](./internal/wsserver/audit_integration_test.go)
+for the end-to-end wiring tests.
+
+**Remaining top-10:** wired biometric approval (8.6), SQLite
+integrity check + migration framework (8.7), `/healthz` dependency
+probes + Compose healthcheck (8.8), GitHub rate-limit
+awareness/retry (8.9), and automated `session.db` backups (8.10).
 
 ---
 
