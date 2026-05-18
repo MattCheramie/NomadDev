@@ -3,6 +3,7 @@ package middleware
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/mattcheramie/nomaddev/internal/fsops"
@@ -24,16 +25,25 @@ type ToolDispatcher interface {
 	Dispatch(ctx context.Context, call ToolCall, opts DispatchOptions) (<-chan sandbox.ExecChunk, error)
 }
 
+// GitHubCaller is the subset of internal/githubmcp.Caller that the dispatcher
+// depends on. Declared here so the middleware package stays free of build tags
+// and can compile against both the real client and the no-op stub.
+type GitHubCaller interface {
+	Call(ctx context.Context, call ToolCall, opts DispatchOptions) (<-chan sandbox.ExecChunk, error)
+}
+
 // CompositeDispatcher routes calls by tool name. execute_script goes to the
-// sandbox.Runner; everything else goes to the fsops.Engine.
+// sandbox.Runner; the four fsops tools go to the fsops.Engine; anything
+// prefixed with "github_" goes to the GitHub MCP backend.
 type CompositeDispatcher struct {
 	Sandbox sandbox.Runner
 	FSOps   *fsops.Engine
+	GitHub  GitHubCaller
 }
 
-// NewCompositeDispatcher constructs a dispatcher. Either Sandbox or FSOps
-// may be nil — Dispatch returns ErrBadRequest if the matched backend is
-// missing at call time.
+// NewCompositeDispatcher constructs a dispatcher. Any of Sandbox / FSOps /
+// GitHub may be nil — Dispatch returns ErrBadRequest if the matched backend
+// is missing at call time.
 func NewCompositeDispatcher(r sandbox.Runner, fs *fsops.Engine) *CompositeDispatcher {
 	return &CompositeDispatcher{Sandbox: r, FSOps: fs}
 }
@@ -57,7 +67,12 @@ func (c *CompositeDispatcher) Dispatch(ctx context.Context, call ToolCall, opts 
 			return nil, fmt.Errorf("%w: fsops engine not configured", sandbox.ErrBadRequest)
 		}
 		return c.FSOps.Run(ctx, fsops.Call{Tool: call.Tool, Args: call.Args}, opts.FSOpsLimits)
-	default:
-		return nil, fmt.Errorf("%w: unknown tool %q", sandbox.ErrBadRequest, call.Tool)
 	}
+	if strings.HasPrefix(call.Tool, GitHubToolPrefix) {
+		if c.GitHub == nil {
+			return nil, fmt.Errorf("%w: github backend not configured", sandbox.ErrBadRequest)
+		}
+		return c.GitHub.Call(ctx, call, opts)
+	}
+	return nil, fmt.Errorf("%w: unknown tool %q", sandbox.ErrBadRequest, call.Tool)
 }

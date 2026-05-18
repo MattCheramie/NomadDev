@@ -102,18 +102,27 @@ func DefaultTools() []ToolSpec {
 	}
 }
 
-// KnownTool reports whether name is one of the four registered tool names.
+// GitHubToolPrefix is reserved for tools provided by the GitHub MCP backend.
+// Kept here (not in internal/githubmcp) so the middleware package can recognize
+// them without importing the backend — avoids a build-tag dependency cycle.
+const GitHubToolPrefix = "github_"
+
+// KnownTool reports whether name is one of the four registered tool names or
+// a GitHub MCP tool. The GitHub backend's per-tool schemas are validated by
+// the upstream server at dispatch time, so this layer only does a prefix check.
 func KnownTool(name string) bool {
 	switch name {
 	case ToolExecuteScript, ToolReadFile, ToolListDir, ToolWritePatch:
 		return true
 	}
-	return false
+	return strings.HasPrefix(name, GitHubToolPrefix)
 }
 
 // Validate performs lightweight per-tool argument validation before the
 // dispatch layer is involved. Heavier checks (path safety for fsops, script
-// size for the sandbox) remain in those packages.
+// size for the sandbox) remain in those packages. GitHub MCP tools delegate
+// arg validation to the upstream server, so Validate returns nil for any
+// github_* name — bad args surface as a tool-result error after dispatch.
 func Validate(tool string, args map[string]any) error {
 	switch tool {
 	case ToolExecuteScript:
@@ -124,9 +133,11 @@ func Validate(tool string, args map[string]any) error {
 		return validateListDir(args)
 	case ToolWritePatch:
 		return validateWritePatch(args)
-	default:
-		return fmt.Errorf("%w: unknown tool %q", ErrToolValidation, tool)
 	}
+	if strings.HasPrefix(tool, GitHubToolPrefix) {
+		return nil
+	}
+	return fmt.Errorf("%w: unknown tool %q", ErrToolValidation, tool)
 }
 
 func reqString(args map[string]any, key string) (string, error) {

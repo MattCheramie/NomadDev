@@ -3,6 +3,7 @@ package middleware
 import (
 	"context"
 	"errors"
+	"strings"
 	"sync"
 	"time"
 )
@@ -72,7 +73,10 @@ func (p *PolicyApprover) RequiresApproval(tool string, _ map[string]any) (bool, 
 	if p.autoGrant {
 		return false, ""
 	}
-	if _, ok := p.requiredTools[tool]; !ok {
+	p.mu.Lock()
+	_, ok := p.requiredTools[tool]
+	p.mu.Unlock()
+	if !ok {
 		return false, ""
 	}
 	switch tool {
@@ -80,8 +84,28 @@ func (p *PolicyApprover) RequiresApproval(tool string, _ map[string]any) (bool, 
 		return true, "runs an arbitrary shell script"
 	case ToolWritePatch:
 		return true, "writes to the host workspace"
-	default:
-		return true, "configured policy"
+	}
+	if strings.HasPrefix(tool, GitHubToolPrefix) {
+		return true, "mutates GitHub state"
+	}
+	return true, "configured policy"
+}
+
+// AddRequired extends the required-tools allowlist at runtime. Used by the
+// factory to auto-gate every destructive GitHub MCP tool without making the
+// operator enumerate ~30 tool names by hand. Safe to call from any goroutine
+// because the map is guarded by mu (the same lock that protects pending).
+func (p *PolicyApprover) AddRequired(names ...string) {
+	if len(names) == 0 {
+		return
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	for _, n := range names {
+		if n == "" {
+			continue
+		}
+		p.requiredTools[n] = struct{}{}
 	}
 }
 

@@ -2,6 +2,7 @@ package githubmcp
 
 import (
 	"context"
+	"time"
 
 	"github.com/mattcheramie/nomaddev/internal/middleware"
 	"github.com/mattcheramie/nomaddev/internal/sandbox"
@@ -43,6 +44,11 @@ type Options struct {
 	// Token is the credential source. Required.
 	Token TokenSource
 
+	// BinaryPath is an explicit path to the github-mcp-server binary. When
+	// empty, the client falls back to NOMADDEV_GITHUB_MCP_BIN and then to
+	// looking up "github-mcp-server" on PATH.
+	BinaryPath string
+
 	// Toolsets is the comma-separated allowlist passed to the upstream
 	// server. Empty or {"all"} enables every toolset.
 	Toolsets []string
@@ -58,4 +64,9 @@ type Options struct {
 
 	// LockdownMode enables the upstream public-repo content guard.
 	LockdownMode bool
+
+	// StartTimeout caps the MCP initialize + tools/list handshake. Zero
+	// inherits the parent context's deadline (or never times out if it
+	// has none).
+	StartTimeout time.Duration
 }

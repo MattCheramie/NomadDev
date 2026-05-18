@@ -15,7 +15,24 @@ type Service struct {
 	Dispatcher ToolDispatcher
 	Approver   Approver
 	History    history.Store
-	Config     RuntimeConfig
+	// Tools is the per-turn catalogue exposed to the translator. Built by
+	// NewService as DefaultTools() plus any GitHub MCP tools the factory was
+	// handed; the wsserver layer assigns this directly into TurnInput.Tools.
+	Tools  []ToolSpec
+	Config RuntimeConfig
+}
+
+// AvailableTools returns the tool catalogue Service was wired with, with a
+// safe fallback to DefaultTools() so older call sites that constructed a
+// Service literal without setting Tools keep working.
+func (s *Service) AvailableTools() []ToolSpec {
+	if s == nil {
+		return nil
+	}
+	if len(s.Tools) == 0 {
+		return DefaultTools()
+	}
+	return s.Tools
 }
 
 // RuntimeConfig is the per-turn knob set the handler reads from Service.

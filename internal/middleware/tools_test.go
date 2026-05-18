@@ -98,3 +98,23 @@ func TestValidate_UnknownTool(t *testing.T) {
 		t.Fatalf("want ErrToolValidation, got %v", err)
 	}
 }
+
+func TestKnownTool_AcceptsGitHubPrefix(t *testing.T) {
+	if !KnownTool("github_list_repositories") {
+		t.Fatal("github_* tool rejected by KnownTool")
+	}
+	if !KnownTool("github_create_pull_request") {
+		t.Fatal("github_* tool rejected by KnownTool")
+	}
+}
+
+func TestValidate_GitHubPrefix_Passthrough(t *testing.T) {
+	// Arg validation is delegated to the upstream MCP server; the middleware
+	// layer only does a prefix check so unknown github_* names are accepted.
+	if err := Validate("github_list_repositories", map[string]any{"foo": "bar"}); err != nil {
+		t.Fatalf("github_* passthrough returned %v, want nil", err)
+	}
+	if err := Validate("github_create_issue", nil); err != nil {
+		t.Fatalf("github_* nil-args passthrough returned %v, want nil", err)
+	}
+}

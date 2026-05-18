@@ -53,8 +53,8 @@ jobs:
 
   build-tags:
     name: build (tagged)
-    # Confirms that the docker and gemini build tags compile without
-    # actually exercising the SDK; useful for catching API breakage early.
+    # Confirms that the docker, gemini, and github build tags compile without
+    # actually exercising the SDKs; catches upstream API breakage early.
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -64,7 +64,23 @@ jobs:
           cache: true
       - run: go build -tags docker ./...
       - run: go build -tags gemini ./...
-      - run: go build -tags "docker gemini" ./...
+      - run: go build -tags github ./...
+      - run: go build -tags "docker gemini github" ./...
+
+  test-github:
+    name: test (github tag)
+    # Exercises the subprocess+stdio path of internal/githubmcp without
+    # needing the real github-mcp-server binary — the unit tests cover
+    # arg/env construction, schema conversion, and destructive-tool routing.
+    # A live smoke (`-tags github_live`) needs a PAT and is opt-in.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - run: go test -tags github -race -count=1 ./internal/githubmcp/...
 
   mobile:
     name: mobile (SPA)
