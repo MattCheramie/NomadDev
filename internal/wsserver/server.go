@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"log/slog"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/gorilla/websocket"
@@ -98,7 +99,7 @@ func NewWithOptions(
 		mw:        mw,
 		upgrader: websocket.Upgrader{
 			Subprotocols: []string{"bearer"},
-			CheckOrigin:  func(_ *http.Request) bool { return true },
+			CheckOrigin:  buildOriginChecker(cfg.AllowedOrigins, log),
 		},
 		mux: mux,
 	}
@@ -122,7 +123,7 @@ func NewWithOptions(
 		// Registered AFTER /ws, /healthz, and /metrics so longest-prefix wins
 		// keeps them resolving to their own handlers; "/" only matches when
 		// nothing else does. spa_test.go pins this invariant.
-		mux.Handle("/", srv.spaHandler())
+		mux.Handle("/", withSecurityHeaders(srv.spaHandler()))
 	}
 	srv.http = &http.Server{
 		Addr:              cfg.ListenAddr,
@@ -204,4 +205,75 @@ func coalesceAudit(s audit.Sink) audit.Sink {
 		return audit.NoopSink{}
 	}
 	return s
+}
+
+// buildOriginChecker returns the websocket.Upgrader.CheckOrigin func
+// driven by NOMADDEV_WS_ALLOWED_ORIGINS. Empty allowlist preserves
+// the pre-Phase-10 behavior of accepting any origin (the default
+// Tailscale-fronted deploy doesn't have a meaningful origin
+// boundary). A non-empty allowlist hard-rejects every request whose
+// Origin header isn't an exact, case-insensitive match — operators
+// who terminate TLS at a reverse proxy get a clear CSRF
+// boundary at /ws.
+//
+// Same-origin requests (no Origin header) and unconditional clients
+// like the wsclient test driver continue to pass; the upstream
+// gorilla/websocket library never strips Origin for these.
+func buildOriginChecker(allowed []string, log *slog.Logger) func(*http.Request) bool {
+	if len(allowed) == 0 {
+		return func(*http.Request) bool { return true }
+	}
+	// Lowercase once at construction so the per-request hot path is
+	// a single map lookup.
+	set := make(map[string]struct{}, len(allowed))
+	for _, o := range allowed {
+		set[strings.ToLower(strings.TrimSpace(o))] = struct{}{}
+	}
+	return func(r *http.Request) bool {
+		origin := r.Header.Get("Origin")
+		if origin == "" {
+			// No Origin = same-origin or non-browser client. The JWT
+			// gate on /ws is the real auth boundary; cross-origin
+			// CSRF concerns only apply to browser-driven requests
+			// that carry an Origin header.
+			return true
+		}
+		if _, ok := set[strings.ToLower(origin)]; ok {
+			return true
+		}
+		if log != nil {
+			log.Warn("ws: rejecting origin", "origin", origin, "remote", r.RemoteAddr)
+		}
+		return false
+	}
+}
+
+// withSecurityHeaders wraps a Handler so every response carries the
+// hardening headers we ship for the SPA route. Applied to the SPA
+// handler only; /ws and /metrics keep their existing shapes (the WS
+// handshake doesn't honor CSP and Prometheus scrape paths shouldn't
+// pretend to be a browser context).
+//
+// The CSP is intentionally narrow: 'self' for scripts and styles,
+// 'self' plus the WebSocket scheme for connect-src so the SPA can
+// keep its single /ws upgrade. 'unsafe-inline' on style-src is
+// concession to React Native Web's runtime style emission — Expo
+// inlines computed styles; tightening that needs an SPA-side
+// build change that's out of scope for this phase.
+func withSecurityHeaders(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		h := w.Header()
+		h.Set("Content-Security-Policy",
+			"default-src 'self'; "+
+				"script-src 'self'; "+
+				"style-src 'self' 'unsafe-inline'; "+
+				"img-src 'self' data:; "+
+				"connect-src 'self' ws: wss:; "+
+				"frame-ancestors 'none'; "+
+				"base-uri 'self'")
+		h.Set("X-Content-Type-Options", "nosniff")
+		h.Set("Referrer-Policy", "strict-origin-when-cross-origin")
+		h.Set("X-Frame-Options", "DENY")
+		next.ServeHTTP(w, r)
+	})
 }

@@ -146,8 +146,15 @@ type GitHubConfig struct {
 
 // Config is the full set of knobs the orchestrator reads at startup.
 type Config struct {
-	ListenAddr   string
-	JWTSecret    []byte
+	ListenAddr string
+	JWTSecret  []byte
+	// JWTPrevSecrets is the previous-generation signing keys the
+	// verifier accepts alongside JWTSecret during a rotation grace
+	// window. Tokens signed under any of these still verify; new
+	// tokens are always signed under JWTSecret. See
+	// NOMADDEV_JWT_PREV_SECRETS in .env.example for the operator
+	// workflow.
+	JWTPrevSecrets [][]byte
 	LogLevel     slog.Level
 	Auth         AuthConfig
 	Audit        AuditConfig
@@ -172,6 +179,14 @@ type Config struct {
 	// rate limit (back-compat with deploys that pre-date Phase 8.3).
 	RateLimit float64
 	RateBurst int
+	// AllowedOrigins is the CSRF / cross-origin allowlist for the
+	// WebSocket Upgrader.CheckOrigin callback. Empty (default)
+	// accepts every origin — the right shape for the default
+	// Tailscale-fronted deploy where there isn't a meaningful
+	// browser-origin boundary. Operators who terminate TLS at a
+	// reverse proxy populate this with the proxy's host(s) for a
+	// hard same-origin gate at /ws. Case-insensitive exact match.
+	AllowedOrigins []string
 }
 
 // MinSecretBytes is the minimum acceptable JWT secret length (HS256 guidance).
@@ -186,10 +201,15 @@ func Load() (*Config, error) {
 	if err != nil {
 		return nil, err
 	}
+	prev, err := loadPrevSecrets(os.Getenv("NOMADDEV_JWT_PREV_SECRETS"))
+	if err != nil {
+		return nil, err
+	}
 
 	cfg := &Config{
-		ListenAddr: envOr("NOMADDEV_LISTEN_ADDR", ":8080"),
-		JWTSecret:  secret,
+		ListenAddr:     envOr("NOMADDEV_LISTEN_ADDR", ":8080"),
+		JWTSecret:      secret,
+		JWTPrevSecrets: prev,
 		LogLevel:   nlog.ParseLevel(envOr("NOMADDEV_LOG_LEVEL", "info")),
 		Audit: AuditConfig{
 			Backend: envOr("NOMADDEV_AUDIT_BACKEND", "stderr"),
@@ -271,8 +291,35 @@ func Load() (*Config, error) {
 		MaxMessageBytes: envInt64("NOMADDEV_WS_MAX_MESSAGE_BYTES", 256*1024),
 		RateLimit:       envFloat("NOMADDEV_WS_RATE_LIMIT", 50),
 		RateBurst:       envInt("NOMADDEV_WS_RATE_BURST", 100),
+		AllowedOrigins:  envCSV("NOMADDEV_WS_ALLOWED_ORIGINS", nil),
 	}
 	return cfg, nil
+}
+
+// loadPrevSecrets parses NOMADDEV_JWT_PREV_SECRETS. Empty string =
+// no previous secrets (rotation not in progress; default). Otherwise
+// comma-separated, each entry decoded by loadSecret. A malformed entry
+// is a hard error so an operator setting up rotation gets immediate
+// feedback rather than silently dropping a leg of the grace window.
+func loadPrevSecrets(raw string) ([][]byte, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return nil, nil
+	}
+	parts := strings.Split(raw, ",")
+	out := make([][]byte, 0, len(parts))
+	for i, p := range parts {
+		p = strings.TrimSpace(p)
+		if p == "" {
+			continue
+		}
+		s, err := loadSecret(p)
+		if err != nil {
+			return nil, fmt.Errorf("NOMADDEV_JWT_PREV_SECRETS[%d]: %w", i, err)
+		}
+		out = append(out, s)
+	}
+	return out, nil
 }
 
 func loadSecret(raw string) ([]byte, error) {
