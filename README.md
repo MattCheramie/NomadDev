@@ -468,6 +468,54 @@ top-10 are now shipped (8.1 through 8.10). The review's wider gap
 list still has ~50 unaddressed items grouped by lens — see the plan
 file for the inventory.
 
+### Phase 9: Developer-experience lens — in progress
+*Objective: Work the Developer Experience lens from the review's
+wider gap list. Small, cohesive items that unblock contributors.*
+
+#### 9.1 Governance docs — done
+- [x] [`SECURITY.md`](./SECURITY.md) — disclosure policy via
+  GitHub Security Advisories, supported-versions matrix,
+  response-timeline commitments, and a clear in/out-of-scope list.
+- [x] [`CONTRIBUTING.md`](./CONTRIBUTING.md) — local-dev setup,
+  build-tag matrix, commit + PR style, CI job rollup, ADR
+  convention, test layout.
+- [x] [`CODE_OF_CONDUCT.md`](./CODE_OF_CONDUCT.md) — Contributor
+  Covenant 2.1 by reference + the reporting channel.
+
+#### 9.2 CI coverage + ADR practice + screen test + dev-loop docs — done
+- [x] **CI coverage floor.** The `test` job now emits a
+  `coverprofile`, prints the func-level summary, enforces a 55%
+  minimum (current measured 64%), and uploads the report as a
+  14-day artifact. Floor set well below the current level so
+  legitimate refactors don't bounce the build; tighten as the
+  suite grows.
+- [x] **ADR practice adopted.**
+  [`docs/adr/0001-record-architecture-decisions.md`](./docs/adr/0001-record-architecture-decisions.md)
+  codifies when a decision warrants an ADR and pins the four-section
+  format (Status / Context / Decision / Consequences). Past
+  decisions stay un-ADR'd; new cross-cutting ones get one.
+- [x] **`ChatScreen.test.tsx`.** The mobile suite covered
+  ApprovalSheet, SettingsScreen, the store, and the wire client —
+  but the top-level screen that ties them together had zero
+  coverage. New tests exercise empty state, turn rendering,
+  Composer submit + disabled-when-not-open, the approval grant
+  (with the typed-confirmation gate from 8.6) + deny paths, and
+  the gear-button navigation. 7 new tests, full mobile suite at 34.
+- [x] **GitHub MCP local-dev loop.** New section in
+  [`docs/github.md`](./docs/github.md#local-dev-loop-no-live-pat)
+  documents the no-PAT default path plus the tiered fidelity ladder
+  (upstream binary install at the pinned version → fine-grained
+  PAT against a throwaway repo → mock-translator orchestrator with
+  auto-grant approvals → wsclient one-shot tool call). Avoids
+  burning the live-CI PAT rate budget for contributor exploration.
+
+**Remaining DX-lens follow-ups:** mobile E2E (Playwright/Cypress)
+covering the onboarding-to-first-turn path; chaos / failure-injection
+tests for GitHub subprocess crash + Docker daemon loss; a small
+session/history CLI export tool for audit / legal-hold dumps;
+reproducible-build verification (`-trimpath` is set; assert
+bit-for-bit on every release).
+
 ---
 
 ## 🚀 Running the orchestrator

@@ -71,6 +71,61 @@ make test-github-live
 This is the highest-fidelity check that the upstream's MCP wire protocol
 hasn't drifted from what this adapter expects.
 
+### Local-dev loop (no live PAT)
+
+The default `go test ./internal/githubmcp/...` exercises every code
+path that doesn't require the real upstream binary or the GitHub
+API — schema conversion, destructive-tool routing, per-user token
+resolution, rate-limit marker scanning, and the result-size cap.
+That's the loop most contributors live in.
+
+For the next tier of fidelity without burning your PAT's rate
+budget:
+
+```sh
+# 1) Install the upstream binary at the version this repo pins
+#    against (matches the Dockerfile's GITHUB_MCP_VERSION arg).
+VERSION="v1.0.4"
+ARCH="$(uname -m | sed 's/x86_64/x86_64/;s/aarch64/arm64/')"
+curl -fsSL -o /tmp/ghmcp.tgz \
+    "https://github.com/github/github-mcp-server/releases/download/${VERSION}/github-mcp-server_$(uname -s)_${ARCH}.tar.gz"
+tar -xzf /tmp/ghmcp.tgz -C /tmp github-mcp-server
+sudo install -m 0755 /tmp/github-mcp-server /usr/local/bin/
+
+# 2) Create a fine-grained PAT scoped to a single throwaway repo
+#    you own — that's the blast radius if anything goes wrong.
+#    Scopes: Contents:rw, Issues:rw, Pull requests:rw, Metadata:r.
+export NOMADDEV_GITHUB_TOKEN="github_pat_…"
+export NOMADDEV_GITHUB_TOOLSETS="repos,issues,pull_requests"
+
+# 3) Run the orchestrator with the GitHub backend wired in. The
+#    mock translator (NOMADDEV_MIDDLEWARE_RUNTIME=mock) lets you
+#    poke github_* tools via the legacy command.request path
+#    without an LLM in the loop.
+go build -tags "gemini github" ./cmd/orchestrator
+NOMADDEV_JWT_SECRET="$(head -c 48 /dev/urandom | base64)" \
+NOMADDEV_APPROVAL_AUTO_GRANT=true \
+./orchestrator -listen :8080 &
+
+# 4) Drive a tool call via wsclient.
+TOKEN="$(go run ./scripts/gen-jwt -sub dev -sid sess-1)"
+./bin/wsclient -url ws://127.0.0.1:8080/ws -token "$TOKEN" \
+  -send command.request -tool github_get_me \
+  -disconnect-after command.result -timeout 10s
+```
+
+The orchestrator logs every subprocess spawn / respawn / call, the
+rate-limit retry path (Phase 8.9), and the audit envelope for the
+approval gate (Phase 8.5). If a turn fails, `journalctl -u
+nomaddev-orchestrator` (or the foreground stderr in dev) is the
+first place to look.
+
+For schema / wire changes against the upstream that aren't yet
+released, point `NOMADDEV_GITHUB_MCP_BIN` at a binary built from a
+local checkout of `github/github-mcp-server`. The
+[live API CI smoke](#live-api-ci-smoke) is the right vehicle once
+the change is ready for review.
+
 ## Configuration
 
 All knobs default to safe values; setting `NOMADDEV_GITHUB_TOKEN` is the
