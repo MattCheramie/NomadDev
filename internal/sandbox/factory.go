@@ -28,7 +28,13 @@ type FactoryConfig struct {
 	// unless Image carries an `@sha256:...` suffix. See
 	// docs/sandbox.md for the threat-model rationale.
 	RequireDigest bool
-	Logger        *slog.Logger
+	// PerSessionWorkspace, when true, makes the docker runner
+	// bind-mount <WorkspaceDir>/<sid>/ per ExecRequest.SessionID so
+	// concurrent sessions are filesystem-isolated. See Phase 10.2
+	// in README.md and docs/sandbox.md for the threat-model
+	// rationale + remaining caveats (fsops still shares the root).
+	PerSessionWorkspace bool
+	Logger              *slog.Logger
 }
 
 // NewRunner returns a Runner for the requested runtime or nil if the runtime

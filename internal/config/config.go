@@ -80,6 +80,13 @@ type SandboxConfig struct {
 	// compromised registry repoints a tag at a malicious manifest.
 	// Default false for back-compat; flip to true in production.
 	RequireDigest bool
+	// PerSessionWorkspace, when true, scopes the bind-mounted /work
+	// volume to a per-SID subdirectory of WorkspaceDir. Two
+	// sessions can no longer see each other's files via the
+	// sandbox path. fsops still operates on the shared root —
+	// per-fsops isolation is a separate phase. Default false
+	// preserves the pre-Phase-10.2 shared-workspace behavior.
+	PerSessionWorkspace bool
 }
 
 // MiddlewareConfig governs the Phase 4 NLP middleware that translates
@@ -233,18 +240,19 @@ func Load() (*Config, error) {
 			JanitorInterval: envDuration("NOMADDEV_SESSION_JANITOR_INTERVAL", 5*time.Minute),
 		},
 		Sandbox: SandboxConfig{
-			Runtime:        envOr("NOMADDEV_SANDBOX_RUNTIME", "mock"),
-			Image:          envOr("NOMADDEV_SANDBOX_IMAGE", "alpine:3.20"),
-			WorkspaceDir:   envOr("NOMADDEV_SANDBOX_WORKSPACE_DIR", "/var/lib/nomaddev/work"),
-			Network:        envOr("NOMADDEV_SANDBOX_NETWORK", "none"),
-			DefaultTimeout: envDuration("NOMADDEV_SANDBOX_DEFAULT_TIMEOUT", 30*time.Second),
-			MaxConcurrent:  envInt("NOMADDEV_SANDBOX_MAX_CONCURRENT", 4),
-			Memory:         envInt64("NOMADDEV_SANDBOX_MEMORY", 256<<20),
-			NanoCPUs:       envInt64("NOMADDEV_SANDBOX_NANOCPUS", 1_000_000_000),
-			PidsLimit:      envInt64("NOMADDEV_SANDBOX_PIDS_LIMIT", 256),
-			ReadOnlyRootfs: envBool("NOMADDEV_SANDBOX_READONLY_ROOTFS", true),
-			PreferRunsc:    envBool("NOMADDEV_SANDBOX_PREFER_RUNSC", true),
-			RequireDigest:  envBool("NOMADDEV_SANDBOX_REQUIRE_DIGEST", false),
+			Runtime:             envOr("NOMADDEV_SANDBOX_RUNTIME", "mock"),
+			Image:               envOr("NOMADDEV_SANDBOX_IMAGE", "alpine:3.20"),
+			WorkspaceDir:        envOr("NOMADDEV_SANDBOX_WORKSPACE_DIR", "/var/lib/nomaddev/work"),
+			Network:             envOr("NOMADDEV_SANDBOX_NETWORK", "none"),
+			DefaultTimeout:      envDuration("NOMADDEV_SANDBOX_DEFAULT_TIMEOUT", 30*time.Second),
+			MaxConcurrent:       envInt("NOMADDEV_SANDBOX_MAX_CONCURRENT", 4),
+			Memory:              envInt64("NOMADDEV_SANDBOX_MEMORY", 256<<20),
+			NanoCPUs:            envInt64("NOMADDEV_SANDBOX_NANOCPUS", 1_000_000_000),
+			PidsLimit:           envInt64("NOMADDEV_SANDBOX_PIDS_LIMIT", 256),
+			ReadOnlyRootfs:      envBool("NOMADDEV_SANDBOX_READONLY_ROOTFS", true),
+			PreferRunsc:         envBool("NOMADDEV_SANDBOX_PREFER_RUNSC", true),
+			RequireDigest:       envBool("NOMADDEV_SANDBOX_REQUIRE_DIGEST", false),
+			PerSessionWorkspace: envBool("NOMADDEV_SANDBOX_PER_SESSION_WORKSPACE", false),
 		},
 		Middleware: MiddlewareConfig{
 			Runtime:          envOr("NOMADDEV_MIDDLEWARE_RUNTIME", "mock"),

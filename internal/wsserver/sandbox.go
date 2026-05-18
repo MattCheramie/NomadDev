@@ -188,6 +188,7 @@ func (s *Server) runExec(
 		Args:       p.Args,
 		WorkingDir: p.WorkingDir,
 		Timeout:    time.Duration(p.TimeoutMs) * time.Millisecond,
+		SessionID:  client.SID,
 		Limits: sandbox.ResourceLimits{
 			CPUNanos:    s.cfg.Sandbox.NanoCPUs,
 			MemoryBytes: s.cfg.Sandbox.Memory,

@@ -12,8 +12,12 @@ import (
 
 // DispatchOptions threads per-call limits into the dispatcher.
 type DispatchOptions struct {
-	WorkingDir    string
-	Timeout       time.Duration
+	WorkingDir string
+	Timeout    time.Duration
+	// SessionID identifies the calling session. The sandbox runner
+	// uses this to scope its bind-mounted workspace (Phase 10.2)
+	// when PerSessionWorkspace is enabled; empty is back-compat.
+	SessionID     string
 	SandboxLimits sandbox.ResourceLimits
 	FSOpsLimits   fsops.Limits
 }
@@ -61,6 +65,7 @@ func (c *CompositeDispatcher) Dispatch(ctx context.Context, call ToolCall, opts 
 			WorkingDir: opts.WorkingDir,
 			Timeout:    opts.Timeout,
 			Limits:     opts.SandboxLimits,
+			SessionID:  opts.SessionID,
 		})
 	case ToolReadFile, ToolListDir, ToolWritePatch:
 		if c.FSOps == nil {
