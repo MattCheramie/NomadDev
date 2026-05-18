@@ -222,7 +222,7 @@ func run(listenOverride string) error {
 		}()
 	}
 
-	mw, err := buildMiddleware(rootCtx, cfg, runner, gh, ghTools, ghDestructive)
+	mw, err := buildMiddleware(rootCtx, cfg, runner, gh, ghTools, ghDestructive, logger)
 	if err != nil {
 		return fmt.Errorf("middleware: %w", err)
 	}
@@ -436,6 +436,7 @@ func buildGitHub(ctx context.Context, cfg *config.Config, logger *slog.Logger) (
 func buildMiddleware(
 	ctx context.Context, cfg *config.Config, runner sandbox.Runner,
 	gh middleware.GitHubCaller, ghTools []middleware.ToolSpec, ghDestructive func(string) bool,
+	logger *slog.Logger,
 ) (*middleware.Service, error) {
 	if cfg.Middleware.Runtime == "" || cfg.Middleware.Runtime == middleware.RuntimeNone {
 		return nil, nil
@@ -455,6 +456,21 @@ func buildMiddleware(
 			return nil, err
 		}
 		store = s
+		if cfg.History.Summary.Enabled && cfg.History.Summary.URL != "" {
+			compactor := &history.Compactor{
+				Store: s,
+				Summarizer: &history.HTTPSummarizer{
+					URL:        cfg.History.Summary.URL,
+					AuthHeader: cfg.History.Summary.AuthHeader,
+					Client:     &http.Client{Timeout: cfg.History.Summary.Timeout},
+				},
+				WordThreshold: cfg.History.Summary.WordThreshold,
+			}
+			go compactor.RunJanitor(ctx, cfg.History.Summary.Interval, logger)
+			logger.Info("orchestrator: history summarization janitor",
+				"interval", cfg.History.Summary.Interval,
+				"word_threshold", cfg.History.Summary.WordThreshold)
+		}
 	default:
 		return nil, fmt.Errorf("unknown history backend %q", cfg.History.Backend)
 	}

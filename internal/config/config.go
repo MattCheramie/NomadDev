@@ -131,6 +131,20 @@ type HistoryConfig struct {
 	Backend     string // "memory" | "sqlite"
 	Path        string // sqlite file path
 	WindowTurns int    // number of turns to send to the LLM as context
+	Summary     HistorySummaryConfig
+}
+
+// HistorySummaryConfig governs the background goroutine that collapses the
+// oldest half of a session's user/assistant turns into one system.summary
+// row once cumulative word count crosses WordThreshold. Disabled by default
+// so the feature is opt-in per deploy. Applies only to the sqlite backend.
+type HistorySummaryConfig struct {
+	Enabled       bool          // NOMADDEV_HISTORY_SUMMARY_ENABLED
+	URL           string        // NOMADDEV_HISTORY_SUMMARY_URL (POST endpoint)
+	AuthHeader    string        // NOMADDEV_HISTORY_SUMMARY_AUTH_HEADER (sent as Authorization)
+	WordThreshold int           // NOMADDEV_HISTORY_SUMMARY_WORD_THRESHOLD (default 15000)
+	Interval      time.Duration // NOMADDEV_HISTORY_SUMMARY_INTERVAL (default 5m)
+	Timeout       time.Duration // NOMADDEV_HISTORY_SUMMARY_TIMEOUT (default 30s)
 }
 
 // ApprovalConfig governs the human-in-the-loop gate for destructive tool calls.
@@ -309,6 +323,14 @@ func Load() (*Config, error) {
 			Backend:     envOr("NOMADDEV_HISTORY_BACKEND", "sqlite"),
 			Path:        envOr("NOMADDEV_HISTORY_PATH", "/var/lib/nomaddev/history.db"),
 			WindowTurns: envInt("NOMADDEV_HISTORY_WINDOW_TURNS", 20),
+			Summary: HistorySummaryConfig{
+				Enabled:       envBool("NOMADDEV_HISTORY_SUMMARY_ENABLED", false),
+				URL:           os.Getenv("NOMADDEV_HISTORY_SUMMARY_URL"),
+				AuthHeader:    os.Getenv("NOMADDEV_HISTORY_SUMMARY_AUTH_HEADER"),
+				WordThreshold: envInt("NOMADDEV_HISTORY_SUMMARY_WORD_THRESHOLD", 15000),
+				Interval:      envDuration("NOMADDEV_HISTORY_SUMMARY_INTERVAL", 5*time.Minute),
+				Timeout:       envDuration("NOMADDEV_HISTORY_SUMMARY_TIMEOUT", 30*time.Second),
+			},
 		},
 		Approval: ApprovalConfig{
 			RequiredTools:      envCSV("NOMADDEV_APPROVAL_REQUIRED_TOOLS", []string{"execute_script", "write_patch"}),
