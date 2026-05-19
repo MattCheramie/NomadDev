@@ -84,6 +84,16 @@ type RuntimeConfig struct {
 	MaxConcurrent  int
 	DefaultTimeout time.Duration
 	SandboxLimits  sandbox.ResourceLimits
+	// Provider is the active translator backend name ("mock", "gemini",
+	// "openai", "anthropic", "deepseek"). Used as a Prometheus label on
+	// token + cost counters so dashboards can break down spend by backend.
+	// Populated from FactoryConfig.Runtime.
+	Provider string
+	// Model is the active model identifier (e.g. "gpt-4o-mini",
+	// "claude-sonnet-4-5"). Pairs with Provider for the pricing lookup.
+	// Populated from FactoryConfig.Model — for the deepseek runtime, the
+	// factory pre-fills the default before the service is constructed.
+	Model string
 	// GateDirectCommands wires the approval state machine into the legacy
 	// direct command.request path (Phase 3) as well as the new
 	// middleware-driven path. Default true; the orchestrator sets it from

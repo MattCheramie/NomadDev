@@ -208,3 +208,59 @@ func TestOpenAITranslator_ToolCallRoundTrip(t *testing.T) {
 		t.Errorf("stage2 final = %+v, want stop", final)
 	}
 }
+
+// TestOpenAITranslator_RetryOn429 asserts that MaxRetries plumbs through to
+// the SDK's transport-level retry loop. The stub returns 429 on the first
+// request and the canned good response on the second; with MaxRetries=1
+// the translator must succeed and the stub's handler must have been hit
+// exactly twice.
+func TestOpenAITranslator_RetryOn429(t *testing.T) {
+	var attempts int
+	good := sseFrame(`{"id":"x","object":"chat.completion.chunk","created":0,"model":"gpt-4o-mini","choices":[{"index":0,"delta":{"role":"assistant","content":"ok"},"finish_reason":""}]}`) +
+		sseFrame(`{"id":"x","object":"chat.completion.chunk","created":0,"model":"gpt-4o-mini","choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`) +
+		"data: [DONE]\n\n"
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/chat/completions", func(w http.ResponseWriter, r *http.Request) {
+		attempts++
+		if attempts == 1 {
+			// First attempt: respond with 429 + Retry-After=0 so the SDK
+			// retries immediately without padding the test runtime.
+			w.Header().Set("Retry-After", "0")
+			http.Error(w, `{"error":{"type":"rate_limit_exceeded","message":"slow down"}}`, http.StatusTooManyRequests)
+			return
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte(good))
+		if f, ok := w.(http.Flusher); ok {
+			f.Flush()
+		}
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	tr, err := NewOpenAITranslator(context.Background(), OpenAIOptions{
+		APIKey:     "test-key",
+		BaseURL:    srv.URL,
+		Model:      "gpt-4o-mini",
+		MaxRetries: 1,
+	})
+	if err != nil {
+		t.Fatalf("NewOpenAITranslator: %v", err)
+	}
+	ch, _, err := tr.Stream(context.Background(), TurnInput{
+		SID: "t-retry", UserText: "ping", History: []history.Turn{},
+		Tools: DefaultTools(),
+	})
+	if err != nil {
+		t.Fatalf("Stream: %v", err)
+	}
+	for ev := range ch {
+		if ev.Err != nil {
+			t.Fatalf("stream err after retry: %v", ev.Err)
+		}
+	}
+	if attempts != 2 {
+		t.Errorf("stub attempts = %d, want 2 (initial 429 + one retry)", attempts)
+	}
+}

@@ -48,11 +48,16 @@ type FinalMessage struct {
 }
 
 // AssistantEvent is the discriminated event the translator emits during a
-// turn. Exactly one of Text / ToolCall / FinalMessage / Usage / Err is
-// meaningful.
+// turn. Exactly one of Text / Thinking / ToolCall / FinalMessage / Usage / Err
+// is meaningful.
 //
 //   - Text:         one streamed text fragment; the handler increments its
 //     own seq counter and emits an assistant.chunk envelope.
+//   - Thinking:     one streamed fragment of the model's internal reasoning
+//     (currently Anthropic extended thinking only). The handler emits an
+//     assistant.thinking envelope with its own seq counter — thinking is a
+//     parallel stream from Text and does NOT contribute to the terminal
+//     FinalMessage.Text.
 //   - ToolCall:     a discrete function-call instruction. The translator must
 //     stop emitting events on the current channel after this and wait for
 //     the handler to call ResumeFunc.
@@ -67,6 +72,7 @@ type FinalMessage struct {
 //     assistant.message{FinishReason: "error", Error: err.Error()}.
 type AssistantEvent struct {
 	Text         string
+	Thinking     string
 	ToolCall     *ToolCall
 	FinalMessage *FinalMessage
 	Usage        *Usage

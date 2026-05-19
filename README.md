@@ -87,6 +87,27 @@ and how to switch between the mock and Docker runners.
   `NOMADDEV_OPENAI_BASE_URL` for Azure / proxy deployments). See
   [`internal/middleware/README.md`](./internal/middleware/README.md) for
   the build matrix.
+- [x] Per-LLM transport-level retry budget configurable via
+  `NOMADDEV_LLM_MAX_RETRIES` (default 2). OpenAI and Anthropic SDKs both
+  back off exponentially on 408/409/429/5xx responses; Gemini's policy is
+  hardcoded by the upstream SDK and not overridable. Sandbox / tool-call
+  retries continue to flow through the separate `NOMADDEV_MAX_AUTORETRIES`
+  recovery budget at the dispatch layer.
+- [x] Cost accounting in USD: a hard-coded per-`(provider, model)` price
+  table at [`internal/middleware/pricing/`](./internal/middleware/pricing/)
+  derives a `nomaddev_llm_cost_usd_total` Prometheus counter (labeled by
+  provider + model) alongside the existing `nomaddev_llm_tokens_total`
+  (which now also carries `provider` + `model` labels). The terminal
+  `assistant.message.usage` envelope shipped to the Mobile Control Hub
+  carries an additional `cost_usd` field so the per-session 'Session
+  Cost' ticker can render real dollars instead of just tokens.
+- [x] Anthropic extended thinking surfaced as a distinct
+  [`assistant.thinking`](./docs/events.md) wire envelope and
+  `AssistantEvent.Thinking` field. Enable per-deploy with
+  `NOMADDEV_ANTHROPIC_THINKING_BUDGET` (`>=1024`); other backends ignore
+  it. Thinking frames stream alongside (not within) the regular
+  `assistant.chunk` stream so clients can render the model's reasoning
+  separately from its final answer.
 
 Translator + dispatcher + approval gate live at
 [`internal/middleware/`](./internal/middleware/); filesystem-only tools live

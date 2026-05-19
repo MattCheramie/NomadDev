@@ -17,11 +17,12 @@ import (
 // only when the `anthropic` build tag is set so the default orchestrator
 // binary doesn't pull in the SDK.
 type AnthropicTranslator struct {
-	client      anthropic.Client
-	model       string
-	temperature float64
-	maxTokens   int64
-	log         *slog.Logger
+	client         anthropic.Client
+	model          string
+	temperature    float64
+	maxTokens      int64
+	thinkingBudget int64
+	log            *slog.Logger
 }
 
 // AnthropicOptions is the constructor input for NewAnthropicTranslator.
@@ -30,12 +31,25 @@ type AnthropicOptions struct {
 	Model       string  // default "claude-sonnet-4-5"
 	Temperature float64 // default 0.2
 	MaxTokens   int     // default 4096
-	Logger      *slog.Logger
+	// MaxRetries caps the SDK's built-in 408/409/429/5xx retry loop. Zero
+	// keeps the SDK default (2 retries); negative values are coerced to
+	// zero before being passed to option.WithMaxRetries.
+	MaxRetries int
+	// ThinkingBudget enables Anthropic extended thinking when >0. Passed
+	// verbatim as ThinkingConfigEnabledParam.BudgetTokens. The API requires
+	// the value to be >=1024 and < MaxTokens — neither is enforced here
+	// because the SDK surfaces a clear 4xx on violation.
+	ThinkingBudget int64
+	Logger         *slog.Logger
 }
 
 // NewAnthropicTranslator builds a Translator backed by the Anthropic SDK.
 func NewAnthropicTranslator(_ context.Context, opts AnthropicOptions) (*AnthropicTranslator, error) {
-	cli := anthropic.NewClient(option.WithAPIKey(opts.APIKey))
+	clientOpts := []option.RequestOption{option.WithAPIKey(opts.APIKey)}
+	if opts.MaxRetries > 0 {
+		clientOpts = append(clientOpts, option.WithMaxRetries(opts.MaxRetries))
+	}
+	cli := anthropic.NewClient(clientOpts...)
 
 	model := opts.Model
 	if model == "" {
@@ -54,11 +68,12 @@ func NewAnthropicTranslator(_ context.Context, opts AnthropicOptions) (*Anthropi
 		log = slog.Default()
 	}
 	return &AnthropicTranslator{
-		client:      cli,
-		model:       model,
-		temperature: temp,
-		maxTokens:   maxTok,
-		log:         log,
+		client:         cli,
+		model:          model,
+		temperature:    temp,
+		maxTokens:      maxTok,
+		thinkingBudget: opts.ThinkingBudget,
+		log:            log,
 	}, nil
 }
 
@@ -111,6 +126,13 @@ func (s *anthropicTurn) run(ctx context.Context, out chan<- AssistantEvent) {
 	}
 	if len(s.tools) > 0 {
 		params.Tools = s.tools
+	}
+	if s.t.thinkingBudget > 0 {
+		params.Thinking = anthropic.ThinkingConfigParamUnion{
+			OfEnabled: &anthropic.ThinkingConfigEnabledParam{
+				BudgetTokens: s.t.thinkingBudget,
+			},
+		}
 	}
 
 	stream := s.t.client.Messages.NewStreaming(ctx, params)
@@ -165,6 +187,14 @@ func (s *anthropicTurn) run(ctx context.Context, out chan<- AssistantEvent) {
 				if v.Delta.Text != "" {
 					select {
 					case out <- AssistantEvent{Text: v.Delta.Text}:
+					case <-ctx.Done():
+						return
+					}
+				}
+			case "thinking_delta":
+				if v.Delta.Thinking != "" {
+					select {
+					case out <- AssistantEvent{Thinking: v.Delta.Thinking}:
 					case <-ctx.Done():
 						return
 					}

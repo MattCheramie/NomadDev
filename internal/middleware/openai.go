@@ -34,7 +34,11 @@ type OpenAIOptions struct {
 	Model       string  // default "gpt-4o-mini"
 	Temperature float64 // default 0.2
 	MaxTokens   int     // default 4096
-	Logger      *slog.Logger
+	// MaxRetries caps the SDK's built-in 408/409/429/5xx retry loop. Zero
+	// keeps the SDK default (2 retries); negative values are coerced to
+	// zero before being passed to option.WithMaxRetries.
+	MaxRetries int
+	Logger     *slog.Logger
 }
 
 // NewOpenAITranslator builds a Translator backed by the OpenAI Go SDK.
@@ -42,6 +46,9 @@ func NewOpenAITranslator(_ context.Context, opts OpenAIOptions) (*OpenAITranslat
 	clientOpts := []option.RequestOption{option.WithAPIKey(opts.APIKey)}
 	if opts.BaseURL != "" {
 		clientOpts = append(clientOpts, option.WithBaseURL(opts.BaseURL))
+	}
+	if opts.MaxRetries > 0 {
+		clientOpts = append(clientOpts, option.WithMaxRetries(opts.MaxRetries))
 	}
 	cli := openai.NewClient(clientOpts...)
 

@@ -17,9 +17,10 @@ func TestHandler_ExposesPackageInstruments(t *testing.T) {
 	SandboxRunSeconds.Observe(0.123)
 	MiddlewareTurnsTotal.WithLabelValues("ok").Inc()
 	MiddlewareTurnSeconds.Observe(1.5)
-	LLMTokensTotal.WithLabelValues("prompt").Add(100)
-	LLMTokensTotal.WithLabelValues("candidates").Add(50)
-	LLMTokensTotal.WithLabelValues("total").Add(150)
+	LLMTokensTotal.WithLabelValues("prompt", "openai", "gpt-4o-mini").Add(100)
+	LLMTokensTotal.WithLabelValues("candidates", "openai", "gpt-4o-mini").Add(50)
+	LLMTokensTotal.WithLabelValues("total", "openai", "gpt-4o-mini").Add(150)
+	LLMCostUSDTotal.WithLabelValues("openai", "gpt-4o-mini").Add(0.075)
 
 	srv := httptest.NewServer(Handler())
 	defer srv.Close()
@@ -46,9 +47,10 @@ func TestHandler_ExposesPackageInstruments(t *testing.T) {
 		`nomaddev_sandbox_run_seconds_bucket`,
 		`nomaddev_middleware_turns_total{outcome="ok"}`,
 		`nomaddev_middleware_turn_seconds_bucket`,
-		`nomaddev_llm_tokens_total{type="prompt"} 100`,
-		`nomaddev_llm_tokens_total{type="candidates"} 50`,
-		`nomaddev_llm_tokens_total{type="total"} 150`,
+		`nomaddev_llm_tokens_total{model="gpt-4o-mini",provider="openai",type="prompt"} 100`,
+		`nomaddev_llm_tokens_total{model="gpt-4o-mini",provider="openai",type="candidates"} 50`,
+		`nomaddev_llm_tokens_total{model="gpt-4o-mini",provider="openai",type="total"} 150`,
+		`nomaddev_llm_cost_usd_total{model="gpt-4o-mini",provider="openai"} 0.075`,
 	}
 	for _, w := range wants {
 		if !strings.Contains(text, w) {
