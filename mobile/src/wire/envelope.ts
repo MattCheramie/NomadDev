@@ -132,10 +132,19 @@ export type AssistantChunkPayload = {
   text: string;
 };
 
+// UsagePayload carries cumulative LLM token usage for one turn, summed
+// across every translator stage. Omitted on error frames.
+export type UsagePayload = {
+  prompt_tokens: number;
+  candidates_tokens: number;
+  total_tokens: number;
+};
+
 export type AssistantMessagePayload = {
   text?: string;
   finish_reason?: string;
   error?: string;
+  usage?: UsagePayload;
 };
 
 export type ToolApprovalRequestPayload = {

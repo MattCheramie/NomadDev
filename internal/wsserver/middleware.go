@@ -88,7 +88,7 @@ func (s *Server) handleUserIntent(
 		select {
 		case s.intentSem <- struct{}{}:
 		default:
-			s.emitAssistantMessage(sess, client, env.ID, "", "error", "middleware at capacity")
+			s.emitAssistantMessage(sess, client, env.ID, "", "error", "middleware at capacity", middleware.Usage{})
 			return
 		}
 	}
@@ -131,7 +131,7 @@ func (s *Server) runIntent(
 		TS:    time.Now().UTC(),
 	}
 	if _, err := s.mw.History.Append(ctx, userTurn); err != nil {
-		s.emitAssistantMessage(sess, client, intentID, "", "error", err.Error())
+		s.emitAssistantMessage(sess, client, intentID, "", "error", err.Error(), middleware.Usage{})
 		return
 	}
 
@@ -142,7 +142,7 @@ func (s *Server) runIntent(
 	}
 	win, err := s.mw.History.LoadWindow(ctx, sess.SID, windowN)
 	if err != nil {
-		s.emitAssistantMessage(sess, client, intentID, "", "error", err.Error())
+		s.emitAssistantMessage(sess, client, intentID, "", "error", err.Error(), middleware.Usage{})
 		return
 	}
 
@@ -160,7 +160,7 @@ func (s *Server) runIntent(
 	}
 	eventsCh, resume, err := s.mw.Translator.Stream(ctx, in)
 	if err != nil {
-		s.emitAssistantMessage(sess, client, intentID, "", "error", err.Error())
+		s.emitAssistantMessage(sess, client, intentID, "", "error", err.Error(), middleware.Usage{})
 		return
 	}
 
@@ -173,10 +173,16 @@ func (s *Server) runIntent(
 	//    escalating to the Mobile Control Hub.
 	budget := middleware.NewRetryBudget(s.mw.Config.MaxAutoRetries)
 	seq := 0
+	// turnUsage aggregates LLM token spend across every translator stage so
+	// the terminal assistant.message reports a single cumulative number to
+	// the Mobile Control Hub ticker. Prometheus counter increments happen
+	// inside consumeStage on every stage end, even for stages that never
+	// produce a client-visible message (Phase 13 auto-retries).
+	var turnUsage middleware.Usage
 	for {
-		ended, terminal := s.consumeStage(ctx, intentID, &seq, eventsCh, resume, budget, p.Mode, sess, client, logger)
+		ended, terminal := s.consumeStage(ctx, intentID, &seq, eventsCh, resume, budget, p.Mode, sess, client, logger, &turnUsage)
 		if terminal != nil {
-			s.emitAssistantMessage(sess, client, intentID, terminal.Text, terminal.FinishReason, "")
+			s.emitAssistantMessage(sess, client, intentID, terminal.Text, terminal.FinishReason, "", turnUsage)
 			// Persist the assistant turn (text only — tool turns were
 			// recorded in their respective branches).
 			if terminal.Text != "" {
@@ -193,7 +199,7 @@ func (s *Server) runIntent(
 			// Translator closed without a final message and without a
 			// tool-call resume — synthesize a terminal frame.
 			s.emitAssistantMessage(sess, client, intentID, "", "error",
-				"translator closed without final message")
+				"translator closed without final message", turnUsage)
 			return
 		}
 		eventsCh = ended.next
@@ -223,6 +229,7 @@ func (s *Server) consumeStage(
 	in <-chan middleware.AssistantEvent, resume middleware.ResumeFunc,
 	budget *middleware.RetryBudget, mode string,
 	sess *session.Session, client *hub.Client, logger *slog.Logger,
+	turnUsage *middleware.Usage,
 ) (stageResult, *middleware.FinalMessage) {
 	for ev := range in {
 		switch {
@@ -231,6 +238,8 @@ func (s *Server) consumeStage(
 		case ev.Text != "":
 			s.emitAssistantChunk(sess, client, intentID, *seq, ev.Text)
 			*seq++
+		case ev.Usage != nil:
+			accumulateUsage(turnUsage, *ev.Usage)
 		case ev.ToolCall != nil:
 			// Drain any straggler events on this stage's channel before
 			// dispatching — the translator contract says ToolCall ends the
@@ -294,6 +303,7 @@ func (s *Server) consumeStage(
 			}
 			return stageResult{next: next}, nil
 		case ev.FinalMessage != nil:
+			accumulateUsage(turnUsage, ev.FinalMessage.Usage)
 			return stageResult{}, ev.FinalMessage
 		}
 	}
@@ -537,9 +547,13 @@ func (s *Server) emitAssistantChunk(
 
 // emitAssistantMessage sends the terminal assistant.message envelope and
 // records the middleware-turn outcome metric. This is the single exit point
-// for a user.intent turn.
+// for a user.intent turn. The usage argument carries the per-turn token
+// aggregate; it is attached to the wire payload when any field is non-zero
+// and omitted otherwise (error paths, translator failures before any stage
+// reported counts).
 func (s *Server) emitAssistantMessage(
 	sess *session.Session, client *hub.Client, intentID, text, finishReason, errMsg string,
+	usage middleware.Usage,
 ) {
 	if finishReason == "" {
 		finishReason = "stop"
@@ -549,16 +563,47 @@ func (s *Server) emitAssistantMessage(
 		outcome = "error"
 	}
 	metrics.MiddlewareTurnsTotal.WithLabelValues(outcome).Inc()
-	env, err := event.NewReply(event.EventAssistantMessage, intentID, event.AssistantMessagePayload{
+	payload := event.AssistantMessagePayload{
 		Text:         text,
 		FinishReason: finishReason,
 		Error:        errMsg,
-	})
+	}
+	if usage.PromptTokens != 0 || usage.CandidatesTokens != 0 || usage.TotalTokens != 0 {
+		payload.Usage = &event.UsagePayload{
+			PromptTokens:     usage.PromptTokens,
+			CandidatesTokens: usage.CandidatesTokens,
+			TotalTokens:      usage.TotalTokens,
+		}
+	}
+	env, err := event.NewReply(event.EventAssistantMessage, intentID, payload)
 	if err != nil {
 		s.log.Error("middleware: build assistant.message", "err", err)
 		return
 	}
 	s.bufferAndSend(sess, client, env)
+}
+
+// accumulateUsage folds a stage's Usage into the per-turn aggregate and
+// increments the LLMTokensTotal counter for each non-zero series. Called
+// once per stage end (tool-call leg or terminal FinalMessage) so the
+// counter reflects all spend even when a stage never produces a
+// client-visible assistant.message.
+func accumulateUsage(turn *middleware.Usage, stage middleware.Usage) {
+	if turn == nil || (stage.PromptTokens == 0 && stage.CandidatesTokens == 0 && stage.TotalTokens == 0) {
+		return
+	}
+	turn.PromptTokens += stage.PromptTokens
+	turn.CandidatesTokens += stage.CandidatesTokens
+	turn.TotalTokens += stage.TotalTokens
+	if stage.PromptTokens != 0 {
+		metrics.LLMTokensTotal.WithLabelValues("prompt").Add(float64(stage.PromptTokens))
+	}
+	if stage.CandidatesTokens != 0 {
+		metrics.LLMTokensTotal.WithLabelValues("candidates").Add(float64(stage.CandidatesTokens))
+	}
+	if stage.TotalTokens != 0 {
+		metrics.LLMTokensTotal.WithLabelValues("total").Add(float64(stage.TotalTokens))
+	}
 }
 
 // mustMarshalText serializes "{text: ...}" — the on-disk shape for user and

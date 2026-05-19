@@ -28,15 +28,28 @@ type ToolResult struct {
 	Error  string
 }
 
+// Usage carries per-stage LLM token accounting reported by the translator.
+// All counts are cumulative for the stage that produced them; the handler
+// is responsible for summing across stages of a multi-stage turn.
+type Usage struct {
+	PromptTokens     int64
+	CandidatesTokens int64
+	TotalTokens      int64
+}
+
 // FinalMessage marks the terminal frame of a turn. Text may be empty if the
 // model exited with only tool calls in its last response.
 type FinalMessage struct {
 	Text         string
 	FinishReason string
+	// Usage is the token accounting for this terminal stage. Zero-valued
+	// when the translator/SDK did not report it.
+	Usage Usage
 }
 
 // AssistantEvent is the discriminated event the translator emits during a
-// turn. Exactly one of Text / ToolCall / FinalMessage / Err is meaningful.
+// turn. Exactly one of Text / ToolCall / FinalMessage / Usage / Err is
+// meaningful.
 //
 //   - Text:         one streamed text fragment; the handler increments its
 //     own seq counter and emits an assistant.chunk envelope.
@@ -44,13 +57,19 @@ type FinalMessage struct {
 //     stop emitting events on the current channel after this and wait for
 //     the handler to call ResumeFunc.
 //   - FinalMessage: terminal frame. The handler emits assistant.message and
-//     closes the turn.
+//     closes the turn. Carries Usage for the terminal stage.
+//   - Usage:        end-of-stage token accounting for a tool-call stage.
+//     MUST be emitted strictly before the ToolCall on the same channel —
+//     the handler treats ToolCall as the stage-end signal and drains
+//     anything that follows it. Terminal stages report usage via
+//     FinalMessage.Usage instead.
 //   - Err:          fatal turn error. Handler surfaces it via
 //     assistant.message{FinishReason: "error", Error: err.Error()}.
 type AssistantEvent struct {
 	Text         string
 	ToolCall     *ToolCall
 	FinalMessage *FinalMessage
+	Usage        *Usage
 	Err          error
 }
 

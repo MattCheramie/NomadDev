@@ -178,12 +178,23 @@ type AssistantChunkPayload struct {
 	Text string `json:"text"`
 }
 
+// UsagePayload carries cumulative LLM token usage for one user.intent turn
+// — summed across every translator stage (tool-call legs included) so the
+// Mobile Control Hub can render a running 'Session Cost' ticker without
+// double-counting.
+type UsagePayload struct {
+	PromptTokens     int64 `json:"prompt_tokens"`
+	CandidatesTokens int64 `json:"candidates_tokens"`
+	TotalTokens      int64 `json:"total_tokens"`
+}
+
 // AssistantMessagePayload is the terminal frame for one user.intent turn.
 // Text may be empty when the model finished a tool-call-only turn.
 type AssistantMessagePayload struct {
-	Text         string `json:"text,omitempty"`
-	FinishReason string `json:"finish_reason,omitempty"` // "stop"|"tool_calls"|"length"|"safety"|"error"
-	Error        string `json:"error,omitempty"`         // set when FinishReason=="error"
+	Text         string        `json:"text,omitempty"`
+	FinishReason string        `json:"finish_reason,omitempty"` // "stop"|"tool_calls"|"length"|"safety"|"error"
+	Error        string        `json:"error,omitempty"`         // set when FinishReason=="error"
+	Usage        *UsagePayload `json:"usage,omitempty"`         // omitted on error frames and when the translator reported nothing
 }
 
 // ToolApprovalRequestPayload is sent S→C when the middleware needs human

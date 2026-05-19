@@ -17,6 +17,7 @@ export function SettingsScreen() {
   const lastEventId = useStore((s) => s.lastEventId);
   const lastError = useStore((s) => s.lastError);
   const token = useStore((s) => s.token);
+  const sessionTokens = useStore((s) => s.sessionTokens);
   const clearCredentials = useStore((s) => s.clearCredentials);
   const resetLocal = useStore((s) => s.reset);
 
@@ -76,6 +77,13 @@ export function SettingsScreen() {
       <Row label="Connection" value={wsStatus} />
       <Row label="Last event ID" value={lastEventId ?? '—'} />
       <Row label="Outbox pending" value={String(outboxLen)} />
+
+      <View style={styles.section}>
+        <Text style={styles.sectionTitle}>Session cost</Text>
+        <Row label="Tokens (prompt)" value={sessionTokens.prompt.toLocaleString()} />
+        <Row label="Tokens (candidates)" value={sessionTokens.candidates.toLocaleString()} />
+        <Row label="Tokens (total)" value={sessionTokens.total.toLocaleString()} />
+      </View>
 
       {lastError ? <ErrorRow message={lastError.message} code={lastError.code} /> : null}
 

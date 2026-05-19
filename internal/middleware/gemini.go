@@ -112,12 +112,22 @@ func (g *GeminiTranslator) configFor(in TurnInput) *genai.GenerateContentConfig 
 func (s *geminiTurn) run(ctx context.Context, out chan<- AssistantEvent) {
 	defer close(out)
 	stream := s.t.client.Models.GenerateContentStream(ctx, s.t.model, s.contents, s.cfg)
+	// lastUsage holds the most recent non-nil UsageMetadata seen on this
+	// stage — the SDK populates it on the final chunk, but we accept any
+	// chunk's reading to stay robust against future SDK changes.
+	var lastUsage *genai.GenerateContentResponseUsageMetadata
 	for resp, err := range stream {
 		if err != nil {
 			out <- AssistantEvent{Err: err}
 			return
 		}
-		if resp == nil || len(resp.Candidates) == 0 {
+		if resp == nil {
+			continue
+		}
+		if resp.UsageMetadata != nil {
+			lastUsage = resp.UsageMetadata
+		}
+		if len(resp.Candidates) == 0 {
 			continue
 		}
 		cand := resp.Candidates[0]
@@ -141,6 +151,17 @@ func (s *geminiTurn) run(ctx context.Context, out chan<- AssistantEvent) {
 						Role:  "model",
 						Parts: []*genai.Part{{FunctionCall: part.FunctionCall}},
 					})
+					// Tool-call stages don't emit a FinalMessage; flush any
+					// usage we observed on chunks up to this point BEFORE
+					// the ToolCall, because the handler treats ToolCall as
+					// the stage-end signal and drains anything that follows.
+					if u := usageFrom(lastUsage); u != nil {
+						select {
+						case out <- AssistantEvent{Usage: u}:
+						case <-ctx.Done():
+							return
+						}
+					}
 					select {
 					case out <- AssistantEvent{ToolCall: &ToolCall{
 						ID:   callID,
@@ -158,6 +179,7 @@ func (s *geminiTurn) run(ctx context.Context, out chan<- AssistantEvent) {
 			select {
 			case out <- AssistantEvent{FinalMessage: &FinalMessage{
 				FinishReason: string(cand.FinishReason),
+				Usage:        usageValue(lastUsage),
 			}}:
 			case <-ctx.Done():
 			}
@@ -167,8 +189,34 @@ func (s *geminiTurn) run(ctx context.Context, out chan<- AssistantEvent) {
 	// Stream ended without an explicit FinishReason. Synthesize a terminal
 	// frame so the handler always closes the turn cleanly.
 	select {
-	case out <- AssistantEvent{FinalMessage: &FinalMessage{FinishReason: "stop"}}:
+	case out <- AssistantEvent{FinalMessage: &FinalMessage{
+		FinishReason: "stop",
+		Usage:        usageValue(lastUsage),
+	}}:
 	case <-ctx.Done():
+	}
+}
+
+// usageFrom converts an SDK UsageMetadata to the translator's Usage pointer.
+// Returns nil when the SDK reported nothing, so callers can skip emission.
+func usageFrom(u *genai.GenerateContentResponseUsageMetadata) *Usage {
+	if u == nil {
+		return nil
+	}
+	v := usageValue(u)
+	return &v
+}
+
+// usageValue converts an SDK UsageMetadata to the translator's Usage value.
+// Returns the zero value when u is nil.
+func usageValue(u *genai.GenerateContentResponseUsageMetadata) Usage {
+	if u == nil {
+		return Usage{}
+	}
+	return Usage{
+		PromptTokens:     int64(u.PromptTokenCount),
+		CandidatesTokens: int64(u.CandidatesTokenCount),
+		TotalTokens:      int64(u.TotalTokenCount),
 	}
 }
 

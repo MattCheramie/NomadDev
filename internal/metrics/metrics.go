@@ -73,6 +73,18 @@ var (
 		Help:    "Wall-clock duration of one user.intent turn, including approval round-trips and tool execs.",
 		Buckets: prometheus.ExponentialBuckets(0.05, 2, 12), // 50ms → ~3m
 	})
+
+	// LLMTokensTotal tracks token usage reported by the translator on every
+	// stage. type ∈ {"prompt", "candidates", "total"} — total ≈ prompt +
+	// candidates, but we expose all three so dashboards and budget alerts
+	// can read whichever they need without doing PromQL arithmetic. The
+	// counter is incremented at consume-time (not at assistant.message
+	// emit-time) so Phase 13 auto-retry stages that never reach the client
+	// are still reflected in the spend.
+	LLMTokensTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "nomaddev_llm_tokens_total",
+		Help: "Cumulative LLM token usage reported by the translator, labeled by type (prompt|candidates|total).",
+	}, []string{"type"})
 )
 
 // GitHub MCP backend metrics. outcome ∈ {"ok", "error", "denied", "timeout",
@@ -124,6 +136,7 @@ func init() {
 		SandboxRunSeconds,
 		MiddlewareTurnsTotal,
 		MiddlewareTurnSeconds,
+		LLMTokensTotal,
 		GitHubCallsTotal,
 		GitHubCallSeconds,
 		GitHubRateLimitRetriesTotal,
