@@ -323,7 +323,7 @@ func TestFSOps_ApplyCodePatch_HappyPath(t *testing.T) {
 	if exit.ExitCode != 0 {
 		t.Fatalf("exit = %+v", exit)
 	}
-	var r applyCodePatchResult
+	var r ApplyCodePatchResult
 	if err := json.Unmarshal(out.Bytes(), &r); err != nil {
 		t.Fatalf("json: %v", err)
 	}
@@ -436,6 +436,63 @@ func TestFSOps_ApplyCodePatch_RejectMissingFile(t *testing.T) {
 	_, exit := collect(t, ch)
 	if !errors.Is(exit.Err, sandbox.ErrBadRequest) {
 		t.Fatalf("expected ErrBadRequest, got %v", exit.Err)
+	}
+}
+
+func TestFSOps_ApplyCodePatchWithSnapshot_RoundTrip(t *testing.T) {
+	e, dir := newEngine(t)
+	original := "alpha\nbeta gamma\ndelta\n"
+	target := filepath.Join(dir, "x.txt")
+	if err := os.WriteFile(target, []byte(original), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	snapshot, resolved, result, err := e.ApplyCodePatchWithSnapshot(context.Background(), map[string]any{
+		"file_path":      "x.txt",
+		"search_string":  "beta gamma",
+		"replace_string": "BETA GAMMA",
+	}, Limits{})
+	if err != nil {
+		t.Fatalf("ApplyCodePatchWithSnapshot: %v", err)
+	}
+	if string(snapshot) != original {
+		t.Errorf("snapshot = %q, want %q", snapshot, original)
+	}
+	if result.LineNumber != 2 {
+		t.Errorf("line number = %d, want 2", result.LineNumber)
+	}
+	if !strings.HasPrefix(resolved, dir) {
+		t.Errorf("resolved path %q is not under %q", resolved, dir)
+	}
+	got, _ := os.ReadFile(target)
+	if string(got) != "alpha\nBETA GAMMA\ndelta\n" {
+		t.Errorf("post-apply contents = %q", got)
+	}
+	// Restore must put the file back byte-for-byte.
+	if err := e.RestoreFile(context.Background(), resolved, snapshot); err != nil {
+		t.Fatalf("RestoreFile: %v", err)
+	}
+	got, _ = os.ReadFile(target)
+	if string(got) != original {
+		t.Errorf("post-restore contents = %q, want %q", got, original)
+	}
+}
+
+func TestFSOps_RestoreFile_RejectOutsideRoot(t *testing.T) {
+	e, _ := newEngine(t)
+	// A second tempdir, used to forge a path outside the engine's root.
+	outside := t.TempDir()
+	outsideFile := filepath.Join(outside, "evil.txt")
+	if err := os.WriteFile(outsideFile, []byte("intact"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	err := e.RestoreFile(context.Background(), outsideFile, []byte("hijacked"))
+	if !errors.Is(err, ErrPathEscape) {
+		t.Fatalf("want ErrPathEscape, got %v", err)
+	}
+	// File outside the engine's scope must not have been touched.
+	got, _ := os.ReadFile(outsideFile)
+	if string(got) != "intact" {
+		t.Errorf("RestoreFile mutated out-of-scope file: %q", got)
 	}
 }
 

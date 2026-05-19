@@ -138,6 +138,39 @@ test('renders the diff preview when apply_code_patch supplies one', () => {
   expect(queryByText('+BETA')).not.toBeNull();
 });
 
+test('renders the verify_command preview when apply_code_patch supplies one', () => {
+  const unified = `--- a/x.go\n+++ b/x.go\n@@ -1,3 +1,3 @@\n alpha\n-beta\n+BETA\n gamma\n`;
+  const { getByLabelText, queryByLabelText } = render(
+    <ApprovalSheet
+      request={makeRequest({
+        tool: 'apply_code_patch',
+        args: { file_path: 'x.go', search_string: 'beta', replace_string: 'BETA', verify_command: 'go build ./...' },
+        preview: { path: 'x.go', line_number: 2, unified_diff: unified, verify_command: 'go build ./...' },
+      })}
+      onApprove={() => undefined}
+      onDeny={() => undefined}
+    />,
+  );
+  // The verify-command row must surface alongside the diff so the operator
+  // sees what will run AND knows a non-zero exit rolls the patch back.
+  const verifyBlock = getByLabelText('verify-command');
+  expect(verifyBlock.props.children).toBe('go build ./...');
+  // Plain apply_code_patch preview without verify_command must NOT render the row.
+  const plain = render(
+    <ApprovalSheet
+      request={makeRequest({
+        tool: 'apply_code_patch',
+        args: { file_path: 'x.go', search_string: 'beta', replace_string: 'BETA' },
+        preview: { path: 'x.go', line_number: 2, unified_diff: unified },
+      })}
+      onApprove={() => undefined}
+      onDeny={() => undefined}
+    />,
+  );
+  expect(plain.queryByLabelText('verify-command')).toBeNull();
+  expect(queryByLabelText('verify-command')).not.toBeNull();
+});
+
 test('omits the diff preview block when no preview is attached', () => {
   const { queryByLabelText } = render(
     <ApprovalSheet request={makeRequest()} onApprove={() => undefined} onDeny={() => undefined} />,

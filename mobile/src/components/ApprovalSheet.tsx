@@ -61,6 +61,16 @@ export function ApprovalSheet({
               <View style={styles.code} accessibilityLabel="diff-preview">
                 <DiffLines text={request.preview.unified_diff} />
               </View>
+              {request.preview.verify_command ? (
+                <>
+                  <Text style={styles.label}>
+                    Verify after apply <Text style={styles.verifyHint}>rollback on non-zero exit</Text>
+                  </Text>
+                  <Text style={styles.code} selectable accessibilityLabel="verify-command">
+                    {request.preview.verify_command}
+                  </Text>
+                </>
+              ) : null}
             </>
           ) : null}
           <Text style={styles.label}>Args</Text>
@@ -182,6 +192,9 @@ const styles = StyleSheet.create({
   },
   previewLoc: {
     color: '#7ee787', fontFamily: 'Menlo, Consolas, monospace' as any, fontSize: 12,
+  },
+  verifyHint: {
+    color: '#fbbf24', fontSize: 11, fontFamily: 'Menlo, Consolas, monospace' as any,
   },
   diffLine: {
     fontFamily: 'Menlo, Consolas, monospace' as any, fontSize: 12,

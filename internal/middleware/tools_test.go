@@ -141,6 +141,41 @@ func TestValidate_ApplyCodePatch_RejectNonStringReplace(t *testing.T) {
 	}
 }
 
+func TestValidate_ApplyCodePatch_VerifyCommand_OK(t *testing.T) {
+	if err := Validate(ToolApplyCodePatch, map[string]any{
+		"file_path":      "x.go",
+		"search_string":  "old",
+		"replace_string": "new",
+		"verify_command": "go build ./...",
+	}); err != nil {
+		t.Fatalf("Validate with verify_command: %v", err)
+	}
+}
+
+func TestValidate_ApplyCodePatch_VerifyCommand_RejectNonString(t *testing.T) {
+	err := Validate(ToolApplyCodePatch, map[string]any{
+		"file_path":      "x.go",
+		"search_string":  "old",
+		"replace_string": "new",
+		"verify_command": 42,
+	})
+	if !errors.Is(err, ErrToolValidation) {
+		t.Fatalf("want ErrToolValidation, got %v", err)
+	}
+}
+
+func TestValidate_ApplyCodePatch_VerifyCommand_RejectOversize(t *testing.T) {
+	err := Validate(ToolApplyCodePatch, map[string]any{
+		"file_path":      "x.go",
+		"search_string":  "old",
+		"replace_string": "new",
+		"verify_command": strings.Repeat("a", 8*1024+1),
+	})
+	if !errors.Is(err, ErrToolValidation) {
+		t.Fatalf("want ErrToolValidation, got %v", err)
+	}
+}
+
 func TestValidate_SearchSyntax_OK(t *testing.T) {
 	cases := []map[string]any{
 		{"pattern": "fn $F($_: context.Context)"},

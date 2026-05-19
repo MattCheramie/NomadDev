@@ -96,6 +96,10 @@ export type ApprovalRequest = {
     path: string;
     line_number: number;
     unified_diff: string;
+    // Phase 14: when apply_code_patch.args.verify_command is set, the server
+    // copies it into the preview so the operator sees what will run after
+    // the patch lands — and that a non-zero exit will roll back the file.
+    verify_command?: string;
   };
 };
 

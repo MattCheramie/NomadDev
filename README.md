@@ -1022,6 +1022,59 @@ for the architecture and
 [`docs/events.md`](./docs/events.md#automated-error-recovery) for the
 wire-level sequence diagram.
 
+### Phase 14: `apply_code_patch` verification hook — done
+*Closes the "the LLM applied a patch that breaks the build, and now the
+next tool call is fighting a corrupted workspace" gap. `apply_code_patch`
+gains an optional `verify_command` that runs in the ephemeral sandbox
+immediately after the write; a non-zero exit rolls the file back to its
+pre-edit contents and feeds the verify command's stderr into the Phase 13
+auto-recovery loop so the LLM authors a fix on the next stage.*
+
+- [x] **Schema + validation.** `verify_command` (optional string, ≤ 8 KiB)
+  added to the `apply_code_patch` tool spec in
+  [`internal/middleware/tools.go`](./internal/middleware/tools.go).
+  `Validate(ToolApplyCodePatch, …)` type-checks and length-caps it.
+- [x] **Snapshot-aware fsops.** New
+  `Engine.ApplyCodePatchWithSnapshot` and `Engine.RestoreFile` in
+  [`internal/fsops/run.go`](./internal/fsops/run.go) return the pre-edit
+  file bytes alongside the apply result and provide a scope-checked
+  restore primitive. `applyCodePatchPlan` carries the original bytes so
+  the snapshot is captured during the same read that drives the
+  TOCTOU-closing dry-run — no extra disk hit.
+- [x] **Composition path.** `CompositeDispatcher.applyCodePatchWithVerify`
+  in [`internal/middleware/dispatcher.go`](./internal/middleware/dispatcher.go)
+  applies the patch, dispatches `verify_command` as an `execute_script`
+  run in the same workspace, streams its chunks through the same
+  channel the caller already consumes, and on any non-zero exit /
+  runner failure restores the file and appends a `rolled back` stderr
+  notification. The terminal frame carries the verify command's exit
+  code with no `SandboxErr*` code, so `ShouldAutoRetry` treats it as
+  retryable and the recovery loop feeds the verify stderr back to the
+  translator.
+- [x] **Approval surfacing.** `Server.buildApprovalPreview` in
+  [`internal/wsserver/sandbox.go`](./internal/wsserver/sandbox.go)
+  copies `verify_command` into the approval `preview` payload alongside
+  the diff so the operator sees what will run AND that a non-zero exit
+  will roll the patch back. The mobile ApprovalSheet renders a new
+  "Verify after apply" row labeled "rollback on non-zero exit"
+  ([`mobile/src/components/ApprovalSheet.tsx`](./mobile/src/components/ApprovalSheet.tsx)).
+- [x] **Test coverage.** Unit tests in
+  [`internal/middleware/tools_test.go`](./internal/middleware/tools_test.go)
+  pin schema validation; round-trip and out-of-root tests in
+  [`internal/fsops/engine_test.go`](./internal/fsops/engine_test.go)
+  exercise `ApplyCodePatchWithSnapshot` and `RestoreFile`; end-to-end
+  composition tests in
+  [`internal/middleware/dispatcher_apply_verify_test.go`](./internal/middleware/dispatcher_apply_verify_test.go)
+  cover verify-success, verify-failure-rollback,
+  dispatch-error-rollback, missing-sandbox fast-fail, and the
+  empty-string fallback to the plain fsops path. The mobile
+  ApprovalSheet test asserts the verify row renders only when the
+  preview carries one.
+
+See
+[`docs/middleware.md`](./docs/middleware.md#verify_command--apply-verify-rollback-on-failure-phase-14)
+for the dispatcher composition walkthrough.
+
 ---
 
 ## 🚀 Running the orchestrator
