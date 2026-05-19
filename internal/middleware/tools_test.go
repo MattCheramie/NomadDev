@@ -8,14 +8,17 @@ import (
 
 func TestTools_DefaultTools_AllEntries(t *testing.T) {
 	specs := DefaultTools()
-	if len(specs) != 5 {
-		t.Fatalf("want 5 tools, got %d", len(specs))
+	if len(specs) != 6 {
+		t.Fatalf("want 6 tools, got %d", len(specs))
 	}
 	seen := map[string]bool{}
 	for _, s := range specs {
 		seen[s.Name] = true
 	}
-	for _, want := range []string{ToolExecuteScript, ToolReadFile, ToolListDir, ToolWritePatch, ToolApplyCodePatch} {
+	for _, want := range []string{
+		ToolExecuteScript, ToolReadFile, ToolListDir,
+		ToolWritePatch, ToolApplyCodePatch, ToolSearchSyntax,
+	} {
 		if !seen[want] {
 			t.Errorf("DefaultTools missing %q", want)
 		}
@@ -135,6 +138,74 @@ func TestValidate_ApplyCodePatch_RejectNonStringReplace(t *testing.T) {
 	})
 	if !errors.Is(err, ErrToolValidation) {
 		t.Fatalf("want ErrToolValidation, got %v", err)
+	}
+}
+
+func TestValidate_SearchSyntax_OK(t *testing.T) {
+	cases := []map[string]any{
+		{"pattern": "fn $F($_: context.Context)"},
+		{"pattern": "$X", "lang": "go"},
+		{"pattern": "$X", "lang": "go", "path": "internal/middleware"},
+		{"pattern": "$X", "max_matches": 50},
+		{"pattern": "$X", "max_matches": float64(50)}, // JSON-decoded shape
+		{"pattern": "$X", "globs": []any{"*.go", "!*_test.go"}},
+		{"pattern": "$X", "globs": []string{"*.go"}},
+	}
+	for i, args := range cases {
+		if err := Validate(ToolSearchSyntax, args); err != nil {
+			t.Errorf("case %d: Validate: %v", i, err)
+		}
+	}
+}
+
+func TestValidate_SearchSyntax_RejectMissingPattern(t *testing.T) {
+	err := Validate(ToolSearchSyntax, map[string]any{"lang": "go"})
+	if !errors.Is(err, ErrToolValidation) {
+		t.Fatalf("want ErrToolValidation, got %v", err)
+	}
+}
+
+func TestValidate_SearchSyntax_RejectOversizePattern(t *testing.T) {
+	err := Validate(ToolSearchSyntax, map[string]any{"pattern": strings.Repeat("a", 8*1024+1)})
+	if !errors.Is(err, ErrToolValidation) {
+		t.Fatalf("want ErrToolValidation, got %v", err)
+	}
+}
+
+func TestValidate_SearchSyntax_RejectAbsolutePath(t *testing.T) {
+	err := Validate(ToolSearchSyntax, map[string]any{"pattern": "$X", "path": "/etc/passwd"})
+	if !errors.Is(err, ErrToolValidation) {
+		t.Fatalf("want ErrToolValidation, got %v", err)
+	}
+}
+
+func TestValidate_SearchSyntax_RejectDotDot(t *testing.T) {
+	for _, p := range []string{"..", "../etc", "sub/../../etc"} {
+		err := Validate(ToolSearchSyntax, map[string]any{"pattern": "$X", "path": p})
+		if !errors.Is(err, ErrToolValidation) {
+			t.Errorf("path %q: want ErrToolValidation, got %v", p, err)
+		}
+	}
+}
+
+func TestValidate_SearchSyntax_RejectBadLang(t *testing.T) {
+	for _, l := range []string{"go-1.21", "py3", "lang with space"} {
+		err := Validate(ToolSearchSyntax, map[string]any{"pattern": "$X", "lang": l})
+		if !errors.Is(err, ErrToolValidation) {
+			t.Errorf("lang %q: want ErrToolValidation, got %v", l, err)
+		}
+	}
+}
+
+func TestValidate_SearchSyntax_RejectBadMaxMatches(t *testing.T) {
+	for i, args := range []map[string]any{
+		{"pattern": "$X", "max_matches": 0},
+		{"pattern": "$X", "max_matches": 1001},
+		{"pattern": "$X", "max_matches": "many"},
+	} {
+		if err := Validate(ToolSearchSyntax, args); !errors.Is(err, ErrToolValidation) {
+			t.Errorf("case %d: want ErrToolValidation, got %v", i, err)
+		}
 	}
 }
 

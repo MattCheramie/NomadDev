@@ -41,8 +41,9 @@ runner (`internal/sandbox.Runner`), wired in at
 `internal/wsserver/sandbox.go`. Phase 4 plugs Gemini between the client and
 the runner: `internal/middleware` translates `user.intent` envelopes into
 typed tool calls and dispatches them through either
-`sandbox.Runner` (for `execute_script`) or `internal/fsops` (for
-`read_file` / `list_dir` / `write_patch`). Persistent LLM history lives in
+`sandbox.Runner` (for `execute_script` and `search_syntax`) or
+`internal/fsops` (for `read_file` / `list_dir` / `write_patch` /
+`apply_code_patch`). Persistent LLM history lives in
 `internal/history` (SQLite by default) — a separate concern from the
 session ring buffer in `internal/session`, which handles wire-level
 reconnect replay.

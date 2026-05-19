@@ -11,6 +11,12 @@
 #                           to install a second binary outside the image.
 # Stage 4 ("final"):        distroless/static — both binaries +
 #                           /var/lib/nomaddev. No libc, no /etc, no shell.
+# Stage 5 ("sandbox"):      alpine + ast-grep — the worker image the
+#                           orchestrator spawns per tool call. Built and
+#                           tagged separately:
+#                             docker build --target sandbox \
+#                               -t nomaddev/sandbox:alpine-3.20-sg .
+#                           then point NOMADDEV_SANDBOX_IMAGE at the tag.
 #
 # modernc.org/sqlite is pure-Go, so CGO_ENABLED=0 produces a fully static
 # binary that runs on scratch / distroless.
@@ -80,3 +86,22 @@ ENV NOMADDEV_SESSION_PATH=/var/lib/nomaddev/sessions.db \
     NOMADDEV_SANDBOX_WORKSPACE_DIR=/var/lib/nomaddev/work
 
 ENTRYPOINT ["/usr/local/bin/orchestrator"]
+
+# ---------- Stage 5: sandbox worker image ---------------------------------
+# Ephemeral worker the orchestrator spawns per tool call. Pre-installs
+# ast-grep so the `search_syntax` tool can run with
+# NOMADDEV_SANDBOX_NETWORK=none (the default) — runtime apk-add isn't an
+# option when the sandbox has no network.
+#
+# `bash` is needed by `execute_script` (default shell). `ast-grep`
+# provides both the `sg` and `ast-grep` binaries.
+#
+# Build + tag:
+#   docker build --target sandbox -t nomaddev/sandbox:alpine-3.20-sg .
+# Point the orchestrator at it:
+#   NOMADDEV_SANDBOX_IMAGE=nomaddev/sandbox:alpine-3.20-sg
+FROM alpine:3.20 AS sandbox
+RUN apk add --no-cache ast-grep bash ca-certificates
+WORKDIR /work
+# Smoke-check the tool is on PATH and prints a version.
+RUN sg --version

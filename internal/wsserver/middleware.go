@@ -409,9 +409,10 @@ func (s *Server) runToolCall(
 	started := time.Now()
 	dispatchCtx := githubmcp.WithUserSub(ctx, client.Sub)
 	ch, err := s.mw.Dispatcher.Dispatch(dispatchCtx, call, middleware.DispatchOptions{
-		Timeout:       s.mw.Config.DefaultTimeout,
-		SandboxLimits: s.mw.Config.SandboxLimits,
-		SessionID:     client.SID,
+		Timeout:        s.mw.Config.DefaultTimeout,
+		SandboxLimits:  s.mw.Config.SandboxLimits,
+		SessionID:      client.SID,
+		MaxResultBytes: s.mw.Config.MaxResultBytes,
 	})
 	if err != nil {
 		code := event.SandboxErrInternal

@@ -82,9 +82,10 @@ without it.
 | `list_dir` | fsops | `{path, depth?}` | auto-granted |
 | `write_patch` | fsops | `{path, content, mode?, create?}` | required |
 | `apply_code_patch` | fsops | `{file_path, search_string, replace_string}` | required (with dry-run diff preview in the ApprovalSheet) |
+| `search_syntax` | sandbox.Runner (ast-grep `sg` in container) | `{pattern, lang?, path?, max_matches?, globs?}` | auto-granted (read-only) |
 | `github_*` (~75 tools) | githubmcp (subprocess) | per-tool schema from upstream MCP server | required for every mutator (`create_`, `update_`, `delete_`, `merge_`, `push_`, …); read-only ops auto-granted |
 
-The five base tools have schemas declared in `internal/middleware/tools.go`;
+The six base tools have schemas declared in `internal/middleware/tools.go`;
 `github_*` schemas are fetched at orchestrator startup from the upstream
 `github-mcp-server` binary and converted by `internal/githubmcp/schema.go`.
 All schemas are SDK-agnostic — Gemini-specific conversion lives in
@@ -107,6 +108,63 @@ knows about `execute_script`.
 `internal/fsops.Engine` enforces path safety: no absolute paths, no `..`
 components (rejected up-front before any normalization), and symlinks must
 resolve inside the workspace root.
+
+### `search_syntax` — structural code search via ast-grep
+
+The orchestrator's read-only tools used to be limited to `read_file` and
+`list_dir`; anything that resembled a *search* fell back to
+`execute_script` wrapping `grep`/`rg`, which made every search round-trip
+approval-gated and pushed the model into authoring brittle regex. Phase
+12.x replaces that with `search_syntax`, a schema-typed tool that
+invokes [ast-grep](https://ast-grep.github.io/) (`sg`) inside the
+sandbox worker and returns a flat list of matches.
+
+```jsonc
+{
+  "pattern": "fn $F($_: context.Context)",  // ast-grep meta-vars: $X / $$$X / $_
+  "lang": "go",                              // optional language hint
+  "path": "internal/middleware",             // optional sub-tree (relative)
+  "max_matches": 100,                        // soft cap, hard ceiling 1000
+  "globs": ["*.go", "!*_test.go"]            // optional glob filters
+}
+```
+
+Response shape (also defined at
+[`internal/sandbox/searchsyntax.go`](../internal/sandbox/searchsyntax.go)):
+
+```jsonc
+{
+  "matches": [
+    {"file": "internal/middleware/dispatcher.go",
+     "line": 65, "column": 4, "end_line": 65, "end_column": 70,
+     "snippet": "func (c *CompositeDispatcher) Dispatch(ctx context.Context, …)"}
+  ],
+  "total_matches": 12,
+  "returned_matches": 12,
+  "truncated": false,
+  // When the envelope exceeds NOMADDEV_GITHUB_MAX_RESULT_BYTES the reshape
+  // drops trailing matches and surfaces:
+  //   "truncated": true,
+  //   "original_bytes": 524288,
+  //   "preview_bytes": 65324
+}
+```
+
+Three things make the tool safe to leave un-gated:
+
+1. **Read-only.** The sandbox container has no write side-effects on the
+   bind-mount under `sg run`; the dispatcher does not route any mutating
+   sg subcommand (`sg rewrite` etc. are not exposed).
+2. **Bounded.** The middleware validator enforces `pattern ≤ 8 KiB`,
+   `max_matches ≤ 1000`, no `..` in `path`, alpha-only `lang`. The
+   sandbox runner caps captured stdout at 16 MiB before reshape, and the
+   envelope is truncated to `NOMADDEV_GITHUB_MAX_RESULT_BYTES` before it
+   hits the model.
+3. **Container-isolated.** Same runtime / image policy as
+   `execute_script`: distroless/alpine-based sandbox image, no network,
+   read-only rootfs, gVisor when available. `sg` lives in the image
+   (pre-baked via the Dockerfile `sandbox` target); the orchestrator
+   itself never invokes `sg` on the host.
 
 ### `apply_code_patch` — surgical edit with a preview-gated approval
 

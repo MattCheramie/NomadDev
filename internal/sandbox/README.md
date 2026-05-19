@@ -13,11 +13,14 @@ type Runner interface {
 }
 
 type ExecRequest struct {
-    Tool       string         // "execute_script"
-    Args       map[string]any // {shell: "bash"|"sh", script: "..."}
-    WorkingDir string
-    Timeout    time.Duration
-    Limits     ResourceLimits
+    Tool           string         // "execute_script" | "search_syntax"
+    Args           map[string]any // execute_script: {shell, script}
+                                  // search_syntax:  {pattern, lang?, path?, max_matches?, globs?}
+    WorkingDir     string
+    Timeout        time.Duration
+    Limits         ResourceLimits
+    SessionID      string         // scopes the bind-mount under PerSessionWorkspace
+    MaxResultBytes int            // search_syntax envelope cap; 0 = unlimited
 }
 
 type ExecChunk struct {

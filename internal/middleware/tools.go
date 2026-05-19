@@ -7,13 +7,15 @@ import (
 )
 
 // Tool name constants. The middleware speaks these; the sandbox runner
-// recognizes ToolExecuteScript; fsops recognizes the remaining three.
+// recognizes ToolExecuteScript and ToolSearchSyntax; fsops recognizes
+// the remaining three.
 const (
 	ToolExecuteScript  = "execute_script"
 	ToolReadFile       = "read_file"
 	ToolListDir        = "list_dir"
 	ToolWritePatch     = "write_patch"
 	ToolApplyCodePatch = "apply_code_patch"
+	ToolSearchSyntax   = "search_syntax"
 )
 
 // ErrToolValidation is returned by Validate when the args don't satisfy a
@@ -115,6 +117,25 @@ func DefaultTools() []ToolSpec {
 				Required: []string{"file_path", "search_string", "replace_string"},
 			},
 		},
+		{
+			Name: ToolSearchSyntax,
+			Description: "Run a structural ast-grep query against the workspace. " +
+				"Use AST patterns (e.g. 'fn $F($_: context.Context)') instead of regex; " +
+				"meta-variables: $VAR (single node), $$$VAR (multi-node), $_ (anonymous). " +
+				"Returns matches with file, line, column, and a code snippet. " +
+				"Read-only; does not require approval.",
+			Parameters: Schema{
+				Type: "object",
+				Properties: map[string]*Schema{
+					"pattern":     {Type: "string", Description: "ast-grep pattern"},
+					"lang":        {Type: "string", Description: "language hint (go, ts, tsx, js, py, rs, java, …). Inferred from extensions when omitted."},
+					"path":        {Type: "string", Description: "subdirectory to search relative to the workspace root; defaults to the whole tree"},
+					"max_matches": {Type: "integer", Description: "soft cap on matches returned (default 100, max 1000)"},
+					"globs":       {Type: "array", Items: &Schema{Type: "string"}, Description: "optional glob filters, forwarded as --globs"},
+				},
+				Required: []string{"pattern"},
+			},
+		},
 	}
 }
 
@@ -123,12 +144,12 @@ func DefaultTools() []ToolSpec {
 // them without importing the backend — avoids a build-tag dependency cycle.
 const GitHubToolPrefix = "github_"
 
-// KnownTool reports whether name is one of the four registered tool names or
+// KnownTool reports whether name is one of the registered base tool names or
 // a GitHub MCP tool. The GitHub backend's per-tool schemas are validated by
 // the upstream server at dispatch time, so this layer only does a prefix check.
 func KnownTool(name string) bool {
 	switch name {
-	case ToolExecuteScript, ToolReadFile, ToolListDir, ToolWritePatch, ToolApplyCodePatch:
+	case ToolExecuteScript, ToolReadFile, ToolListDir, ToolWritePatch, ToolApplyCodePatch, ToolSearchSyntax:
 		return true
 	}
 	return strings.HasPrefix(name, GitHubToolPrefix)
@@ -136,7 +157,8 @@ func KnownTool(name string) bool {
 
 // Validate performs lightweight per-tool argument validation before the
 // dispatch layer is involved. Heavier checks (path safety for fsops, script
-// size for the sandbox) remain in those packages. GitHub MCP tools delegate
+// size for the sandbox, sg-argv shape for search_syntax) remain in those
+// packages. GitHub MCP tools delegate
 // arg validation to the upstream server, so Validate returns nil for any
 // github_* name — bad args surface as a tool-result error after dispatch.
 func Validate(tool string, args map[string]any) error {
@@ -151,6 +173,8 @@ func Validate(tool string, args map[string]any) error {
 		return validateWritePatch(args)
 	case ToolApplyCodePatch:
 		return validateApplyCodePatch(args)
+	case ToolSearchSyntax:
+		return validateSearchSyntax(args)
 	}
 	if strings.HasPrefix(tool, GitHubToolPrefix) {
 		return nil
@@ -213,6 +237,86 @@ func validateWritePatch(args map[string]any) error {
 		case "", "overwrite", "append":
 		default:
 			return fmt.Errorf("%w: mode must be 'overwrite' or 'append'", ErrToolValidation)
+		}
+	}
+	return nil
+}
+
+func validateSearchSyntax(args map[string]any) error {
+	pattern, err := reqString(args, "pattern")
+	if err != nil {
+		return err
+	}
+	if len(pattern) > 8*1024 {
+		return fmt.Errorf("%w: pattern exceeds 8 KiB", ErrToolValidation)
+	}
+	if v, ok := args["path"]; ok {
+		s, sok := v.(string)
+		if !sok {
+			return fmt.Errorf("%w: %q must be a string", ErrToolValidation, "path")
+		}
+		if strings.HasPrefix(s, "/") {
+			return fmt.Errorf("%w: %q must be relative to the workspace root", ErrToolValidation, "path")
+		}
+		// Reject any ".." segment up-front so a bad pattern fails before
+		// dispatch. The sandbox-side builder repeats this check
+		// defense-in-depth.
+		if s == ".." || strings.HasPrefix(s, "../") || strings.Contains(s, "/../") {
+			return fmt.Errorf("%w: %q must not contain '..'", ErrToolValidation, "path")
+		}
+	}
+	if v, ok := args["lang"]; ok {
+		s, sok := v.(string)
+		if !sok {
+			return fmt.Errorf("%w: %q must be a string", ErrToolValidation, "lang")
+		}
+		if len(s) > 16 {
+			return fmt.Errorf("%w: lang exceeds 16 chars", ErrToolValidation)
+		}
+		for _, r := range s {
+			if !((r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z')) {
+				return fmt.Errorf("%w: lang must be alphabetic", ErrToolValidation)
+			}
+		}
+	}
+	if v, ok := args["max_matches"]; ok {
+		switch n := v.(type) {
+		case int:
+			if n <= 0 || n > 1000 {
+				return fmt.Errorf("%w: max_matches must be 1..1000", ErrToolValidation)
+			}
+		case int64:
+			if n <= 0 || n > 1000 {
+				return fmt.Errorf("%w: max_matches must be 1..1000", ErrToolValidation)
+			}
+		case float64:
+			if n <= 0 || n > 1000 {
+				return fmt.Errorf("%w: max_matches must be 1..1000", ErrToolValidation)
+			}
+		default:
+			return fmt.Errorf("%w: max_matches must be an integer", ErrToolValidation)
+		}
+	}
+	if v, ok := args["globs"]; ok {
+		switch list := v.(type) {
+		case []any:
+			for _, g := range list {
+				s, sok := g.(string)
+				if !sok {
+					return fmt.Errorf("%w: globs must be a list of strings", ErrToolValidation)
+				}
+				if len(s) > 256 {
+					return fmt.Errorf("%w: a glob exceeds 256 bytes", ErrToolValidation)
+				}
+			}
+		case []string:
+			for _, s := range list {
+				if len(s) > 256 {
+					return fmt.Errorf("%w: a glob exceeds 256 bytes", ErrToolValidation)
+				}
+			}
+		default:
+			return fmt.Errorf("%w: globs must be a list of strings", ErrToolValidation)
 		}
 	}
 	return nil
