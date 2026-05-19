@@ -33,6 +33,11 @@ type DispatchOptions struct {
 	// NOMADDEV_GITHUB_MAX_RESULT_BYTES; 0 = unlimited. Ignored by
 	// execute_script / fsops tools which carry their own per-op caps.
 	MaxResultBytes int
+	// Mode forwards the per-turn UserIntentPayload.Mode. When set to
+	// "audit" Dispatch refuses any base tool IsMutatingBaseTool reports
+	// true for; github_* tools are gated upstream in wsserver since the
+	// destructiveness predicate is wired through Service.
+	Mode string
 }
 
 // ToolDispatcher executes one tool call and streams sandbox.ExecChunk frames
@@ -67,6 +72,9 @@ func NewCompositeDispatcher(r sandbox.Runner, fs *fsops.Engine) *CompositeDispat
 
 // Dispatch implements ToolDispatcher.
 func (c *CompositeDispatcher) Dispatch(ctx context.Context, call ToolCall, opts DispatchOptions) (<-chan sandbox.ExecChunk, error) {
+	if opts.Mode == ModeAudit && IsMutatingBaseTool(call.Tool) {
+		return nil, fmt.Errorf("%w: tool %q is disabled in audit mode", sandbox.ErrBadRequest, call.Tool)
+	}
 	switch call.Tool {
 	case ToolExecuteScript, ToolSearchSyntax:
 		if c.Sandbox == nil {

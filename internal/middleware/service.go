@@ -1,6 +1,7 @@
 package middleware
 
 import (
+	"strings"
 	"time"
 
 	"github.com/mattcheramie/nomaddev/internal/fsops"
@@ -24,8 +25,13 @@ type Service struct {
 	// the wsserver approval pipeline can call PreviewApplyCodePatch before it
 	// builds the tool.approval.request envelope. Optional; nil when the
 	// orchestrator is wired without an fsops backend.
-	FSOps  *fsops.Engine
-	Config RuntimeConfig
+	FSOps *fsops.Engine
+	// IsDestructiveGitHubTool, when non-nil, classifies a github_* tool as
+	// mutating. Wired by NewService from FactoryConfig so the middleware
+	// package can stay free of the githubmcp build tag. Used by audit mode
+	// to filter the per-turn catalogue.
+	IsDestructiveGitHubTool func(name string) bool
+	Config                  RuntimeConfig
 }
 
 // AvailableTools returns the tool catalogue Service was wired with, with a
@@ -39,6 +45,36 @@ func (s *Service) AvailableTools() []ToolSpec {
 		return DefaultTools()
 	}
 	return s.Tools
+}
+
+// IsMutatingTool reports whether the named tool mutates host or remote state.
+// Used by audit mode to strip the tool from the per-turn catalogue and to
+// refuse dispatch defense-in-depth.
+func (s *Service) IsMutatingTool(name string) bool {
+	if IsMutatingBaseTool(name) {
+		return true
+	}
+	if strings.HasPrefix(name, GitHubToolPrefix) && s != nil && s.IsDestructiveGitHubTool != nil {
+		return s.IsDestructiveGitHubTool(name)
+	}
+	return false
+}
+
+// AvailableToolsFor returns the tool catalogue filtered for the given per-turn
+// mode. ModeAudit strips every mutating tool; other modes return the
+// unfiltered catalogue.
+func (s *Service) AvailableToolsFor(mode string) []ToolSpec {
+	all := s.AvailableTools()
+	if mode != ModeAudit {
+		return all
+	}
+	out := make([]ToolSpec, 0, len(all))
+	for _, t := range all {
+		if !s.IsMutatingTool(t.Name) {
+			out = append(out, t)
+		}
+	}
+	return out
 }
 
 // RuntimeConfig is the per-turn knob set the handler reads from Service.

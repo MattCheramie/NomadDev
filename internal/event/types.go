@@ -41,6 +41,12 @@ const (
 	UserCommandResetHistory = "reset_history"
 )
 
+// UserIntentMode values for UserIntentPayload.Mode.
+const (
+	UserIntentModeNormal = ""
+	UserIntentModeAudit  = "audit"
+)
+
 // Error codes returned in an EventError payload.
 //
 // Oversized inbound frames are NOT signaled via an EventError payload
@@ -158,6 +164,11 @@ type UserIntentPayload struct {
 	// HistoryHint is an optional per-turn override of the configured history
 	// window length. Zero means "use the server default".
 	HistoryHint int `json:"history_hint,omitempty"`
+	// Mode optionally restricts the turn. "" = normal; "audit" strips every
+	// mutating tool from the catalogue before it reaches the translator and
+	// refuses dispatch of any mutating tool. The assistant is expected to
+	// author a read-only response (typically a markdown report).
+	Mode string `json:"mode,omitempty"`
 }
 
 // AssistantChunkPayload is one streamed slice of model-emitted text.

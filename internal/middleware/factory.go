@@ -106,12 +106,13 @@ func NewService(ctx context.Context, c FactoryConfig) (*Service, error) {
 	}
 
 	return &Service{
-		Translator: tr,
-		Dispatcher: dispatcher,
-		Approver:   approver,
-		History:    c.History,
-		Tools:      tools,
-		FSOps:      c.FSOps,
+		Translator:              tr,
+		Dispatcher:              dispatcher,
+		Approver:                approver,
+		History:                 c.History,
+		Tools:                   tools,
+		FSOps:                   c.FSOps,
+		IsDestructiveGitHubTool: c.IsDestructiveGitHubTool,
 		Config: RuntimeConfig{
 			SystemPrompt:       c.SystemPrompt,
 			WindowTurns:        c.WindowTurns,

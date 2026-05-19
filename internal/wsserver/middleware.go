@@ -78,6 +78,11 @@ func (s *Server) handleUserIntent(
 		s.replyError(sess, client, env.ID, event.CodeBadEnvelope, "missing text")
 		return
 	}
+	if p.Mode != event.UserIntentModeNormal && p.Mode != event.UserIntentModeAudit {
+		s.replyError(sess, client, env.ID, event.CodeBadEnvelope,
+			"unsupported mode: "+p.Mode)
+		return
+	}
 
 	if s.intentSem != nil {
 		select {
@@ -141,12 +146,17 @@ func (s *Server) runIntent(
 		return
 	}
 
+	systemPrompt := s.mw.Config.SystemPrompt
+	if p.Mode == event.UserIntentModeAudit {
+		systemPrompt = appendAuditInstruction(systemPrompt)
+	}
 	in := middleware.TurnInput{
 		SID:          sess.SID,
 		UserText:     p.Text,
 		History:      win,
-		SystemPrompt: s.mw.Config.SystemPrompt,
-		Tools:        s.mw.AvailableTools(),
+		SystemPrompt: systemPrompt,
+		Tools:        s.mw.AvailableToolsFor(p.Mode),
+		Mode:         p.Mode,
 	}
 	eventsCh, resume, err := s.mw.Translator.Stream(ctx, in)
 	if err != nil {
@@ -164,7 +174,7 @@ func (s *Server) runIntent(
 	budget := middleware.NewRetryBudget(s.mw.Config.MaxAutoRetries)
 	seq := 0
 	for {
-		ended, terminal := s.consumeStage(ctx, intentID, &seq, eventsCh, resume, budget, sess, client, logger)
+		ended, terminal := s.consumeStage(ctx, intentID, &seq, eventsCh, resume, budget, p.Mode, sess, client, logger)
 		if terminal != nil {
 			s.emitAssistantMessage(sess, client, intentID, terminal.Text, terminal.FinishReason, "")
 			// Persist the assistant turn (text only — tool turns were
@@ -211,7 +221,7 @@ type stageResult struct {
 func (s *Server) consumeStage(
 	ctx context.Context, intentID string, seq *int,
 	in <-chan middleware.AssistantEvent, resume middleware.ResumeFunc,
-	budget *middleware.RetryBudget,
+	budget *middleware.RetryBudget, mode string,
 	sess *session.Session, client *hub.Client, logger *slog.Logger,
 ) (stageResult, *middleware.FinalMessage) {
 	for ev := range in {
@@ -230,7 +240,7 @@ func (s *Server) consumeStage(
 				}
 			}()
 			call := *ev.ToolCall
-			result, stderrBuf, exitCode, exitMsg, ok := s.runToolCall(ctx, intentID, call, sess, client, logger)
+			result, stderrBuf, exitCode, exitMsg, ok := s.runToolCall(ctx, intentID, call, mode, sess, client, logger)
 			if !ok {
 				// Disconnect or fatal failure mid-tool-call. Return a
 				// synthetic terminal frame so the outer loop closes cleanly.
@@ -302,7 +312,7 @@ func (s *Server) consumeStage(
 // consumeStage so it can build a SystemErrorReportPayload without
 // re-parsing ToolResult.Output.
 func (s *Server) runToolCall(
-	ctx context.Context, intentID string, call middleware.ToolCall,
+	ctx context.Context, intentID string, call middleware.ToolCall, mode string,
 	sess *session.Session, client *hub.Client, logger *slog.Logger,
 ) (middleware.ToolResult, []byte, int, string, bool) {
 	// 1. Mint the orchestrator-side command.request envelope. We send it
@@ -346,6 +356,19 @@ func (s *Server) runToolCall(
 		recordGitHubCall(call.Tool, event.SandboxErrBadRequest, time.Time{})
 		return middleware.ToolResult{CallID: call.ID, Tool: call.Tool, Error: event.SandboxErrBadRequest},
 			nil, -1, vErr.Error(), true
+	}
+
+	// 2a. Audit-mode safety net. The schema strip in AvailableToolsFor
+	//     should keep mutating tools out of Gemini's catalogue entirely,
+	//     but a hallucinated tool name or a future bug in the strip path
+	//     must not be enough to fire a mutation.
+	if mode == event.UserIntentModeAudit && s.mw.IsMutatingTool(call.Tool) {
+		msg := "tool " + call.Tool + " is disabled in audit mode"
+		s.emitResult(sess, client, cmdEnv.ID, time.Now(), -1, event.SandboxErrUnauthorized, msg)
+		_ = s.appendToolTurns(ctx, sess.SID, call, nil, event.SandboxErrUnauthorized, msg)
+		recordGitHubCall(call.Tool, event.SandboxErrUnauthorized, time.Time{})
+		return middleware.ToolResult{CallID: call.ID, Tool: call.Tool, Error: event.SandboxErrUnauthorized},
+			nil, -1, msg, true
 	}
 
 	// 3. Approval round-trip if the policy demands it.
@@ -413,6 +436,7 @@ func (s *Server) runToolCall(
 		SandboxLimits:  s.mw.Config.SandboxLimits,
 		SessionID:      client.SID,
 		MaxResultBytes: s.mw.Config.MaxResultBytes,
+		Mode:           mode,
 	})
 	if err != nil {
 		code := event.SandboxErrInternal
@@ -543,6 +567,21 @@ func (s *Server) emitAssistantMessage(
 func mustMarshalText(text string) []byte {
 	b, _ := json.Marshal(map[string]any{"text": text})
 	return b
+}
+
+// appendAuditInstruction is the audit-mode steering line tacked onto the
+// system prompt. It tells the model the tool catalogue has been restricted to
+// read-only operations and that its job is to produce a markdown report
+// rather than to mutate the workspace.
+func appendAuditInstruction(base string) string {
+	const audit = "Audit mode: the tool catalogue has been restricted to read-only operations. " +
+		"Do not attempt to mutate the workspace, the host, or remote services. " +
+		"Use read_file, list_dir, search_syntax, and read-only github tools to analyze " +
+		"the codebase, and reply with a markdown report."
+	if base == "" {
+		return audit
+	}
+	return base + "\n\n" + audit
 }
 
 // handleUserCommand dispatches client-driven session controls. The terminal
