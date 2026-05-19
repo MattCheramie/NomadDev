@@ -120,7 +120,7 @@ Tailscale IP that exposes `/ws` also serves the UI at `/`. Three routes
 ### Phase 6: Production Readiness — done
 *Objective: Take the stack from feature-complete to operable on real hosts.*
 - [x] Persistent session replay buffer (SQLite write-through, rehydrates on restart).
-- [x] Prometheus `/metrics` endpoint covering WS, replay, sandbox, and middleware turns.
+- [x] Prometheus `/metrics` endpoint covering WS, replay, sandbox, middleware turns, and LLM token usage.
 - [x] Multi-stage `Dockerfile` (distroless/static, pure-Go SQLite, no cgo) + `docker-compose.yml`.
 - [x] Hardened systemd unit + non-destructive installer script.
 - [x] Mobile offline outbox + interactive Settings (Reset history, Force reconnect).

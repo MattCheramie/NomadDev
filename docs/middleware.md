@@ -42,8 +42,20 @@ One `Stream` call corresponds to one `user.intent` turn. Each emitted
   calls `ResumeFunc(ctx, ToolResult)` with the result, which returns a
   fresh channel for the continuation.
 - `FinalMessage`: terminal frame. The handler emits `assistant.message`
-  and closes the turn.
+  and closes the turn. Carries `Usage{PromptTokens, CandidatesTokens,
+  TotalTokens}` for the terminal stage (zero-valued when the SDK didn't
+  report it).
+- `Usage`: end-of-stage token accounting for a tool-call stage —
+  emitted just before the channel closes so the handler can fold partial
+  usage into the per-turn aggregate before `Resume`. Without this,
+  tool-call legs would silently drop their token counts.
 - `Err`: fatal turn error.
+
+The wsserver aggregates `Usage` across every stage of a turn into a
+single per-turn total, increments `nomaddev_llm_tokens_total{type=…}` on
+each stage end (so retries that never reach the client still register
+spend), and attaches the cumulative numbers to the terminal
+`assistant.message.payload.usage`.
 
 ### MockTranslator
 

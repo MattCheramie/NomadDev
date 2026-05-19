@@ -32,6 +32,7 @@ import {
   StreamStderr,
   StreamStdout,
   ToolApprovalRequestPayload,
+  UsagePayload,
   UserIntentPayload,
   newReply,
 } from '@/wire/envelope';
@@ -80,7 +81,21 @@ export type Turn = {
   finished: boolean;
   finishReason?: string;
   error?: string;
+  // Cumulative token usage for this turn, mirroring the wire payload.
+  // Undefined until the terminal assistant.message arrives.
+  usage?: UsagePayload;
 };
+
+// SessionTokens accumulates LLM token usage across every turn in the
+// current session. Reset alongside other per-session state when the
+// connection cycles or the server marks the session stale.
+export type SessionTokens = {
+  prompt: number;
+  candidates: number;
+  total: number;
+};
+
+const EMPTY_SESSION_TOKENS: SessionTokens = { prompt: 0, candidates: 0, total: 0 };
 
 export type ApprovalRequest = {
   envelopeId: string;       // tool.approval.request.id — also the correlation_id we reply with
@@ -112,6 +127,9 @@ export type AppState = {
   pendingApprovals: ApprovalRequest[];
   lastEventId: string | null;
   lastError: { code: string; message: string } | null;
+  // sessionTokens tracks running LLM spend for the 'Session Cost' ticker
+  // in the Settings drawer. Reset by reset() when the session cycles.
+  sessionTokens: SessionTokens;
 
   // mutators
   setCredentials(url: string, token: string): void;
@@ -132,6 +150,7 @@ export const useStore = create<AppState>((set, get) => ({
   pendingApprovals: [],
   lastEventId: null,
   lastError: null,
+  sessionTokens: { ...EMPTY_SESSION_TOKENS },
 
   setCredentials(url, token) {
     set({ serverUrl: url, token });
@@ -158,7 +177,7 @@ export const useStore = create<AppState>((set, get) => ({
   reset() {
     set({
       turns: [], pendingApprovals: [], lastEventId: null, lastError: null,
-      sessionId: null,
+      sessionId: null, sessionTokens: { ...EMPTY_SESSION_TOKENS },
     });
   },
 
@@ -271,8 +290,8 @@ function appendAssistantText(set: Setter, intentId: string | undefined, text: st
 
 function finishTurn(set: Setter, intentId: string | undefined, p: AssistantMessagePayload) {
   if (!intentId) return;
-  set((st) => ({
-    turns: st.turns.map((t) =>
+  set((st) => {
+    const turns = st.turns.map((t) =>
       t.intentId === intentId
         ? {
             ...t,
@@ -280,10 +299,22 @@ function finishTurn(set: Setter, intentId: string | undefined, p: AssistantMessa
             finished: true,
             finishReason: p.finish_reason,
             error: p.error,
+            usage: p.usage,
           }
         : t,
-    ),
-  }));
+    );
+    if (!p.usage) {
+      return { turns };
+    }
+    return {
+      turns,
+      sessionTokens: {
+        prompt: st.sessionTokens.prompt + p.usage.prompt_tokens,
+        candidates: st.sessionTokens.candidates + p.usage.candidates_tokens,
+        total: st.sessionTokens.total + p.usage.total_tokens,
+      },
+    };
+  });
 }
 
 function attachToolCall(

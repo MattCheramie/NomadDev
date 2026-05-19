@@ -58,6 +58,7 @@ Store shape (full types in `mobile/src/state/store.ts`):
 ```ts
 { wsStatus, serverUrl, token, sessionId, turns: Turn[],
   pendingApprovals: ApprovalRequest[], lastEventId,
+  sessionTokens: { prompt, candidates, total },
   ingest(env), recordSentIntent(id, text), popApproval(id),
   setCredentials(url, token), clearCredentials(), reset() }
 ```
@@ -78,6 +79,16 @@ Older lines roll off the front when `lines.length` exceeds
 `TOOL_LINE_CAP` (2000), and a partial that grows past
 `TOOL_PARTIAL_CAP` (64 KiB) without a newline is force-flushed as a
 synthetic line — defence against unbounded progress-bar output.
+
+### Session Cost ticker
+
+The Settings drawer renders a "Session cost" panel with three rows —
+prompt / candidates / total tokens — driven by `state.sessionTokens`.
+The accumulator is bumped inside `finishTurn` whenever an
+`assistant.message` envelope carries a `usage` payload, mirroring the
+counts the orchestrator reports on `nomaddev_llm_tokens_total{type=…}`.
+`reset()` clears it alongside the rest of the per-session state, so a
+fresh session always starts at zero.
 
 `sandbox.heartbeat` envelopes update `ToolCall.elapsedMs` without
 touching `lines`. The `LiveTerminal` component

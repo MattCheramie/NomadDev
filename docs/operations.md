@@ -21,6 +21,7 @@ defined in [`internal/metrics/metrics.go`](../internal/metrics/metrics.go).
 | `nomaddev_sandbox_run_seconds`        | histogram | —         | 10 ms → ~40 s buckets                            |
 | `nomaddev_middleware_turns_total`     | counter   | `outcome` | `ok` / `error`                                   |
 | `nomaddev_middleware_turn_seconds`    | histogram | —         | 50 ms → ~3 min buckets                           |
+| `nomaddev_llm_tokens_total`           | counter   | `type`    | `prompt` / `candidates` / `total` — incremented per translator stage. `total` ≈ `prompt + candidates`; the counter is fed at consume-time so Phase 13 auto-retry stages that never reach the client are still reflected in the spend. |
 | `nomaddev_github_calls_total`         | counter   | `tool`, `outcome` | One per `github_*` MCP invocation; outcomes `ok` / `error` / `timeout` / `canceled` / `bad_request` / `denied` |
 | `nomaddev_github_call_seconds`        | histogram | —         | 50 ms → ~3 min buckets; only actual upstream round-trips observed |
 
@@ -32,6 +33,12 @@ Suggested alerts:
 - `nomaddev_ws_active_connections > 0` for `< 5m` while
   `rate(nomaddev_middleware_turns_total[5m]) == 0` — the daemon is up
   but no turns are completing.
+- `rate(nomaddev_llm_tokens_total{type="total"}[5m]) > 0` — running
+  token spend; chart it on the operations dashboard.
+- `increase(nomaddev_llm_tokens_total{type="total"}[1h]) > <budget>` —
+  budget guardrail. Set `<budget>` to the per-hour token ceiling that
+  matches your billing plan; firing means Phase 13 auto-retry loops
+  (or runaway long contexts) are pushing the spend past the limit.
 
 ## Persistent state
 
