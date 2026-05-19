@@ -156,9 +156,15 @@ func (s *Server) runIntent(
 
 	// 3. Range over events, fanning each to the wire. On a tool call,
 	//    suspend, dispatch, and call resume() to re-enter the stream.
+	//    The retry budget is allocated per-turn and threaded through
+	//    consumeStage so the orchestrator can transparently retry a
+	//    failing tool call (feeding a system.error_report back into the
+	//    translator) up to NOMADDEV_MAX_AUTORETRIES times before
+	//    escalating to the Mobile Control Hub.
+	budget := middleware.NewRetryBudget(s.mw.Config.MaxAutoRetries)
 	seq := 0
 	for {
-		ended, terminal := s.consumeStage(ctx, intentID, &seq, eventsCh, resume, sess, client, logger)
+		ended, terminal := s.consumeStage(ctx, intentID, &seq, eventsCh, resume, budget, sess, client, logger)
 		if terminal != nil {
 			s.emitAssistantMessage(sess, client, intentID, terminal.Text, terminal.FinishReason, "")
 			// Persist the assistant turn (text only — tool turns were
@@ -195,9 +201,17 @@ type stageResult struct {
 // consumeStage drains one translator-stream stage. Returns either a terminal
 // FinalMessage (callers emit assistant.message and exit) or a stageResult
 // whose .next field is the channel returned by resume() after a tool call.
+//
+// budget tracks consecutive retryable failures in this turn. When a tool call
+// returns a retryable failure (non-zero exit, timeout, oom) consumeStage
+// enriches the ToolResult with a SystemErrorReportPayload so the translator
+// can read the structured error on its next stage. When the budget is
+// exhausted, consumeStage emits a system.error_report envelope to the Mobile
+// Control Hub and terminates the turn with FinishReason=error instead.
 func (s *Server) consumeStage(
 	ctx context.Context, intentID string, seq *int,
 	in <-chan middleware.AssistantEvent, resume middleware.ResumeFunc,
+	budget *middleware.RetryBudget,
 	sess *session.Session, client *hub.Client, logger *slog.Logger,
 ) (stageResult, *middleware.FinalMessage) {
 	for ev := range in {
@@ -215,11 +229,54 @@ func (s *Server) consumeStage(
 				for range in {
 				}
 			}()
-			result, ok := s.runToolCall(ctx, intentID, *ev.ToolCall, sess, client, logger)
+			call := *ev.ToolCall
+			result, stderrBuf, exitCode, exitMsg, ok := s.runToolCall(ctx, intentID, call, sess, client, logger)
 			if !ok {
 				// Disconnect or fatal failure mid-tool-call. Return a
 				// synthetic terminal frame so the outer loop closes cleanly.
 				return stageResult{}, &middleware.FinalMessage{FinishReason: "error"}
+			}
+			if middleware.ShouldAutoRetry(exitCode, result.Error) {
+				if !budget.Consume() {
+					// Budget exhausted — escalate to the Mobile Control Hub.
+					report := middleware.BuildErrorReport(
+						call, exitCode, result.Error, exitMsg, stderrBuf,
+						budget.Attempt(), budget.Max()+1)
+					report.Escalated = true
+					if env, err := event.NewReply(event.EventSystemErrorReport, intentID, report); err == nil {
+						s.bufferAndSend(sess, client, env)
+					} else if logger != nil {
+						logger.Error("middleware: build system.error_report envelope", "err", err)
+					}
+					if logger != nil {
+						logger.Warn("middleware: auto-retry budget exhausted",
+							"tool", call.Tool, "attempt", report.Attempt,
+							"max_attempts", report.MaxAttempts, "error_code", report.ErrorCode)
+					}
+					return stageResult{}, &middleware.FinalMessage{
+						FinishReason: "error",
+						Text:         "exceeded NOMADDEV_MAX_AUTORETRIES; escalated to operator",
+					}
+				}
+				// Budget remaining — feed the structured error back to the
+				// translator so the LLM can author a fix on the next stage.
+				report := middleware.BuildErrorReport(
+					call, exitCode, result.Error, exitMsg, stderrBuf,
+					budget.Attempt(), budget.Max()+1)
+				if result.Output == nil {
+					result.Output = map[string]any{}
+				}
+				result.Output[middleware.ToolResultErrorReportKey] = report
+				if logger != nil {
+					logger.Info("middleware: auto-retry scheduled",
+						"tool", call.Tool, "attempt", report.Attempt,
+						"max_attempts", report.MaxAttempts, "error_code", report.ErrorCode)
+				}
+			} else {
+				// Success or non-retryable failure resets the chain so a
+				// sporadic transient doesn't burn the budget for the rest
+				// of the turn.
+				budget.Reset()
 			}
 			next, rerr := resume(ctx, result)
 			if rerr != nil {
@@ -233,13 +290,21 @@ func (s *Server) consumeStage(
 	return stageResult{}, nil
 }
 
-// runToolCall executes one tool call from the translator. Returns the
-// ToolResult to feed back into resume(), or ok=false if the dispatch was
-// aborted by ctx cancel (the outer loop will close the turn).
+// runToolCall executes one tool call from the translator. Returns:
+//   - the ToolResult to feed back into resume()
+//   - the raw stderr bytes captured during dispatch (nil on no-stderr paths)
+//   - the classified exit code (matches the wire CommandResultPayload.ExitCode)
+//   - the classified error message (matches CommandResultPayload.ErrorMessage)
+//   - ok=false when the dispatch was aborted by ctx cancel; the outer loop
+//     then closes the turn.
+//
+// The stderr / exit_code / exit_msg outputs feed the recovery loop in
+// consumeStage so it can build a SystemErrorReportPayload without
+// re-parsing ToolResult.Output.
 func (s *Server) runToolCall(
 	ctx context.Context, intentID string, call middleware.ToolCall,
 	sess *session.Session, client *hub.Client, logger *slog.Logger,
-) (middleware.ToolResult, bool) {
+) (middleware.ToolResult, []byte, int, string, bool) {
 	// 1. Mint the orchestrator-side command.request envelope. We send it
 	//    BEFORE the approval round-trip so the wire has a durable record of
 	//    "we considered running this" even when the user denies.
@@ -268,7 +333,8 @@ func (s *Server) runToolCall(
 		_ = s.appendToolTurns(ctx, sess.SID, call, nil,
 			event.SandboxErrUnauthorized, "scope-deny")
 		recordGitHubCall(call.Tool, event.SandboxErrUnauthorized, time.Time{})
-		return middleware.ToolResult{CallID: call.ID, Tool: call.Tool, Error: event.SandboxErrUnauthorized}, true
+		return middleware.ToolResult{CallID: call.ID, Tool: call.Tool, Error: event.SandboxErrUnauthorized},
+			nil, -1, "token lacks tools:" + call.Tool + " scope", true
 	}
 
 	// 2. Validate args before approval — bad args are a fast-fail, not a
@@ -278,7 +344,8 @@ func (s *Server) runToolCall(
 		s.emitResult(sess, client, cmdEnv.ID, time.Now(), -1, event.SandboxErrBadRequest, vErr.Error())
 		_ = s.appendToolTurns(ctx, sess.SID, call, nil, event.SandboxErrBadRequest, vErr.Error())
 		recordGitHubCall(call.Tool, event.SandboxErrBadRequest, time.Time{})
-		return middleware.ToolResult{CallID: call.ID, Tool: call.Tool, Error: event.SandboxErrBadRequest}, true
+		return middleware.ToolResult{CallID: call.ID, Tool: call.Tool, Error: event.SandboxErrBadRequest},
+			nil, -1, vErr.Error(), true
 	}
 
 	// 3. Approval round-trip if the policy demands it.
@@ -292,7 +359,8 @@ func (s *Server) runToolCall(
 			s.emitResult(sess, client, cmdEnv.ID, time.Now(), -1, event.SandboxErrBadRequest, perr.Error())
 			_ = s.appendToolTurns(ctx, sess.SID, call, nil, event.SandboxErrBadRequest, perr.Error())
 			recordGitHubCall(call.Tool, event.SandboxErrBadRequest, time.Time{})
-			return middleware.ToolResult{CallID: call.ID, Tool: call.Tool, Error: event.SandboxErrBadRequest}, true
+			return middleware.ToolResult{CallID: call.ID, Tool: call.Tool, Error: event.SandboxErrBadRequest},
+				nil, -1, perr.Error(), true
 		}
 
 		approvalID := event.NewID()
@@ -324,9 +392,10 @@ func (s *Server) runToolCall(
 			// MCP characteristic and skews the SLO histogram.
 			recordGitHubCall(call.Tool, code, time.Time{})
 			if errors.Is(awaitErr, context.Canceled) {
-				return middleware.ToolResult{CallID: call.ID, Tool: call.Tool, Error: event.SandboxErrCanceled}, false
+				return middleware.ToolResult{CallID: call.ID, Tool: call.Tool, Error: event.SandboxErrCanceled},
+					nil, -1, msg, false
 			}
-			return middleware.ToolResult{CallID: call.ID, Tool: call.Tool, Error: code}, true
+			return middleware.ToolResult{CallID: call.ID, Tool: call.Tool, Error: code}, nil, -1, msg, true
 		}
 	}
 
@@ -352,7 +421,8 @@ func (s *Server) runToolCall(
 		s.emitResult(sess, client, cmdEnv.ID, started, -1, code, err.Error())
 		_ = s.appendToolTurns(ctx, sess.SID, call, nil, code, err.Error())
 		recordGitHubCall(call.Tool, code, started)
-		return middleware.ToolResult{CallID: call.ID, Tool: call.Tool, Error: code}, true
+		return middleware.ToolResult{CallID: call.ID, Tool: call.Tool, Error: code},
+			nil, -1, err.Error(), true
 	}
 
 	// 5. Stream chunks back. Capture the concatenated stdout as the
@@ -394,7 +464,7 @@ func (s *Server) runToolCall(
 	}
 	_ = s.appendToolTurns(ctx, sess.SID, call, output, exitErrCode, exitMsg)
 	recordGitHubCall(call.Tool, exitErrCode, started)
-	return result, true
+	return result, stderrBuf, exitCode, exitMsg, true
 }
 
 // appendToolTurns writes both the tool_call and tool_result entries to

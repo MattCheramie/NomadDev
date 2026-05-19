@@ -26,6 +26,7 @@ type mwOpts struct {
 	RequiredTools     []string
 	IntentMaxConc     int
 	Approver          middleware.Approver // optional override
+	MaxAutoRetries    int                 // 0 = recovery loop disabled
 }
 
 func buildMW(t *testing.T, opts mwOpts) *middleware.Service {
@@ -58,6 +59,7 @@ func buildMW(t *testing.T, opts mwOpts) *middleware.Service {
 			DefaultTimeout:     2 * time.Second,
 			GateDirectCommands: opts.GateDirectCommand,
 			WindowTurns:        10,
+			MaxAutoRetries:     opts.MaxAutoRetries,
 		},
 	}
 }
@@ -532,4 +534,330 @@ func writeFileSimple(t *testing.T, dir, name, body string) string {
 		t.Fatalf("write %q: %v", p, err)
 	}
 	return p
+}
+
+// TestMiddleware_AutoRetry_SingleFailureRecovers verifies that when a tool
+// call fails once and the second attempt succeeds, the orchestrator:
+//   - feeds a system.error_report into the translator via ResumeFunc
+//   - does NOT emit a system.error_report envelope on the wire
+//   - terminates the turn cleanly with FinishReason=stop
+func TestMiddleware_AutoRetry_SingleFailureRecovers(t *testing.T) {
+	// First Exec call fails with exit 1; second succeeds.
+	runner := &flakeyRunner{scripts: [][]sandbox.ExecChunk{
+		sandbox.MockScript("", "boom\n", 1),
+		sandbox.MockScript("ok\n", "", 0),
+	}}
+	mock := middleware.NewMockTranslator(
+		[]middleware.AssistantEvent{
+			{ToolCall: &middleware.ToolCall{
+				ID: "c1", Tool: middleware.ToolExecuteScript,
+				Args: map[string]any{"script": "false"},
+			}},
+		},
+		[]middleware.AssistantEvent{
+			{ToolCall: &middleware.ToolCall{
+				ID: "c2", Tool: middleware.ToolExecuteScript,
+				Args: map[string]any{"script": "true"},
+			}},
+		},
+		[]middleware.AssistantEvent{
+			{FinalMessage: &middleware.FinalMessage{Text: "fixed", FinishReason: "stop"}},
+		},
+	)
+	mw := buildMW(t, mwOpts{
+		Translator: mock, Runner: runner, AutoGrant: true, MaxAutoRetries: 2,
+	})
+	ts, _, _, issuer := newTestServerFull(t, testOpts{Middleware: mw})
+	tok, _ := issuer.Sign("matt", "sess-retry-ok", nil)
+	c, _, _ := dialWithAuthHeader(t, ts, tok)
+	defer c.Close()
+	_ = readEnv(t, c)
+
+	intent, _ := event.NewEnvelope(event.EventUserIntent, event.UserIntentPayload{Text: "fix me"})
+	writeEnv(t, c, intent)
+
+	var sawErrorReportEnv bool
+	var finishReason string
+	cmdRequests := 0
+	for i := 0; i < 20; i++ {
+		env := readEnv(t, c)
+		switch env.Type {
+		case event.EventCommandRequest:
+			cmdRequests++
+		case event.EventSystemErrorReport:
+			sawErrorReportEnv = true
+		case event.EventAssistantMessage:
+			var p event.AssistantMessagePayload
+			_ = env.UnmarshalPayload(&p)
+			finishReason = p.FinishReason
+		}
+		if finishReason != "" {
+			break
+		}
+	}
+	if sawErrorReportEnv {
+		t.Errorf("must not emit system.error_report envelope when retry succeeds")
+	}
+	if finishReason != "stop" {
+		t.Errorf("finish_reason = %q, want \"stop\"", finishReason)
+	}
+	if cmdRequests != 2 {
+		t.Errorf("command.request count = %d, want 2 (initial + 1 retry)", cmdRequests)
+	}
+	if runner.calls != 2 {
+		t.Errorf("runner.Exec calls = %d, want 2", runner.calls)
+	}
+	// The first ResumedResult must carry the error_report enrichment.
+	resumes := mock.ResumedResults()
+	if len(resumes) < 1 {
+		t.Fatalf("ResumedResults = %d, want >=1", len(resumes))
+	}
+	report, ok := resumes[0].Output[middleware.ToolResultErrorReportKey].(event.SystemErrorReportPayload)
+	if !ok {
+		t.Fatalf("first resume output[%q] type = %T, want SystemErrorReportPayload",
+			middleware.ToolResultErrorReportKey, resumes[0].Output[middleware.ToolResultErrorReportKey])
+	}
+	if report.Tool != middleware.ToolExecuteScript || report.ExitCode != 1 || report.Escalated {
+		t.Errorf("error_report = %+v", report)
+	}
+	if report.Attempt != 1 || report.MaxAttempts != 3 {
+		t.Errorf("attempt/max = %d/%d, want 1/3", report.Attempt, report.MaxAttempts)
+	}
+	if !strings.Contains(report.Stderr, "boom") {
+		t.Errorf("Stderr = %q, want it to contain \"boom\"", report.Stderr)
+	}
+}
+
+// TestMiddleware_AutoRetry_BudgetExhaustedEscalates verifies that when every
+// retry fails, the orchestrator emits a system.error_report envelope on the
+// wire (the Mobile Control Hub escalation) and closes the turn with
+// FinishReason=error.
+func TestMiddleware_AutoRetry_BudgetExhaustedEscalates(t *testing.T) {
+	// Every Exec call fails with exit 7.
+	runner := &flakeyRunner{always: sandbox.MockScript("", "still broken\n", 7)}
+	failingCall := middleware.AssistantEvent{ToolCall: &middleware.ToolCall{
+		ID: "cN", Tool: middleware.ToolExecuteScript,
+		Args: map[string]any{"script": "exit 7"},
+	}}
+	mock := middleware.NewMockTranslator(
+		[]middleware.AssistantEvent{failingCall},
+		[]middleware.AssistantEvent{failingCall},
+		[]middleware.AssistantEvent{failingCall},
+		[]middleware.AssistantEvent{
+			// Never reached — orchestrator should terminate before this.
+			{FinalMessage: &middleware.FinalMessage{Text: "won't run", FinishReason: "stop"}},
+		},
+	)
+	mw := buildMW(t, mwOpts{
+		Translator: mock, Runner: runner, AutoGrant: true, MaxAutoRetries: 2,
+	})
+	ts, _, _, issuer := newTestServerFull(t, testOpts{Middleware: mw})
+	tok, _ := issuer.Sign("matt", "sess-retry-bust", nil)
+	c, _, _ := dialWithAuthHeader(t, ts, tok)
+	defer c.Close()
+	_ = readEnv(t, c)
+
+	intent, _ := event.NewEnvelope(event.EventUserIntent, event.UserIntentPayload{Text: "doomed"})
+	writeEnv(t, c, intent)
+
+	var escalation *event.SystemErrorReportPayload
+	cmdRequests := 0
+	var finishReason string
+	for i := 0; i < 30; i++ {
+		env := readEnv(t, c)
+		switch env.Type {
+		case event.EventCommandRequest:
+			cmdRequests++
+		case event.EventSystemErrorReport:
+			var p event.SystemErrorReportPayload
+			_ = env.UnmarshalPayload(&p)
+			escalation = &p
+		case event.EventAssistantMessage:
+			var p event.AssistantMessagePayload
+			_ = env.UnmarshalPayload(&p)
+			finishReason = p.FinishReason
+		}
+		if finishReason != "" {
+			break
+		}
+	}
+	if escalation == nil {
+		t.Fatalf("expected one system.error_report envelope; got none")
+	}
+	if !escalation.Escalated {
+		t.Errorf("system.error_report.Escalated = false; want true")
+	}
+	if escalation.Attempt != 3 || escalation.MaxAttempts != 3 {
+		t.Errorf("attempt/max = %d/%d, want 3/3", escalation.Attempt, escalation.MaxAttempts)
+	}
+	if escalation.ExitCode != 7 {
+		t.Errorf("ExitCode = %d, want 7", escalation.ExitCode)
+	}
+	if !strings.Contains(escalation.Stderr, "still broken") {
+		t.Errorf("Stderr = %q, want \"still broken\"", escalation.Stderr)
+	}
+	if finishReason != "error" {
+		t.Errorf("finish_reason = %q, want \"error\"", finishReason)
+	}
+	if cmdRequests != 3 {
+		t.Errorf("command.request count = %d, want 3 (initial + 2 retries)", cmdRequests)
+	}
+}
+
+// TestMiddleware_AutoRetry_ZeroBudgetEscalatesImmediately verifies that with
+// MaxAutoRetries=0 the first failure escalates without trying to feed the
+// error back through the translator.
+func TestMiddleware_AutoRetry_ZeroBudgetEscalatesImmediately(t *testing.T) {
+	runner := &flakeyRunner{always: sandbox.MockScript("", "nope\n", 2)}
+	failingCall := middleware.AssistantEvent{ToolCall: &middleware.ToolCall{
+		ID: "c0", Tool: middleware.ToolExecuteScript,
+		Args: map[string]any{"script": "exit 2"},
+	}}
+	mock := middleware.NewMockTranslator(
+		[]middleware.AssistantEvent{failingCall},
+		[]middleware.AssistantEvent{
+			{FinalMessage: &middleware.FinalMessage{Text: "x", FinishReason: "stop"}},
+		},
+	)
+	mw := buildMW(t, mwOpts{
+		Translator: mock, Runner: runner, AutoGrant: true, MaxAutoRetries: 0,
+	})
+	ts, _, _, issuer := newTestServerFull(t, testOpts{Middleware: mw})
+	tok, _ := issuer.Sign("matt", "sess-retry-zero", nil)
+	c, _, _ := dialWithAuthHeader(t, ts, tok)
+	defer c.Close()
+	_ = readEnv(t, c)
+
+	intent, _ := event.NewEnvelope(event.EventUserIntent, event.UserIntentPayload{Text: "boom"})
+	writeEnv(t, c, intent)
+
+	var escalation *event.SystemErrorReportPayload
+	cmdRequests := 0
+	var finishReason string
+	for i := 0; i < 12; i++ {
+		env := readEnv(t, c)
+		switch env.Type {
+		case event.EventCommandRequest:
+			cmdRequests++
+		case event.EventSystemErrorReport:
+			var p event.SystemErrorReportPayload
+			_ = env.UnmarshalPayload(&p)
+			escalation = &p
+		case event.EventAssistantMessage:
+			var p event.AssistantMessagePayload
+			_ = env.UnmarshalPayload(&p)
+			finishReason = p.FinishReason
+		}
+		if finishReason != "" {
+			break
+		}
+	}
+	if escalation == nil || !escalation.Escalated {
+		t.Fatalf("expected escalation envelope; got %+v", escalation)
+	}
+	if escalation.Attempt != 1 || escalation.MaxAttempts != 1 {
+		t.Errorf("attempt/max = %d/%d, want 1/1", escalation.Attempt, escalation.MaxAttempts)
+	}
+	if cmdRequests != 1 {
+		t.Errorf("command.request count = %d, want 1 (no retries)", cmdRequests)
+	}
+	if finishReason != "error" {
+		t.Errorf("finish_reason = %q, want \"error\"", finishReason)
+	}
+}
+
+// TestMiddleware_AutoRetry_NonRetryableFailureDoesNotEscalate verifies that
+// failures the recovery loop classifies as non-retryable (e.g. bad_request
+// from invalid args) flow through the existing path: no error_report
+// envelope, no resumed error_report enrichment.
+func TestMiddleware_AutoRetry_NonRetryableFailureDoesNotEscalate(t *testing.T) {
+	// Invalid args (script field missing) → middleware.Validate rejects
+	// before dispatch with SandboxErrBadRequest.
+	mock := middleware.NewMockTranslator(
+		[]middleware.AssistantEvent{
+			{ToolCall: &middleware.ToolCall{
+				ID: "cX", Tool: middleware.ToolExecuteScript,
+				Args: map[string]any{}, // missing "script"
+			}},
+		},
+		[]middleware.AssistantEvent{
+			{FinalMessage: &middleware.FinalMessage{Text: "done", FinishReason: "stop"}},
+		},
+	)
+	runner := sandbox.NewMockRunner(sandbox.MockScript("never\n", "", 0)...)
+	mw := buildMW(t, mwOpts{
+		Translator: mock, Runner: runner, AutoGrant: true, MaxAutoRetries: 2,
+	})
+	ts, _, _, issuer := newTestServerFull(t, testOpts{Middleware: mw})
+	tok, _ := issuer.Sign("matt", "sess-retry-nr", nil)
+	c, _, _ := dialWithAuthHeader(t, ts, tok)
+	defer c.Close()
+	_ = readEnv(t, c)
+
+	intent, _ := event.NewEnvelope(event.EventUserIntent, event.UserIntentPayload{Text: "bad"})
+	writeEnv(t, c, intent)
+
+	var sawErrorReportEnv bool
+	var finishReason string
+	for i := 0; i < 12; i++ {
+		env := readEnv(t, c)
+		switch env.Type {
+		case event.EventSystemErrorReport:
+			sawErrorReportEnv = true
+		case event.EventAssistantMessage:
+			var p event.AssistantMessagePayload
+			_ = env.UnmarshalPayload(&p)
+			finishReason = p.FinishReason
+		}
+		if finishReason != "" {
+			break
+		}
+	}
+	if sawErrorReportEnv {
+		t.Errorf("non-retryable failure must not emit system.error_report envelope")
+	}
+	if finishReason != "stop" {
+		t.Errorf("finish_reason = %q, want \"stop\"", finishReason)
+	}
+	resumes := mock.ResumedResults()
+	if len(resumes) == 0 {
+		t.Fatalf("expected at least one resume call")
+	}
+	if _, present := resumes[0].Output[middleware.ToolResultErrorReportKey]; present {
+		t.Errorf("non-retryable failure must NOT enrich Output with error_report")
+	}
+}
+
+// flakeyRunner is a test sandbox.Runner that emits a different scripted
+// output per Exec call. If `always` is non-nil, every call returns that
+// script (used to force a sustained failure).
+type flakeyRunner struct {
+	scripts [][]sandbox.ExecChunk
+	always  []sandbox.ExecChunk
+	calls   int
+}
+
+func (r *flakeyRunner) Exec(ctx context.Context, _ sandbox.ExecRequest) (<-chan sandbox.ExecChunk, error) {
+	idx := r.calls
+	r.calls++
+	var script []sandbox.ExecChunk
+	if r.always != nil {
+		script = r.always
+	} else if idx < len(r.scripts) {
+		script = r.scripts[idx]
+	} else {
+		script = sandbox.MockScript("", "", 0)
+	}
+	out := make(chan sandbox.ExecChunk, len(script))
+	go func() {
+		defer close(out)
+		for _, c := range script {
+			select {
+			case out <- c:
+			case <-ctx.Done():
+				return
+			}
+		}
+	}()
+	return out, nil
 }

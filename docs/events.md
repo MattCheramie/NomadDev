@@ -41,6 +41,7 @@ All messages — in both directions — are JSON envelopes with this shape:
 | `EventToolApprovalRequest` | `tool.approval.request` | S→C | Ask the human to authorize a destructive tool call. Payload: `{tool, args, reason, pending_command_id, timeout_ms, preview?}`. `correlation_id` = the pending `command.request.id`. `preview` is an optional tool-specific dry-run payload (e.g. `apply_code_patch` attaches `{path, line_number, unified_diff}`); see `docs/approval.md`. |
 | `EventToolApprovalGranted` | `tool.approval.granted` | C→S | Allow the pending tool call. `correlation_id` = the `tool.approval.request.id`. Empty payload. |
 | `EventToolApprovalDenied`  | `tool.approval.denied`  | C→S | Refuse the pending tool call. Payload: `{reason}`. `correlation_id` = the `tool.approval.request.id`. |
+| `EventSystemErrorReport` | `system.error_report` | S→C | Sent to the Mobile Control Hub when the middleware exhausts `NOMADDEV_MAX_AUTORETRIES` auto-fix attempts on a failing tool call. Payload: `{tool, original_call_id, exit_code, error_code, error_message, stderr, attempt, max_attempts, escalated:true}`. `correlation_id` = the originating `user.intent.id`. The same payload shape (with `escalated:false`) is also stashed into `ToolResult.Output["error_report"]` and fed to the translator on each intermediate retry — see "Automated error recovery" below. |
 
 ## Example payloads
 
@@ -136,3 +137,51 @@ Defined `command.result.error` codes (set on sandbox-side failure with
 `exit_code == -1`): `sandbox_timeout`, `sandbox_oom`, `sandbox_image_pull`,
 `sandbox_unavailable`, `sandbox_bad_request`, `sandbox_internal`,
 `sandbox_canceled`, `sandbox_unauthorized`.
+
+## Automated error recovery
+
+When a middleware-dispatched tool call returns a retryable failure
+(non-zero exit, `sandbox_timeout`, or `sandbox_oom`), the orchestrator
+does **not** immediately terminate the turn or pause for human input.
+Instead it:
+
+1. Captures the failing tool's stderr (truncated to 8 KiB from the tail).
+2. Formats a `SystemErrorReportPayload` (`tool`, `original_call_id`,
+   `exit_code`, `error_code`, `error_message`, `stderr`, `attempt`,
+   `max_attempts`, `escalated:false`).
+3. Stashes the payload under `ToolResult.Output["error_report"]` and
+   resumes the translator. The LLM is expected to read the structured
+   error and author a fix as a new `command.request`.
+
+The retry budget is bounded by `NOMADDEV_MAX_AUTORETRIES` (default `2`)
+and scoped **per tool-call chain**: a success or a non-retryable failure
+(`sandbox_bad_request`, `sandbox_unauthorized`, `sandbox_image_pull`,
+`sandbox_canceled`) resets the counter so a sporadic transient doesn't
+burn budget for the rest of a multi-step turn.
+
+When the budget is exhausted, the orchestrator emits a
+`system.error_report` envelope to the Mobile Control Hub with the same
+payload shape and `escalated:true`, then terminates the turn with
+`assistant.message{finish_reason:"error"}`. The wire envelope's
+`correlation_id` is the originating `user.intent.id` so the mobile UI
+can attribute the failure to the right turn.
+
+```
+client                          orchestrator + middleware
+──────                          ─────────────────────────
+user.intent(id=U) ─────────▶
+                                (translator emits ToolCall)
+              ◀────────── command.request(id=C1, correlation_id=U)
+              ◀────────── command.chunk*(stderr)
+              ◀────────── command.result(exit_code=1, correlation_id=C1)
+                                (ShouldAutoRetry → enrich + resume)
+                                (translator emits a fix ToolCall)
+              ◀────────── command.request(id=C2, correlation_id=U)
+              ◀────────── command.result(exit_code=1, correlation_id=C2)
+                                ... up to NOMADDEV_MAX_AUTORETRIES ...
+              ◀────────── system.error_report(correlation_id=U, escalated:true)
+              ◀────────── assistant.message(correlation_id=U, finish_reason="error")
+```
+
+`MaxAutoRetries=0` disables the loop — the first retryable failure
+escalates immediately.

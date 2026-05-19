@@ -53,4 +53,10 @@ type RuntimeConfig struct {
 	// middleware-driven path. Default true; the orchestrator sets it from
 	// NOMADDEV_APPROVAL_GATE_DIRECT_COMMANDS.
 	GateDirectCommands bool
+	// MaxAutoRetries caps consecutive failed tool-call dispatches inside
+	// one chain before the orchestration loop escalates the failure to
+	// the Mobile Control Hub. Propagated from
+	// config.MiddlewareConfig.MaxAutoRetries (NOMADDEV_MAX_AUTORETRIES).
+	// 0 disables the recovery loop; the first retryable failure escalates.
+	MaxAutoRetries int
 }

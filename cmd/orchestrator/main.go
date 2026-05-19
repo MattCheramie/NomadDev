@@ -509,6 +509,7 @@ func buildMiddleware(
 			PidsLimit:   cfg.Sandbox.PidsLimit,
 		},
 		GateDirectCommands:      cfg.Approval.GateDirectCommands,
+		MaxAutoRetries:          cfg.Middleware.MaxAutoRetries,
 		Sandbox:                 runner,
 		FSOps:                   fs,
 		History:                 store,

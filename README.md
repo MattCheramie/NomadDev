@@ -953,6 +953,56 @@ if a multi-tenant deploy hits the worst-case sizing — documented
 sizing approach in `docs/sandbox.md` covers the same blast
 radius); mobile native build (Expo EAS — separate infra setup).
 
+### Phase 13: Automated middleware error recovery — done
+*Closes the "every failing tool call burns a human-input turn" gap:
+when a middleware-dispatched `command.request` returns a retryable
+failure (non-zero exit, `sandbox_timeout`, `sandbox_oom`), the
+orchestrator now formats the captured stderr as a structured
+`system.error_report` and feeds it back into the translation layer so
+the LLM can author a fix as a new `command.request`. Bounded retry
+prevents an infinite loop; final failure is escalated to the Mobile
+Control Hub as a wire envelope.*
+
+- [x] **New `system.error_report` event type** in
+  [`internal/event/types.go`](./internal/event/types.go) with payload
+  `{tool, original_call_id, exit_code, error_code, error_message,
+  stderr, attempt, max_attempts, escalated}`. Used in two places: as a
+  `ToolResult.Output["error_report"]` enrichment that the translator
+  reads on the next stage, and as a wire envelope to the Mobile
+  Control Hub on budget exhaustion (`escalated:true`).
+- [x] **Recovery state machine** in
+  [`internal/middleware/recovery.go`](./internal/middleware/recovery.go):
+  `ShouldAutoRetry(exitCode, errCode)` classifies retry-eligible
+  failures (non-zero exit, `sandbox_timeout`, `sandbox_oom`; structural
+  errors like `sandbox_bad_request` / `sandbox_unauthorized` are
+  terminal). `BuildErrorReport(...)` formats the payload and
+  tail-truncates stderr to 8 KiB. `RetryBudget` tracks **consecutive**
+  failures so a sporadic transient doesn't burn budget for the rest of
+  a multi-step turn.
+- [x] **Orchestration loop** in
+  [`internal/wsserver/middleware.go`](./internal/wsserver/middleware.go).
+  `consumeStage` now allocates a per-turn `RetryBudget(MaxAutoRetries)`,
+  enriches the resumed `ToolResult` on retry, and on exhaustion emits
+  the `system.error_report` envelope via `bufferAndSend` then closes
+  the turn with `finish_reason="error"`.
+- [x] **Configuration knob.** `NOMADDEV_MAX_AUTORETRIES` (default `2`)
+  wires through `config.MiddlewareConfig.MaxAutoRetries` →
+  `middleware.RuntimeConfig.MaxAutoRetries`. `0` disables the loop
+  entirely; the first retryable failure escalates immediately.
+- [x] **Test coverage.** Recovery primitives unit-tested in
+  [`internal/middleware/recovery_test.go`](./internal/middleware/recovery_test.go).
+  End-to-end behavior pinned by `TestMiddleware_AutoRetry_*` in
+  [`internal/wsserver/middleware_test.go`](./internal/wsserver/middleware_test.go):
+  single-failure recovery (no wire envelope), budget exhaustion
+  (exactly one `system.error_report` envelope, three `command.request`
+  envelopes for `MaxAutoRetries=2`), zero-budget immediate escalation,
+  and non-retryable failures bypassing the loop.
+
+See [`docs/middleware.md`](./docs/middleware.md#automated-error-recovery-phase-13)
+for the architecture and
+[`docs/events.md`](./docs/events.md#automated-error-recovery) for the
+wire-level sequence diagram.
+
 ---
 
 ## 🚀 Running the orchestrator

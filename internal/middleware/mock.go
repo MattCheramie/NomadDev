@@ -17,10 +17,11 @@ type MockTranslator struct {
 	Script        [][]AssistantEvent
 	PerEventDelay time.Duration
 
-	mu       sync.Mutex
-	stage    int
-	canceled atomic.Int32
-	streams  atomic.Int64
+	mu        sync.Mutex
+	stage     int
+	canceled  atomic.Int32
+	streams   atomic.Int64
+	resumeRes []ToolResult
 }
 
 // NewMockTranslator returns a MockTranslator pre-loaded with stages.
@@ -37,11 +38,24 @@ func (m *MockTranslator) Streams() int64 { return m.streams.Load() }
 // Stream implements Translator.
 func (m *MockTranslator) Stream(ctx context.Context, _ TurnInput) (<-chan AssistantEvent, ResumeFunc, error) {
 	ch := m.runStage(ctx)
-	resume := func(ctx context.Context, _ ToolResult) (<-chan AssistantEvent, error) {
+	resume := func(ctx context.Context, r ToolResult) (<-chan AssistantEvent, error) {
+		m.mu.Lock()
+		m.resumeRes = append(m.resumeRes, r)
+		m.mu.Unlock()
 		next := m.runStage(ctx)
 		return next, nil
 	}
 	return ch, resume, nil
+}
+
+// ResumedResults returns a snapshot of every ToolResult the handler has
+// fed back via the ResumeFunc, in order. Test-only helper.
+func (m *MockTranslator) ResumedResults() []ToolResult {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	out := make([]ToolResult, len(m.resumeRes))
+	copy(out, m.resumeRes)
+	return out
 }
 
 func (m *MockTranslator) runStage(ctx context.Context) <-chan AssistantEvent {

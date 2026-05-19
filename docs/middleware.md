@@ -202,6 +202,50 @@ via `NOMADDEV_HISTORY_SUMMARY_*` env vars (see
 - `none` — no middleware service attached; `user.intent` returns
   `error{not_implemented}`.
 
+## Automated error recovery (Phase 13)
+
+When a middleware-dispatched tool call returns a retryable failure
+(non-zero shell exit, `sandbox_timeout`, or `sandbox_oom`), the
+orchestrator does **not** terminate the turn. Instead it formats the
+captured stderr + exit code into a `event.SystemErrorReportPayload`,
+stashes it under `ToolResult.Output["error_report"]`, and resumes the
+translator so the LLM can author a fix as a new `command.request`.
+
+The recovery state machine lives in `internal/middleware/recovery.go`:
+
+- `middleware.ShouldAutoRetry(exitCode, errCode)` classifies a finished
+  call. Non-zero exits and `sandbox_timeout` / `sandbox_oom` retry;
+  `sandbox_bad_request`, `sandbox_unauthorized`, `sandbox_image_pull`,
+  and `sandbox_canceled` are terminal because another LLM round can't
+  fix them.
+- `middleware.BuildErrorReport(call, exitCode, errCode, errMsg, stderr,
+  attempt, maxAttempts)` assembles the payload, truncating stderr to
+  `MaxErrorReportStderrBytes` (8 KiB) from the tail (the failing line is
+  usually the last one).
+- `middleware.NewRetryBudget(max)` is the per-turn counter. `Consume()`
+  reports whether the chain still has budget after the current failure;
+  `Reset()` is called after a success or a non-retryable failure so the
+  budget tracks **consecutive** failures only.
+
+The orchestration loop sits in `internal/wsserver/middleware.go`. On
+each `runToolCall` result it consults `ShouldAutoRetry`; if budget
+remains it enriches the resumed `ToolResult.Output`, otherwise it emits
+a `system.error_report` envelope through `bufferAndSend` (the Mobile
+Control Hub escalation) and closes the turn with
+`finish_reason="error"`.
+
+Configuration:
+
+- `NOMADDEV_MAX_AUTORETRIES` (default `2`) — pipes through
+  `config.MiddlewareConfig.MaxAutoRetries` →
+  `middleware.RuntimeConfig.MaxAutoRetries`. Set to `0` to disable the
+  loop entirely.
+
+See `docs/events.md` § "Automated error recovery" for the wire-level
+sequence diagram and `internal/middleware/recovery_test.go` /
+`internal/wsserver/middleware_test.go` (`TestMiddleware_AutoRetry_*`)
+for the canonical test cases.
+
 ## Running the Gemini tests locally
 
 ```sh
