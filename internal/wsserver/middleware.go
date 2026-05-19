@@ -16,6 +16,7 @@ import (
 	"github.com/mattcheramie/nomaddev/internal/hub"
 	"github.com/mattcheramie/nomaddev/internal/metrics"
 	"github.com/mattcheramie/nomaddev/internal/middleware"
+	"github.com/mattcheramie/nomaddev/internal/middleware/pricing"
 	"github.com/mattcheramie/nomaddev/internal/sandbox"
 	"github.com/mattcheramie/nomaddev/internal/session"
 )
@@ -173,6 +174,10 @@ func (s *Server) runIntent(
 	//    escalating to the Mobile Control Hub.
 	budget := middleware.NewRetryBudget(s.mw.Config.MaxAutoRetries)
 	seq := 0
+	// thinkingSeq is the independent sequence counter for assistant.thinking
+	// envelopes — Anthropic extended thinking streams alongside (not within)
+	// the regular text stream, so its frames are ordered separately.
+	thinkingSeq := 0
 	// turnUsage aggregates LLM token spend across every translator stage so
 	// the terminal assistant.message reports a single cumulative number to
 	// the Mobile Control Hub ticker. Prometheus counter increments happen
@@ -180,7 +185,7 @@ func (s *Server) runIntent(
 	// produce a client-visible message (Phase 13 auto-retries).
 	var turnUsage middleware.Usage
 	for {
-		ended, terminal := s.consumeStage(ctx, intentID, &seq, eventsCh, resume, budget, p.Mode, sess, client, logger, &turnUsage)
+		ended, terminal := s.consumeStage(ctx, intentID, &seq, &thinkingSeq, eventsCh, resume, budget, p.Mode, sess, client, logger, &turnUsage)
 		if terminal != nil {
 			s.emitAssistantMessage(sess, client, intentID, terminal.Text, terminal.FinishReason, "", turnUsage)
 			// Persist the assistant turn (text only — tool turns were
@@ -225,7 +230,7 @@ type stageResult struct {
 // exhausted, consumeStage emits a system.error_report envelope to the Mobile
 // Control Hub and terminates the turn with FinishReason=error instead.
 func (s *Server) consumeStage(
-	ctx context.Context, intentID string, seq *int,
+	ctx context.Context, intentID string, seq, thinkingSeq *int,
 	in <-chan middleware.AssistantEvent, resume middleware.ResumeFunc,
 	budget *middleware.RetryBudget, mode string,
 	sess *session.Session, client *hub.Client, logger *slog.Logger,
@@ -238,8 +243,11 @@ func (s *Server) consumeStage(
 		case ev.Text != "":
 			s.emitAssistantChunk(sess, client, intentID, *seq, ev.Text)
 			*seq++
+		case ev.Thinking != "":
+			s.emitAssistantThinking(sess, client, intentID, *thinkingSeq, ev.Thinking)
+			*thinkingSeq++
 		case ev.Usage != nil:
-			accumulateUsage(turnUsage, *ev.Usage)
+			accumulateUsage(turnUsage, *ev.Usage, s.mw.Config.Provider, s.mw.Config.Model)
 		case ev.ToolCall != nil:
 			// Drain any straggler events on this stage's channel before
 			// dispatching — the translator contract says ToolCall ends the
@@ -303,7 +311,7 @@ func (s *Server) consumeStage(
 			}
 			return stageResult{next: next}, nil
 		case ev.FinalMessage != nil:
-			accumulateUsage(turnUsage, ev.FinalMessage.Usage)
+			accumulateUsage(turnUsage, ev.FinalMessage.Usage, s.mw.Config.Provider, s.mw.Config.Model)
 			return stageResult{}, ev.FinalMessage
 		}
 	}
@@ -545,6 +553,23 @@ func (s *Server) emitAssistantChunk(
 	s.bufferAndSend(sess, client, env)
 }
 
+// emitAssistantThinking sends one assistant.thinking envelope. Only used
+// when Anthropic extended thinking is enabled via the global
+// NOMADDEV_ANTHROPIC_THINKING_BUDGET knob. Thinking frames are NOT folded
+// into the terminal assistant.message.text — they're a parallel stream.
+func (s *Server) emitAssistantThinking(
+	sess *session.Session, client *hub.Client, intentID string, seq int, text string,
+) {
+	env, err := event.NewReply(event.EventAssistantThinking, intentID, event.AssistantThinkingPayload{
+		Seq: seq, Text: text,
+	})
+	if err != nil {
+		s.log.Error("middleware: build thinking", "err", err)
+		return
+	}
+	s.bufferAndSend(sess, client, env)
+}
+
 // emitAssistantMessage sends the terminal assistant.message envelope and
 // records the middleware-turn outcome metric. This is the single exit point
 // for a user.intent turn. The usage argument carries the per-turn token
@@ -573,7 +598,15 @@ func (s *Server) emitAssistantMessage(
 			PromptTokens:     usage.PromptTokens,
 			CandidatesTokens: usage.CandidatesTokens,
 			TotalTokens:      usage.TotalTokens,
+			// Compute terminal-frame cost from the per-turn aggregate; the
+			// per-stage cost was already added to LLMCostUSDTotal in
+			// accumulateUsage. omitempty drops the field for unknown models.
+			CostUSD: pricing.EstimateCostUSD(
+				s.mw.Config.Provider, s.mw.Config.Model,
+				usage.PromptTokens, usage.CandidatesTokens,
+			),
 		}
+		pricing.WarnOnUnknownOnce(s.log, s.mw.Config.Provider, s.mw.Config.Model)
 	}
 	env, err := event.NewReply(event.EventAssistantMessage, intentID, payload)
 	if err != nil {
@@ -584,11 +617,14 @@ func (s *Server) emitAssistantMessage(
 }
 
 // accumulateUsage folds a stage's Usage into the per-turn aggregate and
-// increments the LLMTokensTotal counter for each non-zero series. Called
-// once per stage end (tool-call leg or terminal FinalMessage) so the
-// counter reflects all spend even when a stage never produces a
-// client-visible assistant.message.
-func accumulateUsage(turn *middleware.Usage, stage middleware.Usage) {
+// increments the LLMTokensTotal + LLMCostUSDTotal counters for each non-zero
+// series. Called once per stage end (tool-call leg or terminal FinalMessage)
+// so the counters reflect all spend even when a stage never produces a
+// client-visible assistant.message. provider/model are the active backend
+// identifiers; cost is sourced from the compiled-in price table at
+// internal/middleware/pricing/ and silently reports 0 for unknown pairs
+// (caller warns once via pricing.WarnOnUnknownOnce).
+func accumulateUsage(turn *middleware.Usage, stage middleware.Usage, provider, model string) {
 	if turn == nil || (stage.PromptTokens == 0 && stage.CandidatesTokens == 0 && stage.TotalTokens == 0) {
 		return
 	}
@@ -596,13 +632,17 @@ func accumulateUsage(turn *middleware.Usage, stage middleware.Usage) {
 	turn.CandidatesTokens += stage.CandidatesTokens
 	turn.TotalTokens += stage.TotalTokens
 	if stage.PromptTokens != 0 {
-		metrics.LLMTokensTotal.WithLabelValues("prompt").Add(float64(stage.PromptTokens))
+		metrics.LLMTokensTotal.WithLabelValues("prompt", provider, model).Add(float64(stage.PromptTokens))
 	}
 	if stage.CandidatesTokens != 0 {
-		metrics.LLMTokensTotal.WithLabelValues("candidates").Add(float64(stage.CandidatesTokens))
+		metrics.LLMTokensTotal.WithLabelValues("candidates", provider, model).Add(float64(stage.CandidatesTokens))
 	}
 	if stage.TotalTokens != 0 {
-		metrics.LLMTokensTotal.WithLabelValues("total").Add(float64(stage.TotalTokens))
+		metrics.LLMTokensTotal.WithLabelValues("total", provider, model).Add(float64(stage.TotalTokens))
+	}
+	cost := pricing.EstimateCostUSD(provider, model, stage.PromptTokens, stage.CandidatesTokens)
+	if cost > 0 {
+		metrics.LLMCostUSDTotal.WithLabelValues(provider, model).Add(cost)
 	}
 }
 

@@ -77,14 +77,29 @@ var (
 	// LLMTokensTotal tracks token usage reported by the translator on every
 	// stage. type ∈ {"prompt", "candidates", "total"} — total ≈ prompt +
 	// candidates, but we expose all three so dashboards and budget alerts
-	// can read whichever they need without doing PromQL arithmetic. The
-	// counter is incremented at consume-time (not at assistant.message
+	// can read whichever they need without doing PromQL arithmetic. provider
+	// is the active translator backend ("openai", "anthropic", "gemini",
+	// "deepseek", "mock"); model is the active model identifier. Extra
+	// labels were added in the multi-LLM work; existing PromQL queries that
+	// only group by `type` continue to work via `sum by (type) (...)`.
+	// The counter is incremented at consume-time (not at assistant.message
 	// emit-time) so Phase 13 auto-retry stages that never reach the client
 	// are still reflected in the spend.
 	LLMTokensTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
 		Name: "nomaddev_llm_tokens_total",
-		Help: "Cumulative LLM token usage reported by the translator, labeled by type (prompt|candidates|total).",
-	}, []string{"type"})
+		Help: "Cumulative LLM token usage reported by the translator, labeled by type (prompt|candidates|total), provider, and model.",
+	}, []string{"type", "provider", "model"})
+
+	// LLMCostUSDTotal is the dollar-cost counter derived from token usage
+	// and the per-(provider, model) price table at internal/middleware/pricing/.
+	// Reports 0 — and the counter is not incremented — for any (provider,
+	// model) pair not in the price table; the orchestrator logs the miss
+	// once via middleware/pricing.WarnOnUnknownOnce so the gap is visible
+	// without flooding the log.
+	LLMCostUSDTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "nomaddev_llm_cost_usd_total",
+		Help: "Estimated cumulative LLM spend in USD, derived from token usage and the compiled-in per-model price table.",
+	}, []string{"provider", "model"})
 )
 
 // GitHub MCP backend metrics. outcome ∈ {"ok", "error", "denied", "timeout",
@@ -137,6 +152,7 @@ func init() {
 		MiddlewareTurnsTotal,
 		MiddlewareTurnSeconds,
 		LLMTokensTotal,
+		LLMCostUSDTotal,
 		GitHubCallsTotal,
 		GitHubCallSeconds,
 		GitHubRateLimitRetriesTotal,

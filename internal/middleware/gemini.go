@@ -31,7 +31,13 @@ type GeminiOptions struct {
 	Model       string  // default "gemini-2.0-flash"
 	Temperature float64 // default 0.2
 	MaxTokens   int     // default 4096
-	Logger      *slog.Logger
+	// MaxRetries is accepted for API uniformity with the OpenAI and
+	// Anthropic constructors but is currently ignored: the google.golang.org/genai
+	// SDK hardcodes its retry policy (3 retries with exponential backoff
+	// per api_client.go's maxRetryCount const) and exposes no override.
+	// Wire it through anyway so future SDK versions can plug in.
+	MaxRetries int
+	Logger     *slog.Logger
 }
 
 // NewGeminiTranslator builds a Translator backed by the Google GenAI SDK.

@@ -20,6 +20,7 @@ const (
 	// Phase 4 NLP middleware flow.
 	EventUserIntent          = "user.intent"
 	EventAssistantChunk      = "assistant.chunk"
+	EventAssistantThinking   = "assistant.thinking"
 	EventAssistantMessage    = "assistant.message"
 	EventToolApprovalRequest = "tool.approval.request"
 	EventToolApprovalGranted = "tool.approval.granted"
@@ -178,14 +179,31 @@ type AssistantChunkPayload struct {
 	Text string `json:"text"`
 }
 
+// AssistantThinkingPayload is one streamed slice of the model's internal
+// reasoning — currently emitted only when Anthropic extended thinking is
+// enabled via NOMADDEV_ANTHROPIC_THINKING_BUDGET. Seq is independent of
+// AssistantChunkPayload.Seq so a client can render the two streams in
+// parallel. correlation_id ties it back to the originating user.intent.
+type AssistantThinkingPayload struct {
+	Seq  int    `json:"seq"`
+	Text string `json:"text"`
+}
+
 // UsagePayload carries cumulative LLM token usage for one user.intent turn
 // — summed across every translator stage (tool-call legs included) so the
 // Mobile Control Hub can render a running 'Session Cost' ticker without
 // double-counting.
+//
+// CostUSD is the estimated dollar cost of the turn, derived from the
+// per-(provider, model) price table compiled into the orchestrator at
+// internal/middleware/pricing/. It is omitted when zero — either the
+// translator reported no tokens or the active (provider, model) tuple has
+// no entry in the price table.
 type UsagePayload struct {
-	PromptTokens     int64 `json:"prompt_tokens"`
-	CandidatesTokens int64 `json:"candidates_tokens"`
-	TotalTokens      int64 `json:"total_tokens"`
+	PromptTokens     int64   `json:"prompt_tokens"`
+	CandidatesTokens int64   `json:"candidates_tokens"`
+	TotalTokens      int64   `json:"total_tokens"`
+	CostUSD          float64 `json:"cost_usd,omitempty"`
 }
 
 // AssistantMessagePayload is the terminal frame for one user.intent turn.
