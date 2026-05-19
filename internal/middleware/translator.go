@@ -91,6 +91,23 @@ type TurnInput struct {
 	// don't need to act on this directly, but it is plumbed through so the
 	// dispatcher can refuse mutating calls defense-in-depth.
 	Mode string
+	// Images attaches decoded image bytes to the current user message. The
+	// orchestrator has already validated MediaType + size against
+	// NOMADDEV_USER_INTENT_MAX_IMAGE* before the translator sees them.
+	// Translators that lack image support (e.g. MockTranslator) ignore this
+	// field; the wire-side request still goes through unchanged.
+	Images []ImageData
+}
+
+// ImageData is one decoded image attached to a turn. MediaType is the
+// MIME type (e.g. "image/jpeg"); Data is the raw image bytes. The original
+// base64 string is decoded once at envelope-parse time, so translators that
+// need base64 (OpenAI's data URL, Anthropic's base64 source) re-encode at
+// call time. Allocations are small relative to the image size, and the
+// Gemini path takes []byte natively.
+type ImageData struct {
+	MediaType string
+	Data      []byte
 }
 
 // ResumeFunc resumes a turn after a tool finished running. The returned

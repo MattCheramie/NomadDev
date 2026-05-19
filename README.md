@@ -108,6 +108,19 @@ and how to switch between the mock and Docker runners.
   it. Thinking frames stream alongside (not within) the regular
   `assistant.chunk` stream so clients can render the model's reasoning
   separately from its final answer.
+- [x] Multimodal (image) inputs on `user.intent` envelopes. The mobile
+  Composer has an attachment button backed by `expo-image-picker`; picked
+  images are base64-encoded and sent in the envelope's `images` field
+  (an array of `{media_type, data}` blocks). The orchestrator validates
+  count + decoded size against `NOMADDEV_USER_INTENT_MAX_IMAGES` (default
+  4) and `NOMADDEV_USER_INTENT_MAX_IMAGE_BYTES` (default 5 MiB), then
+  forwards to whichever backend is active: Gemini wraps each image as an
+  `InlineData` part, Anthropic as an `ImageBlock`, OpenAI as an
+  `image_url` content part (DeepSeek inherits the OpenAI path). Images
+  are persisted in `history.Turn.Parts` so subsequent turns in the same
+  session can refer back to them. Allowed media types are restricted to
+  `image/jpeg`, `image/png`, `image/gif`, and `image/webp` (the
+  intersection of the three providers' supported sets).
 
 Translator + dispatcher + approval gate live at
 [`internal/middleware/`](./internal/middleware/); filesystem-only tools live

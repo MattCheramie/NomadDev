@@ -382,3 +382,54 @@ func TestAnthropicTranslator_ThinkingBudgetSetsParams(t *testing.T) {
 		t.Errorf("ThinkingBudget==0 body should omit thinking block, got: %s", string(cap2.body))
 	}
 }
+
+// TestAnthropicTranslator_ImagesAttachedToUserMessage asserts that images
+// on the current turn land as ImageBlock entries in the outbound POST
+// body alongside the text block.
+func TestAnthropicTranslator_ImagesAttachedToUserMessage(t *testing.T) {
+	var capturedBody []byte
+	terminal := anthropicSSE("message_start", `{"type":"message_start","message":{"id":"m1","type":"message","role":"assistant","content":[],"model":"claude-sonnet-4-5","stop_reason":null,"stop_sequence":null,"usage":{"input_tokens":1,"output_tokens":0}}}`) +
+		anthropicSSE("message_delta", `{"type":"message_delta","delta":{"stop_reason":"end_turn","stop_sequence":null},"usage":{"output_tokens":1}}`) +
+		anthropicSSE("message_stop", `{"type":"message_stop"}`)
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/v1/messages", func(w http.ResponseWriter, r *http.Request) {
+		capturedBody, _ = io.ReadAll(r.Body)
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte(terminal))
+		if f, ok := w.(http.Flusher); ok {
+			f.Flush()
+		}
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	tr, _ := NewAnthropicTranslator(context.Background(), AnthropicOptions{
+		APIKey: "test-key", Model: "claude-sonnet-4-5",
+	})
+	tr.client.Options = append(tr.client.Options, option.WithBaseURL(srv.URL))
+	tr.client.Messages.Options = append(tr.client.Messages.Options, option.WithBaseURL(srv.URL))
+
+	ch, _, err := tr.Stream(context.Background(), TurnInput{
+		SID: "t-img", UserText: "what's in this?", Tools: DefaultTools(),
+		Images: []ImageData{
+			{MediaType: "image/png", Data: []byte("fake-png-bytes")},
+		},
+	})
+	if err != nil {
+		t.Fatalf("Stream: %v", err)
+	}
+	for range ch {
+	}
+
+	body := string(capturedBody)
+	if !strings.Contains(body, `"type":"image"`) {
+		t.Errorf("outbound body missing image block: %s", body)
+	}
+	if !strings.Contains(body, `"media_type":"image/png"`) {
+		t.Errorf("outbound body missing media_type=image/png: %s", body)
+	}
+	if !strings.Contains(body, `"what's in this?"`) {
+		t.Errorf("outbound body missing text block: %s", body)
+	}
+}

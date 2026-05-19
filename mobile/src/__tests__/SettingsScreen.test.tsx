@@ -28,7 +28,7 @@ beforeEach(() => {
     token: 't',
     sessionId: 'sess-1',
     wsStatus: 'open',
-    turns: [{ intentId: 'X', userText: 'hi', assistantText: '', toolCalls: [], finished: true }],
+    turns: [{ intentId: 'X', userText: 'hi', userImages: [], assistantText: '', toolCalls: [], finished: true }],
     lastEventId: 'L1',
     pendingApprovals: [],
     lastError: null,

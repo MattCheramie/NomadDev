@@ -4,6 +4,7 @@ package middleware
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"log/slog"
 
@@ -93,7 +94,7 @@ func (a *AnthropicTranslator) Stream(ctx context.Context, in TurnInput) (<-chan 
 		t:        a,
 		system:   in.SystemPrompt,
 		tools:    toAnthropicTools(in.Tools),
-		messages: anthropicHistoryToMessages(in.History, in.UserText),
+		messages: anthropicHistoryToMessages(in.History, in.UserText, in.Images),
 	}
 	out := make(chan AssistantEvent, 16)
 	go state.run(ctx, out)
@@ -276,10 +277,12 @@ func (s *anthropicTurn) run(ctx context.Context, out chan<- AssistantEvent) {
 }
 
 // anthropicHistoryToMessages converts the orchestrator's persisted Turn
-// slice plus the new user message into the SDK's MessageParam slice. Same
-// "extract text field" degradation as the Gemini path — tool legs are
-// rebuilt by Resume.
-func anthropicHistoryToMessages(hist []history.Turn, userText string) []anthropic.MessageParam {
+// slice plus the new user message and any image attachments into the SDK's
+// MessageParam slice. Images attach as ImageBlock content blocks
+// (NewImageBlockBase64) alongside the text block — Anthropic's content
+// array natively interleaves blocks of mixed types. Tool legs are rebuilt
+// by Resume.
+func anthropicHistoryToMessages(hist []history.Turn, userText string, images []ImageData) []anthropic.MessageParam {
 	out := make([]anthropic.MessageParam, 0, len(hist)+1)
 	for _, t := range hist {
 		var raw map[string]any
@@ -287,16 +290,33 @@ func anthropicHistoryToMessages(hist []history.Turn, userText string) []anthropi
 			continue
 		}
 		text, _ := raw["text"].(string)
-		if text == "" {
+		imgs := extractHistoryImages(raw)
+		if text == "" && len(imgs) == 0 {
 			continue
 		}
 		switch t.Role {
 		case history.RoleUser:
-			out = append(out, anthropic.NewUserMessage(anthropic.NewTextBlock(text)))
+			out = append(out, anthropic.NewUserMessage(anthropicContentBlocks(text, imgs)...))
 		case history.RoleAssistant:
-			out = append(out, anthropic.NewAssistantMessage(anthropic.NewTextBlock(text)))
+			if text != "" {
+				out = append(out, anthropic.NewAssistantMessage(anthropic.NewTextBlock(text)))
+			}
 		}
 	}
-	out = append(out, anthropic.NewUserMessage(anthropic.NewTextBlock(userText)))
+	out = append(out, anthropic.NewUserMessage(anthropicContentBlocks(userText, images)...))
+	return out
+}
+
+// anthropicContentBlocks builds the content-block slice for one user
+// message: a text block plus one image block per attachment. Empty text
+// is dropped so a vision-only turn produces just the image blocks.
+func anthropicContentBlocks(text string, images []ImageData) []anthropic.ContentBlockParamUnion {
+	out := make([]anthropic.ContentBlockParamUnion, 0, 1+len(images))
+	if text != "" {
+		out = append(out, anthropic.NewTextBlock(text))
+	}
+	for _, img := range images {
+		out = append(out, anthropic.NewImageBlockBase64(img.MediaType, base64.StdEncoding.EncodeToString(img.Data)))
+	}
 	return out
 }

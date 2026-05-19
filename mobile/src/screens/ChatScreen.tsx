@@ -7,6 +7,8 @@ import {
   EventUserIntent,
   newEnvelope,
   newReply,
+  type ImageInput,
+  type UserIntentPayload,
 } from '@/wire/envelope';
 import { useStore } from '@/state/store';
 import { useWSClient } from '@/wire/context';
@@ -35,11 +37,19 @@ export function ChatScreen({ navigation }: Props) {
     listRef.current?.scrollToEnd({ animated: true });
   }, [turns]);
 
-  const sendIntent = (text: string) => {
+  const sendIntent = (text: string, images: ImageInput[]) => {
     if (!client) return;
-    const env = newEnvelope(EventUserIntent, { text });
+    const payload: UserIntentPayload = { text };
+    if (images.length > 0) {
+      payload.images = images;
+    }
+    const env = newEnvelope(EventUserIntent, payload);
     if (client.send(env)) {
-      recordSentIntent(env.id, text);
+      // The store gets the `data:` URI form for rendering thumbnails.
+      // We reconstruct it here from the wire shape so the on-screen
+      // bubble matches what the user just picked.
+      const previewUris = images.map((img) => `data:${img.media_type};base64,${img.data}`);
+      recordSentIntent(env.id, text, previewUris);
     }
   };
 
@@ -81,7 +91,7 @@ export function ChatScreen({ navigation }: Props) {
         contentContainerStyle={styles.list}
         renderItem={({ item }) => (
           <View style={styles.turn}>
-            <UserBubble text={item.userText} />
+            <UserBubble text={item.userText} images={item.userImages} />
             {item.toolCalls.map((c) => <ToolCallCard key={c.commandId} call={c} />)}
             <AssistantTextBubble text={item.assistantText} finished={item.finished} />
             {item.error ? <ErrorRow message={item.error} /> : null}

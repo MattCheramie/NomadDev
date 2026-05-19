@@ -153,6 +153,19 @@ type MiddlewareConfig struct {
 	// API requires >= 1024 and < MaxTokens.
 	// Sourced from NOMADDEV_ANTHROPIC_THINKING_BUDGET.
 	AnthropicThinkingBudget int64
+
+	// MaxImagesPerIntent caps the number of image attachments accepted on
+	// one user.intent envelope. Sourced from NOMADDEV_USER_INTENT_MAX_IMAGES
+	// (default 4 — matches the practical cap most providers' UIs ship). 0
+	// disables image attachments entirely; the orchestrator rejects any
+	// user.intent that carries an Images field with a bad_envelope error.
+	MaxImagesPerIntent int
+
+	// MaxImageBytes caps the decoded size of a single image attachment.
+	// Sourced from NOMADDEV_USER_INTENT_MAX_IMAGE_BYTES (default 5 MiB —
+	// matches Anthropic's per-image limit, which is the most restrictive
+	// of the three providers). 0 disables image attachments entirely.
+	MaxImageBytes int
 	// MaxAutoRetries caps consecutive failed tool-call dispatches inside one
 	// chain before the middleware escalates the failure to the Mobile
 	// Control Hub as a system.error_report envelope. A success (or a
@@ -365,6 +378,8 @@ func Load() (*Config, error) {
 			DeepSeekModel:           envOr("NOMADDEV_DEEPSEEK_MODEL", "deepseek-chat"),
 			LLMMaxRetries:           envInt("NOMADDEV_LLM_MAX_RETRIES", 2),
 			AnthropicThinkingBudget: envInt64("NOMADDEV_ANTHROPIC_THINKING_BUDGET", 0),
+			MaxImagesPerIntent:      envInt("NOMADDEV_USER_INTENT_MAX_IMAGES", 4),
+			MaxImageBytes:           envInt("NOMADDEV_USER_INTENT_MAX_IMAGE_BYTES", 5*1024*1024),
 		},
 		History: HistoryConfig{
 			Backend:     envOr("NOMADDEV_HISTORY_BACKEND", "sqlite"),
