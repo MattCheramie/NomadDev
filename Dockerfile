@@ -9,14 +9,17 @@
 #                           pinned by version. Bundled so the GitHub MCP
 #                           integration works without the operator having
 #                           to install a second binary outside the image.
-# Stage 4 ("final"):        distroless/static — both binaries +
-#                           /var/lib/nomaddev. No libc, no /etc, no shell.
-# Stage 5 ("sandbox"):      alpine + ast-grep — the worker image the
-#                           orchestrator spawns per tool call. Built and
-#                           tagged separately:
+# Stage 4 ("sandbox"):      debian:bookworm-slim + ast-grep — the worker
+#                           image the orchestrator spawns per tool call.
+#                           Built and tagged separately:
 #                             docker build --target sandbox \
-#                               -t nomaddev/sandbox:alpine-3.20-sg .
+#                               -t nomaddev/sandbox:bookworm-sg .
 #                           then point NOMADDEV_SANDBOX_IMAGE at the tag.
+# Stage 5 ("final"):        distroless/static — both binaries +
+#                           /var/lib/nomaddev. No libc, no /etc, no shell.
+#                           Last in file so `docker build` without
+#                           `--target` produces the orchestrator image
+#                           (not the larger debian-based sandbox).
 #
 # modernc.org/sqlite is pure-Go, so CGO_ENABLED=0 produces a fully static
 # binary that runs on scratch / distroless.
@@ -71,23 +74,7 @@ RUN --mount=type=cache,target=/root/.cache/go-build \
     go install -trimpath -ldflags "-s -w" \
         "github.com/github/github-mcp-server/cmd/github-mcp-server@${GITHUB_MCP_VERSION}"
 
-# ---------- Stage 4: runtime ----------------------------------------------
-FROM gcr.io/distroless/static-debian12:nonroot AS final
-# distroless/static:nonroot ships uid 65532 / gid 65532 in /etc/passwd. We
-# pre-create the persistent dir with that ownership via WORKDIR + COPY.
-WORKDIR /var/lib/nomaddev
-COPY --from=build      --chown=65532:65532 /out/orchestrator         /usr/local/bin/orchestrator
-COPY --from=github-mcp --chown=65532:65532 /go/bin/github-mcp-server /usr/local/bin/github-mcp-server
-
-USER nonroot:nonroot
-EXPOSE 8080
-ENV NOMADDEV_SESSION_PATH=/var/lib/nomaddev/sessions.db \
-    NOMADDEV_HISTORY_PATH=/var/lib/nomaddev/history.db \
-    NOMADDEV_SANDBOX_WORKSPACE_DIR=/var/lib/nomaddev/work
-
-ENTRYPOINT ["/usr/local/bin/orchestrator"]
-
-# ---------- Stage 5: sandbox worker image ---------------------------------
+# ---------- Stage 4: sandbox worker image ---------------------------------
 # Ephemeral worker the orchestrator spawns per tool call. Pre-installs
 # ast-grep so the `search_syntax` tool can run with
 # NOMADDEV_SANDBOX_NETWORK=none (the default) — runtime apt/apk-install
@@ -103,7 +90,8 @@ ENTRYPOINT ["/usr/local/bin/orchestrator"]
 # pattern-grammar changes the model is taught to use; the upstream zip
 # ships both `ast-grep` and `sg` (no symlink needed).
 #
-# Build + tag:
+# Build + tag (uses --target so the default `docker build` still
+# produces the distroless orchestrator image at Stage 5):
 #   docker build --target sandbox -t nomaddev/sandbox:bookworm-sg .
 # Point the orchestrator at it:
 #   NOMADDEV_SANDBOX_IMAGE=nomaddev/sandbox:bookworm-sg
@@ -129,3 +117,23 @@ WORKDIR /work
 # Smoke-check the binary is on PATH and prints a version. Fails the
 # build (CI gate) if the release format ever changes shape.
 RUN sg --version
+
+# ---------- Stage 5: runtime ----------------------------------------------
+# Last stage on purpose: `docker build` without `--target` produces the
+# distroless orchestrator image, not the larger debian-based sandbox.
+# Trivy scans the default-target output, so keeping `final` last keeps
+# the CVE surface at zero (distroless ships no apt-managed packages).
+FROM gcr.io/distroless/static-debian12:nonroot AS final
+# distroless/static:nonroot ships uid 65532 / gid 65532 in /etc/passwd. We
+# pre-create the persistent dir with that ownership via WORKDIR + COPY.
+WORKDIR /var/lib/nomaddev
+COPY --from=build      --chown=65532:65532 /out/orchestrator         /usr/local/bin/orchestrator
+COPY --from=github-mcp --chown=65532:65532 /go/bin/github-mcp-server /usr/local/bin/github-mcp-server
+
+USER nonroot:nonroot
+EXPOSE 8080
+ENV NOMADDEV_SESSION_PATH=/var/lib/nomaddev/sessions.db \
+    NOMADDEV_HISTORY_PATH=/var/lib/nomaddev/history.db \
+    NOMADDEV_SANDBOX_WORKSPACE_DIR=/var/lib/nomaddev/work
+
+ENTRYPOINT ["/usr/local/bin/orchestrator"]
