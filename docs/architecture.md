@@ -81,6 +81,7 @@ client ──ws──> orchestrator
    |── command.request ──> handleCommandRequest spawns goroutine,
    |              |        Runner.Exec streams ExecChunks back as
    |   <── command.chunk*  command.chunk envelopes (utf-8, per-stream seq),
+   |   <── sandbox.heartbeat* during stretches of stdout/stderr silence,
    |   <── command.result  then exactly one command.result on exit.
    |              |
    |── user.intent ──> handleUserIntent drives the translator loop:

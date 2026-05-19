@@ -78,6 +78,23 @@ The Docker runner's defaults are intentionally paranoid:
 | `NOMADDEV_SANDBOX_IMAGE` | `alpine:3.20` | container image (override with the ast-grep-enabled image — see [Worker image with ast-grep](#worker-image-with-ast-grep)) |
 | `NOMADDEV_SANDBOX_WORKSPACE_DIR` | `/var/lib/nomaddev/work` | host path bind-mounted at `/work` |
 | `NOMADDEV_SANDBOX_PER_SESSION_WORKSPACE` | `false` | Phase 10.2: per-SID workspace subdir |
+| `NOMADDEV_SANDBOX_HEARTBEAT_INTERVAL` | `5s` | wsserver emits `sandbox.heartbeat` envelopes during stretches of stdout/stderr silence so the Live Terminal in the Mobile Control Hub can render an "still alive" elapsed timer. The ticker is reset whenever a real `command.chunk` forwards, so chatty jobs don't double-emit. Set `0s` to disable. |
+
+### Live Terminal heartbeats
+
+`sandbox.heartbeat` is emitted from `wsserver.runExec`, not the runner —
+the runner stays a pure stdout/stderr producer. The wsserver consumes
+the runner's `<-chan ExecChunk` in a `select` over the channel and a
+`time.NewTicker(NOMADDEV_SANDBOX_HEARTBEAT_INTERVAL)`; every real chunk
+calls `ticker.Reset(...)` so an active job never produces a heartbeat,
+and the ticker is `Stop()`'d before the terminal `command.result` so no
+heartbeat ever races past the result envelope. The payload is just
+`{elapsed_ms}`; `correlation_id` is the originating `command.request.id`.
+
+Heartbeats are best-effort: they share the per-client 64-slot
+`bufferAndSend` drop policy. A missed heartbeat is harmless — the next
+one (or the next real chunk) refreshes the client's elapsed timer.
+Avoid intervals below `1s` under load.
 
 ### Total-resource budgeting (Phase 10 doc)
 

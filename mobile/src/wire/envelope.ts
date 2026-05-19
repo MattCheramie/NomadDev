@@ -16,6 +16,7 @@ export const EventSessionReplaced = 'session.replaced' as const;
 export const EventCommandRequest = 'command.request' as const;
 export const EventCommandChunk = 'command.chunk' as const;
 export const EventCommandResult = 'command.result' as const;
+export const EventSandboxHeartbeat = 'sandbox.heartbeat' as const;
 
 export const EventUserIntent = 'user.intent' as const;
 export const EventAssistantChunk = 'assistant.chunk' as const;
@@ -40,6 +41,7 @@ export type EventType =
   | typeof EventCommandRequest
   | typeof EventCommandChunk
   | typeof EventCommandResult
+  | typeof EventSandboxHeartbeat
   | typeof EventUserIntent
   | typeof EventAssistantChunk
   | typeof EventAssistantMessage
@@ -111,6 +113,15 @@ export type CommandResultPayload = {
   error_message?: string;
 };
 
+// SandboxHeartbeatPayload is the wire shape of a sandbox.heartbeat envelope.
+// correlation_id is the originating command.request.id. elapsed_ms is wall
+// time since the orchestrator opened the runner; the mobile UI uses it to
+// drive the Live Terminal's elapsed-time indicator during stretches of
+// stdout/stderr silence.
+export type SandboxHeartbeatPayload = {
+  elapsed_ms: number;
+};
+
 export type UserIntentPayload = {
   text: string;
   history_hint?: number;
@@ -162,6 +173,7 @@ export type PayloadByType = {
   [EventCommandRequest]: CommandRequestPayload;
   [EventCommandChunk]: CommandChunkPayload;
   [EventCommandResult]: CommandResultPayload;
+  [EventSandboxHeartbeat]: SandboxHeartbeatPayload;
   [EventUserIntent]: UserIntentPayload;
   [EventAssistantChunk]: AssistantChunkPayload;
   [EventAssistantMessage]: AssistantMessagePayload;

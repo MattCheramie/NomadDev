@@ -1,6 +1,6 @@
 import { StyleSheet, Text, View } from 'react-native';
 import { ToolCall } from '@/state/store';
-import { CommandChunkLines } from './CommandChunkLines';
+import { LiveTerminal } from './LiveTerminal';
 import { CommandResultBadge } from './CommandResultBadge';
 
 export function ToolCallCard({ call }: { call: ToolCall }) {
@@ -11,7 +11,7 @@ export function ToolCallCard({ call }: { call: ToolCall }) {
         {call.awaitingApproval ? <Text style={styles.pending}>awaiting approval…</Text> : null}
       </View>
       <Text style={styles.args} selectable>{JSON.stringify(call.args, null, 2)}</Text>
-      <CommandChunkLines chunks={call.chunks} />
+      <LiveTerminal call={call} />
       {call.result ? <CommandResultBadge result={call.result} /> : null}
     </View>
   );
