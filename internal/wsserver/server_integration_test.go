@@ -71,6 +71,15 @@ func newTestServerFull(t *testing.T, opts testOpts) (*httptest.Server, *Server, 
 		Approval: config.ApprovalConfig{
 			Timeout: opts.ApprovalTimeout,
 		},
+		// Middleware caps for image attachments default to the same
+		// values config.Load() resolves in production so wsserver tests
+		// can drive image-bearing user.intent envelopes without each
+		// test wiring its own caps. Tests that want attachments off
+		// can override via cfg.Middleware on the returned Server.
+		Middleware: config.MiddlewareConfig{
+			MaxImagesPerIntent: 4,
+			MaxImageBytes:      5 * 1024 * 1024,
+		},
 		SPA:          opts.SPA,
 		ReadTimeout:  10 * time.Second,
 		WriteTimeout: 2 * time.Second,
