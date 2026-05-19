@@ -67,6 +67,34 @@ reducers and always advances `lastEventId`. `recordSentIntent` is called
 client-side at send time so the user's turn appears immediately rather
 than waiting for the server to echo.
 
+### ToolCall shape and the Live Terminal
+
+A single `ToolCall` keeps stdout/stderr in a line-segmented ring rather
+than as raw `command.chunk` slices. `mergeChunkIntoToolCall` (in
+`mobile/src/state/store.ts`) prepends the trailing partial-line buffer
+for the matching stream, splits on `\n`, pushes completed lines into
+`lines[]`, and retains the trailing fragment as the new partial.
+Older lines roll off the front when `lines.length` exceeds
+`TOOL_LINE_CAP` (2000), and a partial that grows past
+`TOOL_PARTIAL_CAP` (64 KiB) without a newline is force-flushed as a
+synthetic line — defence against unbounded progress-bar output.
+
+`sandbox.heartbeat` envelopes update `ToolCall.elapsedMs` without
+touching `lines`. The `LiveTerminal` component
+(`mobile/src/components/LiveTerminal.tsx`) replaces the old
+`CommandChunkLines` flat-Text rendering with a virtualised
+`FlatList` of completed lines plus a header strip with a pulsing
+"live" dot, a heartbeat-driven elapsed timer extrapolated locally
+every 250 ms for smoothness, and a "showing N of M" line counter.
+
+Auto-tail policy: the FlatList pins itself to the bottom while
+`autoTailRef.current` is true. `onScroll` flips it false as soon as
+the operator scrolls more than 24 px above the bottom, which also
+surfaces a "↓ Jump to bottom" pill. Tapping the pill re-arms tail and
+scrolls to the latest line. The interleaved single ring preserves
+terminal-accurate chronology between stdout and stderr; the per-line
+`stream` tag drives color (`#c9d1d9` / `#f87171`).
+
 ## WebSocket client
 
 `mobile/src/wire/client.ts` owns:

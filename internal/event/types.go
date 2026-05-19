@@ -12,9 +12,10 @@ const (
 	EventSessionReplaced = "session.replaced"
 
 	// Phase 3 sandbox tool invocation flow.
-	EventCommandRequest = "command.request"
-	EventCommandChunk   = "command.chunk"
-	EventCommandResult  = "command.result"
+	EventCommandRequest   = "command.request"
+	EventCommandChunk     = "command.chunk"
+	EventCommandResult    = "command.result"
+	EventSandboxHeartbeat = "sandbox.heartbeat"
 
 	// Phase 4 NLP middleware flow.
 	EventUserIntent          = "user.intent"
@@ -139,6 +140,14 @@ type CommandResultPayload struct {
 	DurationMs   int64  `json:"duration_ms"`
 	Error        string `json:"error,omitempty"`
 	ErrorMessage string `json:"error_message,omitempty"`
+}
+
+// SandboxHeartbeatPayload is emitted at most once per SandboxConfig.HeartbeatInterval
+// during silent stretches of a command.request — the runner has the container open
+// but stdout/stderr have produced no bytes. correlation_id is the originating
+// command.request.id. Heartbeats reset whenever a real command.chunk forwards.
+type SandboxHeartbeatPayload struct {
+	ElapsedMs int64 `json:"elapsed_ms"`
 }
 
 // UserIntentPayload is what a client sends on a user.intent envelope — one

@@ -111,6 +111,12 @@ type SandboxConfig struct {
 	// per-fsops isolation is a separate phase. Default false
 	// preserves the pre-Phase-10.2 shared-workspace behavior.
 	PerSessionWorkspace bool
+	// HeartbeatInterval governs how often the wsserver emits a
+	// sandbox.heartbeat envelope during stretches where the
+	// running container has produced no stdout/stderr. Reset
+	// whenever a real chunk is forwarded so chatty jobs don't
+	// double-emit. 0 disables heartbeats entirely.
+	HeartbeatInterval time.Duration
 }
 
 // MiddlewareConfig governs the Phase 4 NLP middleware that translates
@@ -315,6 +321,7 @@ func Load() (*Config, error) {
 			PreferRunsc:         envBool("NOMADDEV_SANDBOX_PREFER_RUNSC", true),
 			RequireDigest:       envBool("NOMADDEV_SANDBOX_REQUIRE_DIGEST", false),
 			PerSessionWorkspace: envBool("NOMADDEV_SANDBOX_PER_SESSION_WORKSPACE", false),
+			HeartbeatInterval:   envDuration("NOMADDEV_SANDBOX_HEARTBEAT_INTERVAL", 5*time.Second),
 		},
 		Middleware: MiddlewareConfig{
 			Runtime:          envOr("NOMADDEV_MIDDLEWARE_RUNTIME", "mock"),

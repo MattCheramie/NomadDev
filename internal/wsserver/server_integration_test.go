@@ -46,6 +46,7 @@ type testOpts struct {
 	SandboxMaxConcurrent int
 	ApprovalTimeout      time.Duration
 	SPA                  config.SPAConfig
+	HeartbeatInterval    time.Duration
 }
 
 func newTestServerFull(t *testing.T, opts testOpts) (*httptest.Server, *Server, session.Store, *auth.IssuerSigner) {
@@ -63,8 +64,9 @@ func newTestServerFull(t *testing.T, opts testOpts) (*httptest.Server, *Server, 
 		LogLevel:   slog.LevelInfo,
 		Session:    config.SessionConfig{BufferSize: 32, MaxBytes: 1 << 20},
 		Sandbox: config.SandboxConfig{
-			DefaultTimeout: 2 * time.Second,
-			MaxConcurrent:  opts.SandboxMaxConcurrent,
+			DefaultTimeout:    2 * time.Second,
+			MaxConcurrent:     opts.SandboxMaxConcurrent,
+			HeartbeatInterval: opts.HeartbeatInterval,
 		},
 		Approval: config.ApprovalConfig{
 			Timeout: opts.ApprovalTimeout,

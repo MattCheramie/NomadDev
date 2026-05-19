@@ -35,6 +35,7 @@ All messages — in both directions — are JSON envelopes with this shape:
 | `EventCommandRequest` | `command.request`   | C→S, S→C  | Run a sandbox tool. Payload: `{tool, args, working_dir, timeout_ms}`. Clients send this directly; the middleware also mints it when the LLM emits a tool call. |
 | `EventCommandChunk`   | `command.chunk`     | S→C       | Live stdout/stderr slice. Payload: `{stream, seq, data}`. `correlation_id` = originating `command.request.id`. |
 | `EventCommandResult`  | `command.result`    | S→C       | Terminal summary — emitted exactly once per request. Payload: `{exit_code, duration_ms, error, error_message}`. |
+| `EventSandboxHeartbeat` | `sandbox.heartbeat` | S→C     | Liveness ping emitted during stretches of stdout/stderr silence. Payload: `{elapsed_ms}`. `correlation_id` = originating `command.request.id`. Best-effort and idempotent — a missed heartbeat is harmless; see [Streaming semantics for `command.request`](#streaming-semantics-for-commandrequest). |
 | `EventUserIntent`     | `user.intent`       | C→S       | Free-text turn input for the NLP middleware. Payload: `{text, history_hint}`. |
 | `EventAssistantChunk` | `assistant.chunk`   | S→C       | Streamed model text. Payload: `{seq, text}`. `correlation_id` = originating `user.intent.id`. |
 | `EventAssistantMessage` | `assistant.message` | S→C     | Terminal frame for one turn — emitted exactly once. Payload: `{text, finish_reason, error}`. `text` may be empty when the model produced only tool calls. |
@@ -86,14 +87,22 @@ followed by **exactly one** `command.result`. All three share the request's
   `exit_code`. Sandbox-side failures produce `exit_code == -1` and one of:
   `sandbox_timeout`, `sandbox_oom`, `sandbox_image_pull`, `sandbox_unavailable`,
   `sandbox_bad_request`, `sandbox_canceled`, `sandbox_internal`.
+- `sandbox.heartbeat` envelopes may be interleaved with `command.chunk`
+  envelopes while the request is in flight. They are emitted by the
+  wsserver on a configurable interval (see
+  `NOMADDEV_SANDBOX_HEARTBEAT_INTERVAL` in `docs/sandbox.md`) when the
+  container has been silent for one interval; the ticker is reset on every
+  real chunk so chatty jobs don't double-emit. They are best-effort —
+  share the per-client outbound drop policy — and idempotent. Clients
+  use them to drive a "still alive" elapsed timer on the Live Terminal.
 
 **Example flow:**
 
 ```json
-{"id":"01HX-r","type":"command.request","ts":"...","payload":{"tool":"execute_script","args":{"shell":"bash","script":"echo hi; echo err >&2"},"timeout_ms":5000}}
+{"id":"01HX-r","type":"command.request","ts":"...","payload":{"tool":"execute_script","args":{"shell":"bash","script":"sleep 6; echo hi"},"timeout_ms":10000}}
+{"id":"01HX-h1","type":"sandbox.heartbeat","ts":"...","correlation_id":"01HX-r","payload":{"elapsed_ms":5000}}
 {"id":"01HX-c1","type":"command.chunk","ts":"...","correlation_id":"01HX-r","payload":{"stream":"stdout","seq":0,"data":"hi\n"}}
-{"id":"01HX-c2","type":"command.chunk","ts":"...","correlation_id":"01HX-r","payload":{"stream":"stderr","seq":0,"data":"err\n"}}
-{"id":"01HX-c3","type":"command.result","ts":"...","correlation_id":"01HX-r","payload":{"exit_code":0,"duration_ms":42}}
+{"id":"01HX-c2","type":"command.result","ts":"...","correlation_id":"01HX-r","payload":{"exit_code":0,"duration_ms":6020}}
 ```
 
 ## Phase 4 turn flow

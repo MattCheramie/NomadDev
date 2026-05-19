@@ -20,24 +20,54 @@ import {
   EventHello,
   EventPing,
   EventPong,
+  EventSandboxHeartbeat,
   EventSessionReplaced,
   EventSessionStale,
   EventToolApprovalRequest,
   EventUserIntent,
   HelloPayload,
   PingPayload,
+  SandboxHeartbeatPayload,
   Stream,
+  StreamStderr,
+  StreamStdout,
   ToolApprovalRequestPayload,
   UserIntentPayload,
   newReply,
 } from '@/wire/envelope';
 import { ConnectionStatus } from '@/wire/client';
 
+// LiveTerminal ring buffer caps. LINE_CAP bounds how many completed lines
+// the store keeps for one ToolCall — older lines roll off the front. PARTIAL_CAP
+// bounds the trailing fragment per stream (output without a terminating newline,
+// e.g. a download progress bar) before it's force-flushed as a synthetic line.
+export const TOOL_LINE_CAP = 2000;
+export const TOOL_PARTIAL_CAP = 64 * 1024;
+
+export type TerminalLine = {
+  stream: Stream;
+  text: string;
+  seq: number; // monotonic per ToolCall, used as a FlatList key
+};
+
 export type ToolCall = {
   commandId: string;
   tool: string;
   args: Record<string, unknown>;
-  chunks: Array<{ stream: Stream; data: string }>;
+  // Completed terminal lines, interleaved across stdout/stderr to preserve
+  // chronological order. Capped at TOOL_LINE_CAP — older lines roll off the
+  // front.
+  lines: TerminalLine[];
+  // Trailing partial-line buffers per stream. stdcopy chunks can split mid-line,
+  // so we hold the trailing fragment here until the next chunk closes it with
+  // a newline (or it overflows TOOL_PARTIAL_CAP).
+  partials: { stdout: string; stderr: string };
+  // Monotonic count of lines ever produced (including those rolled off). Drives
+  // the "showing N of M" indicator and uniqueness of line keys across a roll.
+  lineCount: number;
+  // ElapsedMs from the latest sandbox.heartbeat. The LiveTerminal extrapolates
+  // between heartbeats with a local interval timer for smoothness.
+  elapsedMs: number;
   result?: CommandResultPayload;
   awaitingApproval: boolean;
 };
@@ -188,6 +218,11 @@ export const useStore = create<AppState>((set, get) => ({
         finishToolCall(set, env.correlation_id, p);
         return;
       }
+      case EventSandboxHeartbeat: {
+        const p = env.payload as SandboxHeartbeatPayload;
+        applyHeartbeat(set, env.correlation_id, p);
+        return;
+      }
       case EventToolApprovalRequest: {
         const p = env.payload as ToolApprovalRequestPayload;
         const deadlineMs = Date.now() + (p.timeout_ms ?? 60_000);
@@ -259,14 +294,26 @@ function attachToolCall(
       t.intentId === intentId
         ? {
             ...t,
-            toolCalls: [...t.toolCalls, {
-              commandId, tool: p.tool, args: p.args ?? {},
-              chunks: [], awaitingApproval: false,
-            }],
+            toolCalls: [...t.toolCalls, newToolCall(commandId, p)],
           }
         : t,
     ),
   }));
+}
+
+// newToolCall builds the initial LiveTerminal-friendly ToolCall shape. Exported
+// indirectly via attachToolCall; kept inline so tests can mirror the shape.
+function newToolCall(commandId: string, p: CommandRequestPayload): ToolCall {
+  return {
+    commandId,
+    tool: p.tool,
+    args: p.args ?? {},
+    lines: [],
+    partials: { stdout: '', stderr: '' },
+    lineCount: 0,
+    elapsedMs: 0,
+    awaitingApproval: false,
+  };
 }
 
 function appendToolChunk(set: Setter, commandId: string | undefined, p: CommandChunkPayload) {
@@ -275,9 +322,67 @@ function appendToolChunk(set: Setter, commandId: string | undefined, p: CommandC
     turns: st.turns.map((t) => ({
       ...t,
       toolCalls: t.toolCalls.map((c) =>
-        c.commandId === commandId
-          ? { ...c, chunks: [...c.chunks, { stream: p.stream, data: p.data }] }
-          : c,
+        c.commandId === commandId ? mergeChunkIntoToolCall(c, p) : c,
+      ),
+    })),
+  }));
+}
+
+// mergeChunkIntoToolCall is the line-segmented ring-buffer reducer. It is
+// exported for unit-tests. It is pure: same inputs → same outputs, no shared
+// state with the surrounding closure.
+export function mergeChunkIntoToolCall(c: ToolCall, p: CommandChunkPayload): ToolCall {
+  const stream: Stream = p.stream === StreamStderr ? StreamStderr : StreamStdout;
+  // Prepend the carryover fragment for this stream, then split on \n.
+  const buf = c.partials[stream] + p.data;
+  const parts = buf.split('\n');
+  // Everything except the last element is a completed line; the last element
+  // is the new trailing partial.
+  const completed = parts.slice(0, -1);
+  let nextPartial = parts[parts.length - 1];
+
+  let lines = c.lines;
+  let lineCount = c.lineCount;
+  const additions: TerminalLine[] = [];
+  for (const text of completed) {
+    additions.push({ stream, text, seq: lineCount });
+    lineCount++;
+  }
+
+  // Force-flush a runaway partial (e.g. a progress bar that never emits a
+  // newline) so memory stays bounded.
+  if (nextPartial.length > TOOL_PARTIAL_CAP) {
+    additions.push({ stream, text: nextPartial, seq: lineCount });
+    lineCount++;
+    nextPartial = '';
+  }
+
+  if (additions.length > 0) {
+    const merged = lines.concat(additions);
+    lines = merged.length > TOOL_LINE_CAP
+      ? merged.slice(merged.length - TOOL_LINE_CAP)
+      : merged;
+  }
+
+  return {
+    ...c,
+    lines,
+    lineCount,
+    partials: { ...c.partials, [stream]: nextPartial },
+  };
+}
+
+function applyHeartbeat(
+  set: Setter,
+  commandId: string | undefined,
+  p: SandboxHeartbeatPayload,
+) {
+  if (!commandId) return;
+  set((st) => ({
+    turns: st.turns.map((t) => ({
+      ...t,
+      toolCalls: t.toolCalls.map((c) =>
+        c.commandId === commandId ? { ...c, elapsedMs: p.elapsed_ms } : c,
       ),
     })),
   }));

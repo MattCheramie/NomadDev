@@ -101,6 +101,10 @@ results, so a permissive pattern can't blow the context window.
 - [x] Build the main chat/event feed UI components.
 - [x] Create custom UI cards for "Action Approvals" (intercepting sensitive commands before they run).
 - [x] Implement background synchronization to fetch state history upon app resume.
+- [x] Live Terminal inside each Action Card — virtualised, auto-tailing
+  view of streamed `command.chunk` output with a heartbeat-driven
+  elapsed-time indicator (`sandbox.heartbeat`) so the operator can see
+  long-running jobs are still alive between bursts of output.
 
 Expo + TypeScript SPA at [`mobile/`](./mobile/), exported as static web
 assets and embedded into the orchestrator binary via

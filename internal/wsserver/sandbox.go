@@ -266,25 +266,53 @@ func (s *Server) runExec(
 	}
 
 	seq := map[string]int{event.StreamStdout: 0, event.StreamStderr: 0}
-	for chunk := range ch {
-		switch chunk.Stream {
-		case sandbox.StreamStdout, sandbox.StreamStderr:
-			s.emitChunk(sess, client, reqID, chunk, seq)
-		case sandbox.StreamExit:
-			code, errCode, errMsg := classifyExit(chunk)
-			s.emitResult(sess, client, reqID, started, code, errCode, errMsg)
-			// Drain any straggler chunks (should not happen per contract).
-			for range ch {
+
+	// Heartbeat ticker. Fires only when the runner has been silent for an
+	// interval — we Reset on every real chunk so chatty jobs don't double-emit.
+	// Interval == 0 disables; we leave tickC nil so the select branch never
+	// fires.
+	var (
+		ticker *time.Ticker
+		tickC  <-chan time.Time
+	)
+	if iv := s.cfg.Sandbox.HeartbeatInterval; iv > 0 {
+		ticker = time.NewTicker(iv)
+		tickC = ticker.C
+		defer ticker.Stop()
+	}
+
+	for {
+		select {
+		case chunk, ok := <-ch:
+			if !ok {
+				// Channel closed without an exit chunk — contract violation.
+				s.emitResult(sess, client, reqID, started, -1,
+					event.SandboxErrInternal, "runner closed channel without exit")
+				return
 			}
-			return
-		default:
-			logger.Warn("sandbox: unknown stream", "stream", chunk.Stream)
+			switch chunk.Stream {
+			case sandbox.StreamStdout, sandbox.StreamStderr:
+				s.emitChunk(sess, client, reqID, chunk, seq)
+				if ticker != nil {
+					ticker.Reset(s.cfg.Sandbox.HeartbeatInterval)
+				}
+			case sandbox.StreamExit:
+				if ticker != nil {
+					ticker.Stop()
+				}
+				code, errCode, errMsg := classifyExit(chunk)
+				s.emitResult(sess, client, reqID, started, code, errCode, errMsg)
+				// Drain any straggler chunks (should not happen per contract).
+				for range ch {
+				}
+				return
+			default:
+				logger.Warn("sandbox: unknown stream", "stream", chunk.Stream)
+			}
+		case <-tickC:
+			s.emitHeartbeat(sess, client, reqID, started)
 		}
 	}
-	// Channel closed without an exit chunk — contract violation. Emit a
-	// synthetic failure so the client always sees a terminal frame.
-	s.emitResult(sess, client, reqID, started, -1,
-		event.SandboxErrInternal, "runner closed channel without exit")
 }
 
 // emitChunk slices chunk.Data into <=maxChunkSize utf-8 pieces and sends one
@@ -315,6 +343,24 @@ func (s *Server) emitChunk(
 		}
 		s.bufferAndSend(sess, client, env)
 	}
+}
+
+// emitHeartbeat sends a sandbox.heartbeat envelope correlated to reqID.
+// Heartbeats are best-effort liveness pings — they share the per-client
+// bufferAndSend drop policy, which is fine: a missed heartbeat just means
+// the next one (or the next real chunk) refreshes the client's elapsed
+// timer.
+func (s *Server) emitHeartbeat(
+	sess *session.Session, client *hub.Client, reqID string, started time.Time,
+) {
+	env, err := event.NewReply(event.EventSandboxHeartbeat, reqID, event.SandboxHeartbeatPayload{
+		ElapsedMs: time.Since(started).Milliseconds(),
+	})
+	if err != nil {
+		s.log.Error("sandbox: build heartbeat envelope", "err", err)
+		return
+	}
+	s.bufferAndSend(sess, client, env)
 }
 
 // emitResult builds and sends the single command.result envelope. Every

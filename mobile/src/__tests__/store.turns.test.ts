@@ -47,7 +47,8 @@ test('full turn: user intent + chunks + tool call + result + assistant message',
   expect(turn.finishReason).toBe('stop');
   expect(turn.toolCalls).toHaveLength(1);
   expect(turn.toolCalls[0].commandId).toBe('C1');
-  expect(turn.toolCalls[0].chunks.map((c) => c.data).join('')).toBe('line1\nline2\n');
+  expect(turn.toolCalls[0].lines.map((l) => l.text).join('\n')).toBe('line1\nline2');
+  expect(turn.toolCalls[0].lineCount).toBe(2);
   expect(turn.toolCalls[0].result?.exit_code).toBe(0);
 });
 
