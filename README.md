@@ -13,7 +13,7 @@ The architecture is divided into six modular, decoupled components:
 1. **The Secure Mesh (Connectivity):** A Tailscale overlay network ensuring the remote host and mobile client communicate exclusively over a private IP range.
 2. **The Orchestrator Daemon (Backend):** A lightweight, concurrent WebSocket server written in Go that acts as the central nervous system, handling secure client connections and job routing.
 3. **The Ephemeral Sandbox (Worker):** A Go-based wrapper around the Docker SDK that runs each tool call in a one-shot container with no network, read-only rootfs, and gVisor (`runsc`) isolation when the host advertises it. Hard memory / CPU / pids caps and a wall-clock timeout bound every execution.
-4. **The NLP-to-RPC Middleware (Logic):** A translation layer that utilizes the Google GenAI SDK to map natural language requests to predefined JSON schemas and remote procedure calls (RPC).
+4. **The NLP-to-RPC Middleware (Logic):** A translation layer that maps natural language requests to predefined JSON schemas and remote procedure calls (RPC). Pluggable provider backends: Google GenAI (Gemini), OpenAI Chat Completions, Anthropic Messages API, and DeepSeek — each selectable via the `NOMADDEV_MIDDLEWARE_RUNTIME` env var and gated behind its own build tag.
 5. **The GitHub MCP Backend (Integration):** A subprocess-managed embedding of the official [github-mcp-server](https://github.com/github/github-mcp-server) exposing ~75 GitHub operations as additional tool calls. Mutating operations flow through the same approval gate as shell scripts.
 6. **The Control Hub (Client):** A React Native mobile application that consumes JSON event streams to render a clean, native UI instead of raw terminal output.
 
@@ -71,6 +71,22 @@ and how to switch between the mock and Docker runners.
 - [x] Map the generated Function Calls directly to the Go Sandbox Runner from Phase 3.
 - [x] Format execution results back into JSON for the LLM to interpret.
 - [x] Audit / dry-run mode: `user.intent` envelopes may carry `mode: "audit"`. The orchestrator strips `execute_script`, `write_patch`, `apply_code_patch`, and destructive `github_*` tools from the catalogue before the schema reaches Gemini, and the dispatcher refuses to run them defense-in-depth. The assistant is steered to produce a markdown report.
+- [x] Multi-provider LLM support: alongside Gemini, the middleware ships
+  drop-in `Translator` implementations for **OpenAI Chat Completions**
+  ([`internal/middleware/openai.go`](./internal/middleware/openai.go)),
+  the **Anthropic Messages API**
+  ([`internal/middleware/anthropic.go`](./internal/middleware/anthropic.go)),
+  and **DeepSeek** (reuses the OpenAI client with the DeepSeek base URL
+  pre-filled by the factory, since DeepSeek's API is OpenAI-compatible).
+  Each provider is gated behind its own build tag (`-tags openai`,
+  `-tags anthropic`) so the default orchestrator binary stays SDK-free.
+  Operators select a backend with
+  `NOMADDEV_MIDDLEWARE_RUNTIME=mock|gemini|openai|anthropic|deepseek|none`
+  and supply per-provider credentials via `NOMADDEV_{OPENAI,ANTHROPIC,
+  DEEPSEEK}_API_KEY` (plus optional `_MODEL` overrides and
+  `NOMADDEV_OPENAI_BASE_URL` for Azure / proxy deployments). See
+  [`internal/middleware/README.md`](./internal/middleware/README.md) for
+  the build matrix.
 
 Translator + dispatcher + approval gate live at
 [`internal/middleware/`](./internal/middleware/); filesystem-only tools live
@@ -1166,9 +1182,15 @@ gemini`, and the combined build. See
 The Docker-tagged tests (`internal/sandbox/docker_test.go`) call
 `requireDaemon(t)` and skip cleanly on machines without a daemon. The
 Gemini-tagged tests (`internal/middleware/gemini_test.go`) call
-`requireKey(t)` and skip when `NOMADDEV_GEMINI_API_KEY` is absent. Build the
-Docker-enabled binaries with `make build-docker`, the Gemini-enabled binaries
-with `make build-gemini`, or both with `make build-all`. See
+`requireKey(t)` and skip when `NOMADDEV_GEMINI_API_KEY` is absent. The
+OpenAI- and Anthropic-tagged tests
+(`internal/middleware/{openai,anthropic}_test.go`) drive the translators
+against an `httptest` SSE stub, so they run in CI without any API key.
+
+Build the Docker-enabled binaries with `make build-docker`, or pick an
+LLM backend with `make build-gemini`, `make build-openai` (which also
+enables `runtime=deepseek`), or `make build-anthropic`. `make build-all`
+links Docker, GitHub MCP, and all three LLM SDKs into one binary. See
 [`.env.example`](./.env.example) for all configuration knobs.
 
 ---

@@ -208,4 +208,3 @@ func TestOpenAITranslator_ToolCallRoundTrip(t *testing.T) {
 		t.Errorf("stage2 final = %+v, want stop", final)
 	}
 }
-
