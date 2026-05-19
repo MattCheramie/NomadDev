@@ -124,6 +124,13 @@ type MiddlewareConfig struct {
 	SystemPrompt     string // inline override
 	SystemPromptPath string // file path; takes precedence over SystemPrompt
 	MaxConcurrent    int    // per-server cap on concurrent user.intent turns
+	// MaxAutoRetries caps consecutive failed tool-call dispatches inside one
+	// chain before the middleware escalates the failure to the Mobile
+	// Control Hub as a system.error_report envelope. A success (or a
+	// non-retryable failure such as bad_request / unauthorized) resets the
+	// counter. 0 disables the recovery loop entirely; the first retryable
+	// failure escalates. Default 2.
+	MaxAutoRetries int // NOMADDEV_MAX_AUTORETRIES
 }
 
 // HistoryConfig governs the persistent conversation store.
@@ -318,6 +325,7 @@ func Load() (*Config, error) {
 			SystemPrompt:     os.Getenv("NOMADDEV_MIDDLEWARE_SYSTEM_PROMPT"),
 			SystemPromptPath: os.Getenv("NOMADDEV_MIDDLEWARE_SYSTEM_PROMPT_PATH"),
 			MaxConcurrent:    envInt("NOMADDEV_MIDDLEWARE_MAX_CONCURRENT", 4),
+			MaxAutoRetries:   envInt("NOMADDEV_MAX_AUTORETRIES", 2),
 		},
 		History: HistoryConfig{
 			Backend:     envOr("NOMADDEV_HISTORY_BACKEND", "sqlite"),

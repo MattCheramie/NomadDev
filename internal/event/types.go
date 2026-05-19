@@ -26,6 +26,13 @@ const (
 
 	// Phase 6 client-driven session controls (e.g. Settings → Reset history).
 	EventUserCommand = "user.command"
+
+	// Phase 13 automated error recovery. Emitted to the Mobile Control
+	// Hub when the middleware exhausts NOMADDEV_MAX_AUTORETRIES auto-fix
+	// attempts on a failing tool call. The same payload shape is also
+	// used internally as a ToolResult.Output["error_report"] enrichment
+	// the translator reads to author a fix on the next stream stage.
+	EventSystemErrorReport = "system.error_report"
 )
 
 // UserCommandAction values for UserCommandPayload.Action.
@@ -199,4 +206,29 @@ type AckPayload struct {
 	Action  string `json:"action"`
 	Error   string `json:"error,omitempty"`
 	Message string `json:"message,omitempty"`
+}
+
+// SystemErrorReportPayload carries a structured account of a failing tool
+// call dispatched by the middleware. The middleware uses it in two places:
+//
+//   - Internally, as a ToolResult.Output["error_report"] enrichment that the
+//     translator inspects on its next stream stage. The LLM is expected to
+//     read Stderr / ErrorCode / Attempt and emit a fresh command.request
+//     that addresses the failure.
+//   - On the wire, as the body of an EventSystemErrorReport envelope sent to
+//     the Mobile Control Hub when the retry budget is exhausted. Escalated
+//     is true only on the wire form.
+//
+// Stderr is truncated to a fixed cap (see middleware.MaxErrorReportStderrBytes)
+// so the prompt window and the wire frame both stay bounded.
+type SystemErrorReportPayload struct {
+	Tool           string `json:"tool"`
+	OriginalCallID string `json:"original_call_id"`
+	ExitCode       int    `json:"exit_code"`
+	ErrorCode      string `json:"error_code,omitempty"`
+	ErrorMessage   string `json:"error_message,omitempty"`
+	Stderr         string `json:"stderr,omitempty"`
+	Attempt        int    `json:"attempt"`
+	MaxAttempts    int    `json:"max_attempts"`
+	Escalated      bool   `json:"escalated"`
 }

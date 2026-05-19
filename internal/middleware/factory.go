@@ -35,6 +35,7 @@ type FactoryConfig struct {
 	DefaultTimeout     time.Duration
 	SandboxLimits      sandbox.ResourceLimits
 	GateDirectCommands bool
+	MaxAutoRetries     int
 
 	// Wired-in collaborators.
 	Sandbox sandbox.Runner
@@ -114,6 +115,7 @@ func NewService(ctx context.Context, c FactoryConfig) (*Service, error) {
 			DefaultTimeout:     c.DefaultTimeout,
 			SandboxLimits:      c.SandboxLimits,
 			GateDirectCommands: c.GateDirectCommands,
+			MaxAutoRetries:     c.MaxAutoRetries,
 		},
 	}, nil
 }
