@@ -1,8 +1,9 @@
 # internal/middleware/
 
 The Phase 4 NLP middleware. Translates `user.intent` envelopes into typed
-tool calls via Gemini (or a deterministic mock) and dispatches them through
-the orchestrator's existing chunk/result envelope flow.
+tool calls via Gemini, OpenAI, Anthropic, DeepSeek, or a deterministic mock,
+and dispatches them through the orchestrator's existing chunk/result
+envelope flow.
 
 ## Public surface
 
@@ -38,13 +39,22 @@ host or remote state.
 
 - `MockTranslator` — deterministic, dependency-free, default build. Used in
   tests and in the smoke flow when `NOMADDEV_MIDDLEWARE_RUNTIME=mock`.
-- `GeminiTranslator` — real Google GenAI SDK client. Behind
-  `//go:build gemini`. The default binary doesn't link the SDK; rebuild
-  with `make build-gemini` to enable it.
+- `GeminiTranslator` — Google GenAI SDK client. Behind `//go:build gemini`;
+  rebuild with `make build-gemini`.
+- `OpenAITranslator` — OpenAI Chat Completions client. Behind
+  `//go:build openai`; rebuild with `make build-openai`. The same
+  translator backs `NOMADDEV_MIDDLEWARE_RUNTIME=deepseek` — the factory
+  swaps in the DeepSeek base URL and `deepseek-chat` defaults because
+  DeepSeek's API is OpenAI-compatible.
+- `AnthropicTranslator` — Anthropic Messages API client. Behind
+  `//go:build anthropic`; rebuild with `make build-anthropic`.
 
-`NewService(ctx, FactoryConfig{Runtime: "mock"|"gemini"|"none"})` picks one.
-`Runtime: "none"` returns `nil`, which the orchestrator handler treats as
-"reply with `event.error{not_implemented}`".
+The default orchestrator binary doesn't link any of these SDKs; each is
+opt-in via its build tag. `make build-all` enables all of them at once.
+
+`NewService(ctx, FactoryConfig{Runtime: "mock"|"gemini"|"openai"|"anthropic"|"deepseek"|"none"})`
+picks one. `Runtime: "none"` returns `nil`, which the orchestrator handler
+treats as "reply with `event.error{not_implemented}`".
 
 ## Dispatcher
 
