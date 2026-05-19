@@ -66,8 +66,8 @@ func TestBuildSearchSyntaxCmd_CapsMaxMatches(t *testing.T) {
 
 func TestBuildSearchSyntaxCmd_Rejects(t *testing.T) {
 	cases := []map[string]any{
-		{},                                                    // missing pattern
-		{"pattern": ""},                                       // empty pattern
+		{},              // missing pattern
+		{"pattern": ""}, // empty pattern
 		{"pattern": strings.Repeat("x", maxSearchPatternBytes+1)},
 		{"pattern": "$X", "path": "/abs"},
 		{"pattern": "$X", "path": ".."},

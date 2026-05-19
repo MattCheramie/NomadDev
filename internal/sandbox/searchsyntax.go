@@ -99,7 +99,7 @@ func buildSearchSyntaxCmd(args map[string]any) (argv []string, maxMatches int, e
 			return nil, 0, fmt.Errorf("%w: 'lang' exceeds %d chars", ErrBadRequest, maxSearchLangBytes)
 		}
 		for _, r := range lang {
-			if !((r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z')) {
+			if (r < 'a' || r > 'z') && (r < 'A' || r > 'Z') {
 				return nil, 0, fmt.Errorf("%w: 'lang' must be alphabetic", ErrBadRequest)
 			}
 		}

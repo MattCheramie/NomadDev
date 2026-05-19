@@ -274,7 +274,7 @@ func validateSearchSyntax(args map[string]any) error {
 			return fmt.Errorf("%w: lang exceeds 16 chars", ErrToolValidation)
 		}
 		for _, r := range s {
-			if !((r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z')) {
+			if (r < 'a' || r > 'z') && (r < 'A' || r > 'Z') {
 				return fmt.Errorf("%w: lang must be alphabetic", ErrToolValidation)
 			}
 		}
