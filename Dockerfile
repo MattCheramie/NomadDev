@@ -9,8 +9,17 @@
 #                           pinned by version. Bundled so the GitHub MCP
 #                           integration works without the operator having
 #                           to install a second binary outside the image.
-# Stage 4 ("final"):        distroless/static — both binaries +
+# Stage 4 ("sandbox"):      debian:bookworm-slim + ast-grep — the worker
+#                           image the orchestrator spawns per tool call.
+#                           Built and tagged separately:
+#                             docker build --target sandbox \
+#                               -t nomaddev/sandbox:bookworm-sg .
+#                           then point NOMADDEV_SANDBOX_IMAGE at the tag.
+# Stage 5 ("final"):        distroless/static — both binaries +
 #                           /var/lib/nomaddev. No libc, no /etc, no shell.
+#                           Last in file so `docker build` without
+#                           `--target` produces the orchestrator image
+#                           (not the larger debian-based sandbox).
 #
 # modernc.org/sqlite is pure-Go, so CGO_ENABLED=0 produces a fully static
 # binary that runs on scratch / distroless.
@@ -65,7 +74,55 @@ RUN --mount=type=cache,target=/root/.cache/go-build \
     go install -trimpath -ldflags "-s -w" \
         "github.com/github/github-mcp-server/cmd/github-mcp-server@${GITHUB_MCP_VERSION}"
 
-# ---------- Stage 4: runtime ----------------------------------------------
+# ---------- Stage 4: sandbox worker image ---------------------------------
+# Ephemeral worker the orchestrator spawns per tool call. Pre-installs
+# ast-grep so the `search_syntax` tool can run with
+# NOMADDEV_SANDBOX_NETWORK=none (the default) — runtime apt/apk-install
+# isn't an option when the sandbox has no network.
+#
+# ast-grep upstream only publishes glibc-linked release binaries (no
+# musl variant), so the sandbox base is debian:bookworm-slim rather
+# than alpine. Footprint is ~75 MB compressed; still small for a
+# per-tool-call ephemeral worker, and we get bash + ca-certificates in
+# the base layer without extra installs.
+#
+# Pinned via AST_GREP_VERSION below. Bump in lockstep with any
+# pattern-grammar changes the model is taught to use; the upstream zip
+# ships both `ast-grep` and `sg` (no symlink needed).
+#
+# Build + tag (uses --target so the default `docker build` still
+# produces the distroless orchestrator image at Stage 5):
+#   docker build --target sandbox -t nomaddev/sandbox:bookworm-sg .
+# Point the orchestrator at it:
+#   NOMADDEV_SANDBOX_IMAGE=nomaddev/sandbox:bookworm-sg
+FROM debian:bookworm-slim AS sandbox
+ARG AST_GREP_VERSION=0.42.2
+RUN set -eux; \
+    apt-get update; \
+    apt-get install -y --no-install-recommends bash ca-certificates curl unzip; \
+    case "$(dpkg --print-architecture)" in \
+      amd64) ag_target=x86_64-unknown-linux-gnu ;; \
+      arm64) ag_target=aarch64-unknown-linux-gnu ;; \
+      *) echo "unsupported arch for ast-grep: $(dpkg --print-architecture)" >&2; exit 1 ;; \
+    esac; \
+    curl -fsSL -o /tmp/ast-grep.zip \
+        "https://github.com/ast-grep/ast-grep/releases/download/${AST_GREP_VERSION}/app-${ag_target}.zip"; \
+    unzip -o /tmp/ast-grep.zip -d /usr/local/bin/; \
+    chmod +x /usr/local/bin/ast-grep /usr/local/bin/sg; \
+    rm /tmp/ast-grep.zip; \
+    apt-get purge -y curl unzip; \
+    apt-get autoremove -y; \
+    rm -rf /var/lib/apt/lists/*
+WORKDIR /work
+# Smoke-check the binary is on PATH and prints a version. Fails the
+# build (CI gate) if the release format ever changes shape.
+RUN sg --version
+
+# ---------- Stage 5: runtime ----------------------------------------------
+# Last stage on purpose: `docker build` without `--target` produces the
+# distroless orchestrator image, not the larger debian-based sandbox.
+# Trivy scans the default-target output, so keeping `final` last keeps
+# the CVE surface at zero (distroless ships no apt-managed packages).
 FROM gcr.io/distroless/static-debian12:nonroot AS final
 # distroless/static:nonroot ships uid 65532 / gid 65532 in /etc/passwd. We
 # pre-create the persistent dir with that ownership via WORKDIR + COPY.

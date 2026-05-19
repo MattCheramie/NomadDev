@@ -20,6 +20,12 @@ type DispatchOptions struct {
 	SessionID     string
 	SandboxLimits sandbox.ResourceLimits
 	FSOpsLimits   fsops.Limits
+	// MaxResultBytes caps the structured-tool envelope returned by
+	// search_syntax (and shared with the GitHub MCP backend's own cap
+	// at internal/githubmcp/client.go). Sourced from
+	// NOMADDEV_GITHUB_MAX_RESULT_BYTES; 0 = unlimited. Ignored by
+	// execute_script / fsops tools which carry their own per-op caps.
+	MaxResultBytes int
 }
 
 // ToolDispatcher executes one tool call and streams sandbox.ExecChunk frames
@@ -55,17 +61,18 @@ func NewCompositeDispatcher(r sandbox.Runner, fs *fsops.Engine) *CompositeDispat
 // Dispatch implements ToolDispatcher.
 func (c *CompositeDispatcher) Dispatch(ctx context.Context, call ToolCall, opts DispatchOptions) (<-chan sandbox.ExecChunk, error) {
 	switch call.Tool {
-	case ToolExecuteScript:
+	case ToolExecuteScript, ToolSearchSyntax:
 		if c.Sandbox == nil {
 			return nil, fmt.Errorf("%w: sandbox runner not configured", sandbox.ErrBadRequest)
 		}
 		return c.Sandbox.Exec(ctx, sandbox.ExecRequest{
-			Tool:       sandbox.ToolExecuteScript,
-			Args:       call.Args,
-			WorkingDir: opts.WorkingDir,
-			Timeout:    opts.Timeout,
-			Limits:     opts.SandboxLimits,
-			SessionID:  opts.SessionID,
+			Tool:           call.Tool,
+			Args:           call.Args,
+			WorkingDir:     opts.WorkingDir,
+			Timeout:        opts.Timeout,
+			Limits:         opts.SandboxLimits,
+			SessionID:      opts.SessionID,
+			MaxResultBytes: opts.MaxResultBytes,
 		})
 	case ToolReadFile, ToolListDir, ToolWritePatch, ToolApplyCodePatch:
 		if c.FSOps == nil {

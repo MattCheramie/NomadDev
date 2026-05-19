@@ -66,7 +66,7 @@ and how to switch between the mock and Docker runners.
 ### Phase 4: NLP Function Middleware — done
 *Objective: Standardize natural language into actionable system commands.*
 - [x] Integrate the Gemini API via Google AI Studio.
-- [x] Define JSON schemas for core system tools (e.g., `execute_script`, `read_file`, `write_patch`, `apply_code_patch`).
+- [x] Define JSON schemas for core system tools (e.g., `execute_script`, `read_file`, `write_patch`, `apply_code_patch`, `search_syntax`).
 - [x] Build the loop that receives user intent, queries the LLM, and captures the resulting Function Call.
 - [x] Map the generated Function Calls directly to the Go Sandbox Runner from Phase 3.
 - [x] Format execution results back into JSON for the LLM to interpret.
@@ -78,6 +78,21 @@ at [`internal/fsops/`](./internal/fsops/); per-session conversation memory at
 [`docs/middleware.md`](./docs/middleware.md) for the full architecture and
 [`docs/approval.md`](./docs/approval.md) for the human-in-the-loop state
 machine.
+
+`search_syntax` shells out to [ast-grep](https://ast-grep.github.io/) (`sg`)
+inside the sandbox worker so the model can run structural AST queries
+(e.g. `fn $F($_: context.Context)`) instead of authoring fragile regex. The
+binary is pre-baked into the dedicated sandbox image built from the
+`sandbox` Dockerfile target:
+
+```
+docker build --target sandbox -t nomaddev/sandbox:bookworm-sg .
+NOMADDEV_SANDBOX_IMAGE=nomaddev/sandbox:bookworm-sg ./orchestrator
+```
+
+The envelope returned to the model is capped by the same
+`NOMADDEV_GITHUB_MAX_RESULT_BYTES` (default 1 MiB) that gates GitHub MCP
+results, so a permissive pattern can't blow the context window.
 
 ### Phase 5: Mobile Control Hub — done
 *Objective: Ditch the terminal for a native, reactive mobile interface.*

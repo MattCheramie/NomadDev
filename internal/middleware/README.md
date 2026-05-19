@@ -14,6 +14,7 @@ type Translator interface {
 type ToolCall struct {
     ID   string
     Tool string         // "execute_script" | "read_file" | "list_dir" | "write_patch"
+                        // | "apply_code_patch" | "search_syntax" | "github_*"
     Args map[string]any
 }
 
@@ -42,20 +43,26 @@ type Service struct {
 
 `CompositeDispatcher` routes by tool name:
 
-- `execute_script` → `sandbox.Runner` (Phase 3 container).
-- `read_file`, `list_dir`, `write_patch` → `internal/fsops.Engine` running
-  as native Go on the workspace directory.
+- `execute_script`, `search_syntax` → `sandbox.Runner` (Phase 3 container).
+  `search_syntax` shells out to `sg` (ast-grep) inside the same ephemeral
+  container; the worker image must carry the binary — see the `sandbox`
+  Dockerfile target.
+- `read_file`, `list_dir`, `write_patch`, `apply_code_patch` →
+  `internal/fsops.Engine` running as native Go on the workspace directory.
+- `github_*` → `internal/githubmcp.Caller` (subprocess MCP).
 
-The split keeps `internal/sandbox` untouched and avoids the latency of a
-container spin-up for filesystem-only ops. See `docs/middleware.md` for the
-rationale and threat-model details.
+The split keeps `internal/sandbox` to the ops that genuinely need
+container isolation and avoids container-spinup latency for filesystem-
+only ops. See `docs/middleware.md` for the rationale and threat-model
+details.
 
 ## Approval gate
 
 `PolicyApprover` decides whether a tool call needs a human round-trip
 (`tool.approval.request` → `tool.approval.granted | denied`) before
-dispatching. Default policy: `execute_script` and `write_patch` require
-approval; `read_file` and `list_dir` auto-approve. See `docs/approval.md`
+dispatching. Default policy: `execute_script`, `write_patch`, and
+`apply_code_patch` require approval; `read_file`, `list_dir`, and
+`search_syntax` are read-only and auto-approve. See `docs/approval.md`
 for the state machine and knobs.
 
 ## Persistent history

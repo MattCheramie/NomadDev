@@ -25,9 +25,11 @@ func main() {
 	runtime := flag.String("runtime", "mock", "runner runtime: mock | docker | none")
 	image := flag.String("image", "alpine:3.20", "container image (docker runtime only)")
 	workdir := flag.String("workspace", os.TempDir(), "host workspace bind-mounted at /work")
-	tool := flag.String("tool", "execute_script", "tool name")
+	tool := flag.String("tool", "execute_script", "tool name (execute_script | search_syntax)")
 	shell := flag.String("shell", "bash", "shell for execute_script")
-	script := flag.String("script", "", "script body; '-' reads stdin")
+	script := flag.String("script", "", "script body; '-' reads stdin (execute_script only)")
+	args := flag.String("args", "", "JSON-encoded args map; overrides -shell/-script when set")
+	maxResultBytes := flag.Int("max-result-bytes", 0, "search_syntax envelope cap in bytes (0 = unlimited)")
 	timeout := flag.Duration("timeout", 30*time.Second, "exec wall-clock timeout")
 	memBytes := flag.Int64("memory", 256<<20, "container memory limit in bytes")
 	cpuNanos := flag.Int64("cpu-nanos", 1_000_000_000, "container CPU limit in nano-CPUs")
@@ -36,25 +38,33 @@ func main() {
 	network := flag.String("network", "none", "container network mode")
 	flag.Parse()
 
-	if err := run(*runtime, *image, *workdir, *tool, *shell, *script, *timeout,
+	if err := run(*runtime, *image, *workdir, *tool, *shell, *script, *args, *maxResultBytes, *timeout,
 		*memBytes, *cpuNanos, *pidsLimit, *preferRunsc, *network); err != nil {
 		fmt.Fprintln(os.Stderr, "sandbox:", err)
 		os.Exit(1)
 	}
 }
 
-func run(runtime, image, workdir, tool, shell, scriptArg string, timeout time.Duration,
+func run(runtime, image, workdir, tool, shell, scriptArg, argsJSON string, maxResultBytes int, timeout time.Duration,
 	memBytes, cpuNanos, pidsLimit int64, preferRunsc bool, network string) error {
-	body := scriptArg
-	if body == "-" {
-		b, err := io.ReadAll(os.Stdin)
-		if err != nil {
-			return fmt.Errorf("read stdin: %w", err)
+	var toolArgs map[string]any
+	if argsJSON != "" {
+		if err := json.Unmarshal([]byte(argsJSON), &toolArgs); err != nil {
+			return fmt.Errorf("parse -args JSON: %w", err)
 		}
-		body = string(b)
-	}
-	if body == "" {
-		return errors.New("-script is required (or use -script - to read stdin)")
+	} else {
+		body := scriptArg
+		if body == "-" {
+			b, err := io.ReadAll(os.Stdin)
+			if err != nil {
+				return fmt.Errorf("read stdin: %w", err)
+			}
+			body = string(b)
+		}
+		if body == "" && tool == "execute_script" {
+			return errors.New("-script is required for execute_script (or use -script - / -args)")
+		}
+		toolArgs = map[string]any{"shell": shell, "script": body}
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), timeout+5*time.Second)
@@ -84,9 +94,10 @@ func run(runtime, image, workdir, tool, shell, scriptArg string, timeout time.Du
 	}
 
 	req := sandbox.ExecRequest{
-		Tool:    tool,
-		Args:    map[string]any{"shell": shell, "script": body},
-		Timeout: timeout,
+		Tool:           tool,
+		Args:           toolArgs,
+		Timeout:        timeout,
+		MaxResultBytes: maxResultBytes,
 	}
 	ch, err := runner.Exec(ctx, req)
 	if err != nil {

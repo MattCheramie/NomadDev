@@ -75,7 +75,7 @@ The Docker runner's defaults are intentionally paranoid:
 | `NOMADDEV_SANDBOX_NETWORK` | `none` | `HostConfig.NetworkMode` |
 | `NOMADDEV_SANDBOX_READONLY_ROOTFS` | `true` | `HostConfig.ReadonlyRootfs` |
 | `NOMADDEV_SANDBOX_PREFER_RUNSC` | `true` | `HostConfig.Runtime` when daemon advertises `runsc` |
-| `NOMADDEV_SANDBOX_IMAGE` | `alpine:3.20` | container image |
+| `NOMADDEV_SANDBOX_IMAGE` | `alpine:3.20` | container image (override with the ast-grep-enabled image — see [Worker image with ast-grep](#worker-image-with-ast-grep)) |
 | `NOMADDEV_SANDBOX_WORKSPACE_DIR` | `/var/lib/nomaddev/work` | host path bind-mounted at `/work` |
 | `NOMADDEV_SANDBOX_PER_SESSION_WORKSPACE` | `false` | Phase 10.2: per-SID workspace subdir |
 
@@ -147,6 +147,58 @@ or running the orchestrator as `dockremap` itself. The systemd
 unit's `User=nomaddev` runs as a different uid by default; the
 operator picks one or the other.
 
+## Worker image with ast-grep
+
+The `search_syntax` tool (Phase 12.x) invokes [`sg`](https://ast-grep.github.io/)
+inside the sandbox container. The default `alpine:3.20` image doesn't
+ship with it, and `NOMADDEV_SANDBOX_NETWORK=none` (the default) blocks
+runtime `apt`/`apk` installs, so the binary has to be pre-baked into the
+image. ast-grep upstream only publishes glibc-linked binaries, so the
+dedicated worker image uses `debian:bookworm-slim` rather than alpine —
+the orchestrator's own container (Stage 4) stays distroless/alpine-built.
+
+The repo's [`Dockerfile`](../Dockerfile) carries a dedicated `sandbox`
+target for exactly this:
+
+```bash
+docker build --target sandbox -t nomaddev/sandbox:bookworm-sg .
+```
+
+Then point the orchestrator at it:
+
+```bash
+NOMADDEV_SANDBOX_IMAGE=nomaddev/sandbox:bookworm-sg ./orchestrator
+```
+
+If you'd rather extend your own base image, the only requirement is that
+`sg` is on `PATH` inside the container. The upstream release zip carries
+both `ast-grep` and `sg` (the short-form CLI the search_syntax handler
+invokes):
+
+```dockerfile
+FROM your-debian-base:tag
+ARG AST_GREP_VERSION=0.42.2
+RUN curl -fsSL -o /tmp/ag.zip \
+      "https://github.com/ast-grep/ast-grep/releases/download/${AST_GREP_VERSION}/app-x86_64-unknown-linux-gnu.zip" \
+ && unzip -o /tmp/ag.zip -d /usr/local/bin/ \
+ && chmod +x /usr/local/bin/ast-grep /usr/local/bin/sg \
+ && rm /tmp/ag.zip
+```
+
+On alpine you'd need a glibc-compat layer (e.g. `gcompat`) or build
+ast-grep from source against musl, since upstream doesn't ship a
+musl-linked release. The Debian path is the documented one.
+
+When `sg` is missing the tool still degrades gracefully: the container
+exits non-zero with `sg: not found` on stderr, the runner surfaces that
+in the `error` field of the envelope, and the model sees a `sandbox.err.*`
+result rather than a panic.
+
+The envelope returned to the model is capped by
+`NOMADDEV_GITHUB_MAX_RESULT_BYTES` (default 1 MiB, shared with the
+GitHub MCP backend) so a permissive pattern like `$X` against a large
+tree can't blow the model's context window.
+
 ## Runtime selection
 
 `NOMADDEV_SANDBOX_RUNTIME` picks the runner:
@@ -196,11 +248,10 @@ all six Docker round-trip tests on every PR (~10s total wall-clock).
 
 ## Future work (out of scope for Phase 3)
 
-- Additional tools (`read_file`, `write_patch`) — wait for Phase 4 alongside
-  the Gemini function-call schemas.
 - Long-lived container reuse for fast-path script execution — Phase 4 may
   promote `ContainerExec*` over the current `ContainerCreate-per-request`
   model once we have tool semantics that benefit from a warm sandbox.
-- Per-session workspace isolation — currently the same `WorkspaceDir` is
-  bound for every request; per-SID subdirectories arrive when multi-user
-  support lands.
+  `search_syntax` is the first tool that would benefit (it pays the
+  full container-spinup cost for what's effectively a sub-second `sg`
+  invocation), but the threat model change of running multiple tool
+  calls in the same container needs its own design pass.

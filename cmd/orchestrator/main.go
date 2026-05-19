@@ -510,6 +510,7 @@ func buildMiddleware(
 		},
 		GateDirectCommands:      cfg.Approval.GateDirectCommands,
 		MaxAutoRetries:          cfg.Middleware.MaxAutoRetries,
+		MaxResultBytes:          cfg.GitHub.MaxResultBytes,
 		Sandbox:                 runner,
 		FSOps:                   fs,
 		History:                 store,

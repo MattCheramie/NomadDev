@@ -32,9 +32,12 @@ const (
 	StreamExit   = "exit"
 )
 
-// Supported tool names. Phase 3 implements only one.
+// Supported tool names. Phase 3 implemented `execute_script`; Phase 12
+// adds `search_syntax`, a structural ast-grep query the worker runs by
+// shelling out to `sg` inside the same ephemeral container.
 const (
 	ToolExecuteScript = "execute_script"
+	ToolSearchSyntax  = "search_syntax"
 )
 
 // ExecRequest is the runner-level translation of an EventCommandRequest.
@@ -50,6 +53,12 @@ type ExecRequest struct {
 	// other's files. Empty (default) preserves the shared-root
 	// behavior — back-compat for direct callers like cmd/sandbox.
 	SessionID string
+	// MaxResultBytes caps the structured-tool envelope (today only
+	// search_syntax) so a single result can't blow the model's context
+	// window. 0 = unlimited. Sourced from NOMADDEV_GITHUB_MAX_RESULT_BYTES;
+	// the cap is shared with the GitHub MCP backend rather than introducing
+	// a second knob. Ignored by execute_script, which streams raw bytes.
+	MaxResultBytes int
 }
 
 // ResourceLimits maps to Docker HostConfig fields. Zero values disable the

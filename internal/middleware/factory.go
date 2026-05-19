@@ -36,6 +36,10 @@ type FactoryConfig struct {
 	SandboxLimits      sandbox.ResourceLimits
 	GateDirectCommands bool
 	MaxAutoRetries     int
+	// MaxResultBytes is the structured-tool envelope cap shared between
+	// search_syntax (sandbox) and the GitHub MCP backend. Sourced from
+	// NOMADDEV_GITHUB_MAX_RESULT_BYTES in cmd/orchestrator/main.go.
+	MaxResultBytes int
 
 	// Wired-in collaborators.
 	Sandbox sandbox.Runner
@@ -116,6 +120,7 @@ func NewService(ctx context.Context, c FactoryConfig) (*Service, error) {
 			SandboxLimits:      c.SandboxLimits,
 			GateDirectCommands: c.GateDirectCommands,
 			MaxAutoRetries:     c.MaxAutoRetries,
+			MaxResultBytes:     c.MaxResultBytes,
 		},
 	}, nil
 }

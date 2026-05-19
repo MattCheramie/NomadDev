@@ -247,6 +247,9 @@ func (s *Server) runExec(
 			MemoryBytes: s.cfg.Sandbox.Memory,
 			PidsLimit:   s.cfg.Sandbox.PidsLimit,
 		},
+		// Phase 12.x: shared with the GitHub MCP backend so the
+		// search_syntax envelope respects the same model-context cap.
+		MaxResultBytes: s.cfg.GitHub.MaxResultBytes,
 	}
 	if req.Timeout <= 0 {
 		req.Timeout = s.cfg.Sandbox.DefaultTimeout

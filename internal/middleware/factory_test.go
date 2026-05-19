@@ -87,9 +87,9 @@ func TestFactory_GitHubBackend_WiresDispatcherToolsAndApproval(t *testing.T) {
 		t.Fatalf("NewService: %v", err)
 	}
 
-	// Tools merged: DefaultTools (5) + github tools (3).
-	if got := len(svc.AvailableTools()); got != 8 {
-		t.Fatalf("AvailableTools count = %d, want 8", got)
+	// Tools merged: DefaultTools (6) + github tools (3).
+	if got := len(svc.AvailableTools()); got != 9 {
+		t.Fatalf("AvailableTools count = %d, want 9", got)
 	}
 
 	// Dispatcher routes github_* to the fake caller.
@@ -139,8 +139,8 @@ func TestFactory_NoGitHub_DefaultsPreserved(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewService: %v", err)
 	}
-	if got := len(svc.AvailableTools()); got != 5 {
-		t.Fatalf("AvailableTools count = %d, want 5 (DefaultTools)", got)
+	if got := len(svc.AvailableTools()); got != 6 {
+		t.Fatalf("AvailableTools count = %d, want 6 (DefaultTools)", got)
 	}
 	cd := svc.Dispatcher.(*CompositeDispatcher)
 	if cd.GitHub != nil {
@@ -151,6 +151,55 @@ func TestFactory_NoGitHub_DefaultsPreserved(t *testing.T) {
 	_, err = cd.Dispatch(context.Background(), ToolCall{Tool: "github_anything"}, DispatchOptions{})
 	if err == nil {
 		t.Fatal("want error for github_* when GitHub backend not wired")
+	}
+}
+
+// fakeSandboxRunner satisfies sandbox.Runner and records the ExecRequest
+// it receives, so the dispatcher routing test can assert that
+// search_syntax is forwarded with MaxResultBytes plumbed through.
+type fakeSandboxRunner struct {
+	last sandbox.ExecRequest
+}
+
+func (f *fakeSandboxRunner) Exec(_ context.Context, req sandbox.ExecRequest) (<-chan sandbox.ExecChunk, error) {
+	f.last = req
+	ch := make(chan sandbox.ExecChunk, 2)
+	ch <- sandbox.ExecChunk{Stream: sandbox.StreamStdout, Data: []byte(`{"matches":[]}`)}
+	ch <- sandbox.ExecChunk{Stream: sandbox.StreamExit, ExitCode: 0}
+	close(ch)
+	return ch, nil
+}
+
+func TestDispatcher_RoutesSearchSyntaxToSandbox(t *testing.T) {
+	runner := &fakeSandboxRunner{}
+	d := NewCompositeDispatcher(runner, nil)
+	ch, err := d.Dispatch(context.Background(),
+		ToolCall{Tool: ToolSearchSyntax, Args: map[string]any{"pattern": "$X"}},
+		DispatchOptions{MaxResultBytes: 4096})
+	if err != nil {
+		t.Fatalf("Dispatch: %v", err)
+	}
+	for range ch {
+	}
+	if runner.last.Tool != ToolSearchSyntax {
+		t.Errorf("runner.last.Tool = %q, want %q", runner.last.Tool, ToolSearchSyntax)
+	}
+	if runner.last.MaxResultBytes != 4096 {
+		t.Errorf("runner.last.MaxResultBytes = %d, want 4096", runner.last.MaxResultBytes)
+	}
+}
+
+func TestFactory_PlumbsMaxResultBytesToService(t *testing.T) {
+	svc, err := NewService(context.Background(), FactoryConfig{
+		Runtime:        RuntimeMock,
+		History:        history.NewMemoryStore(),
+		MaxResultBytes: 12345,
+	})
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	if svc.Config.MaxResultBytes != 12345 {
+		t.Errorf("Service.Config.MaxResultBytes = %d, want 12345", svc.Config.MaxResultBytes)
 	}
 }
 

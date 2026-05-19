@@ -59,4 +59,8 @@ type RuntimeConfig struct {
 	// config.MiddlewareConfig.MaxAutoRetries (NOMADDEV_MAX_AUTORETRIES).
 	// 0 disables the recovery loop; the first retryable failure escalates.
 	MaxAutoRetries int
+	// MaxResultBytes is the structured-tool envelope cap forwarded to
+	// the sandbox runner via DispatchOptions for search_syntax calls.
+	// Sourced from NOMADDEV_GITHUB_MAX_RESULT_BYTES; 0 = unlimited.
+	MaxResultBytes int
 }
