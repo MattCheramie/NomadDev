@@ -2,7 +2,11 @@ import { fireEvent, render } from '@testing-library/react-native';
 import { SettingsScreen } from '@/screens/SettingsScreen';
 import { useStore } from '@/state/store';
 import { WSClientProvider } from '@/wire/context';
-import { EventUserCommand, UserCommandResetHistory } from '@/wire/envelope';
+import {
+  EventUserCommand,
+  UserCommandResetHistory,
+  UserCommandSetModel,
+} from '@/wire/envelope';
 
 // Build a thin WSClient-shaped stub that records send() calls.
 function makeStubClient() {
@@ -32,6 +36,10 @@ beforeEach(() => {
     lastEventId: 'L1',
     pendingApprovals: [],
     lastError: null,
+    provider: null,
+    currentModel: null,
+    availableModels: [],
+    pendingModel: null,
   });
 });
 
@@ -78,4 +86,57 @@ test('Outbox pending count renders from the client stub', () => {
   );
   // Initial render reads outboxLength() synchronously.
   getByText('5');
+});
+
+test('Model section hides when the orchestrator does not advertise a catalogue', () => {
+  const stub = makeStubClient();
+  const { queryByLabelText } = render(
+    <WSClientProvider value={stub.asRef}>
+      <SettingsScreen />
+    </WSClientProvider>,
+  );
+  expect(queryByLabelText('model-section')).toBeNull();
+});
+
+test('Tapping a model row sends user.command{set_model} and marks pending', () => {
+  useStore.setState({
+    provider: 'openai',
+    currentModel: 'gpt-4o-mini',
+    availableModels: ['gpt-4o', 'gpt-4o-mini', 'o3-mini'],
+    pendingModel: null,
+  });
+  const stub = makeStubClient();
+  const { getByLabelText } = render(
+    <WSClientProvider value={stub.asRef}>
+      <SettingsScreen />
+    </WSClientProvider>,
+  );
+
+  fireEvent.press(getByLabelText('model-gpt-4o'));
+
+  expect(stub.sent).toHaveLength(1);
+  expect(stub.sent[0].type).toBe(EventUserCommand);
+  expect(stub.sent[0].payload.action).toBe(UserCommandSetModel);
+  expect(stub.sent[0].payload.model).toBe('gpt-4o');
+  expect(useStore.getState().pendingModel).toBe('gpt-4o');
+});
+
+test('Tapping the already-active model is a no-op', () => {
+  useStore.setState({
+    provider: 'openai',
+    currentModel: 'gpt-4o-mini',
+    availableModels: ['gpt-4o', 'gpt-4o-mini'],
+    pendingModel: null,
+  });
+  const stub = makeStubClient();
+  const { getByLabelText } = render(
+    <WSClientProvider value={stub.asRef}>
+      <SettingsScreen />
+    </WSClientProvider>,
+  );
+
+  fireEvent.press(getByLabelText('model-gpt-4o-mini'));
+
+  expect(stub.sent).toHaveLength(0);
+  expect(useStore.getState().pendingModel).toBeNull();
 });

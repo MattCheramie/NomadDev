@@ -85,6 +85,11 @@ type TurnInput struct {
 	// don't need to act on this directly, but it is plumbed through so the
 	// dispatcher can refuse mutating calls defense-in-depth.
 	Mode string
+	// Model is an optional per-turn override of the translator's default
+	// model. Empty means "use the translator's stored default". The handler
+	// populates this from the per-session model selection driven by the
+	// mobile Settings picker.
+	Model string
 }
 
 // ResumeFunc resumes a turn after a tool finished running. The returned

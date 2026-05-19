@@ -4,6 +4,7 @@
 
 import { create } from 'zustand';
 import {
+  AckPayload,
   AssistantChunkPayload,
   AssistantMessagePayload,
   CommandChunkPayload,
@@ -33,6 +34,7 @@ import {
   StreamStdout,
   ToolApprovalRequestPayload,
   UsagePayload,
+  UserCommandSetModel,
   UserIntentPayload,
   newReply,
 } from '@/wire/envelope';
@@ -131,6 +133,18 @@ export type AppState = {
   // in the Settings drawer. Reset by reset() when the session cycles.
   sessionTokens: SessionTokens;
 
+  // Model-switch state surfaced from HelloPayload. `provider` and
+  // `availableModels` come from the orchestrator (immutable per
+  // connection); `currentModel` follows successful set_model acks so the
+  // Settings picker shows the active selection.
+  provider: string | null;
+  currentModel: string | null;
+  availableModels: string[];
+  // pendingModel is the model the client has fired a set_model command for
+  // but not yet seen the ack for. Used to render the optimistic checkmark
+  // while we wait for confirmation.
+  pendingModel: string | null;
+
   // mutators
   setCredentials(url: string, token: string): void;
   clearCredentials(): void;
@@ -139,6 +153,7 @@ export type AppState = {
   ingest(env: Envelope): { reply?: Envelope } | undefined;
   popApproval(envelopeId: string): void;
   reset(): void;
+  setPendingModel(model: string | null): void;
 };
 
 export const useStore = create<AppState>((set, get) => ({
@@ -151,6 +166,10 @@ export const useStore = create<AppState>((set, get) => ({
   lastEventId: null,
   lastError: null,
   sessionTokens: { ...EMPTY_SESSION_TOKENS },
+  provider: null,
+  currentModel: null,
+  availableModels: [],
+  pendingModel: null,
 
   setCredentials(url, token) {
     set({ serverUrl: url, token });
@@ -180,6 +199,9 @@ export const useStore = create<AppState>((set, get) => ({
       sessionId: null, sessionTokens: { ...EMPTY_SESSION_TOKENS },
     });
   },
+  setPendingModel(model) {
+    set({ pendingModel: model });
+  },
 
   ingest(env) {
     // Always advance lastEventId, including for replayed envelopes.
@@ -188,7 +210,12 @@ export const useStore = create<AppState>((set, get) => ({
     switch (env.type) {
       case EventHello: {
         const p = env.payload as HelloPayload;
-        set({ sessionId: p.session_id });
+        set({
+          sessionId: p.session_id,
+          provider: p.provider ?? null,
+          currentModel: p.model ?? null,
+          availableModels: p.available_models ?? [],
+        });
         return;
       }
       case EventPing: {
@@ -197,7 +224,24 @@ export const useStore = create<AppState>((set, get) => ({
         return { reply };
       }
       case EventPong:
+        return;
       case 'ack' as const: {
+        // Currently the only ack the client acts on is set_model: a clean
+        // ack flips currentModel to the confirmed value and clears the
+        // optimistic pending state. Failed acks surface as a generic
+        // lastError so the Settings UI can render the message.
+        const ap = env.payload as AckPayload | undefined;
+        if (!ap) return;
+        if (ap.action === UserCommandSetModel) {
+          if (ap.error) {
+            set({
+              pendingModel: null,
+              lastError: { code: ap.error, message: ap.message ?? 'set_model failed' },
+            });
+          } else if (ap.model) {
+            set({ currentModel: ap.model, pendingModel: null });
+          }
+        }
         return;
       }
       case EventError: {

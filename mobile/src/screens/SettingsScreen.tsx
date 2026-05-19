@@ -6,6 +6,7 @@ import { useWSClient } from '@/wire/context';
 import {
   EventUserCommand,
   UserCommandResetHistory,
+  UserCommandSetModel,
   newEnvelope,
 } from '@/wire/envelope';
 import { isWebAuthnAvailable, registerSecurityKey } from '@/wire/webauthn';
@@ -18,6 +19,11 @@ export function SettingsScreen() {
   const lastError = useStore((s) => s.lastError);
   const token = useStore((s) => s.token);
   const sessionTokens = useStore((s) => s.sessionTokens);
+  const provider = useStore((s) => s.provider);
+  const currentModel = useStore((s) => s.currentModel);
+  const availableModels = useStore((s) => s.availableModels);
+  const pendingModel = useStore((s) => s.pendingModel);
+  const setPendingModel = useStore((s) => s.setPendingModel);
   const clearCredentials = useStore((s) => s.clearCredentials);
   const resetLocal = useStore((s) => s.reset);
 
@@ -51,6 +57,19 @@ export function SettingsScreen() {
     resetLocal();
   }
 
+  function onSelectModel(model: string) {
+    if (!client) return;
+    // No-op when the user taps the row already in effect — saves a wire
+    // round-trip and avoids the brief pending-flicker.
+    if (model === currentModel || model === pendingModel) return;
+    const env = newEnvelope(EventUserCommand, {
+      action: UserCommandSetModel,
+      model,
+    });
+    client.send(env);
+    setPendingModel(model);
+  }
+
   async function onRegisterSecurityKey() {
     if (!serverUrl || !token) {
       setKeyStatus({ kind: 'err', msg: 'No active session.' });
@@ -77,6 +96,29 @@ export function SettingsScreen() {
       <Row label="Connection" value={wsStatus} />
       <Row label="Last event ID" value={lastEventId ?? '—'} />
       <Row label="Outbox pending" value={String(outboxLen)} />
+
+      {provider && availableModels.length > 0 ? (
+        <View style={styles.section} accessibilityLabel="model-section">
+          <Text style={styles.sectionTitle}>Model</Text>
+          <Row label="Provider" value={provider} />
+          {availableModels.map((m) => {
+            const selected = (pendingModel ?? currentModel) === m;
+            return (
+              <TouchableOpacity
+                key={m}
+                onPress={() => onSelectModel(m)}
+                style={[styles.modelRow, selected && styles.modelRowSelected]}
+                accessibilityRole="button"
+                accessibilityLabel={`model-${m}`}
+                accessibilityState={{ selected }}
+              >
+                <Text style={styles.modelName}>{m}</Text>
+                {selected ? <Text style={styles.modelCheck}>✓</Text> : null}
+              </TouchableOpacity>
+            );
+          })}
+        </View>
+      ) : null}
 
       <View style={styles.section}>
         <Text style={styles.sectionTitle}>Session cost</Text>
@@ -195,4 +237,12 @@ const styles = StyleSheet.create({
     backgroundColor: '#dc2626', borderRadius: 8, alignItems: 'center',
   },
   signOutText: { color: 'white', fontWeight: '600' as '600' },
+  modelRow: {
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
+    paddingVertical: 10, paddingHorizontal: 12, borderRadius: 6,
+    borderWidth: 1, borderColor: '#2a3242', marginTop: 6,
+  },
+  modelRowSelected: { borderColor: '#1f6feb', backgroundColor: '#0d2a4a' },
+  modelName: { color: '#e6edf3', fontSize: 14 },
+  modelCheck: { color: '#7ee787', fontSize: 16, fontWeight: '700' as const },
 });

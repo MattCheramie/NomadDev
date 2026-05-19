@@ -72,14 +72,20 @@ func NewGeminiTranslator(ctx context.Context, opts GeminiOptions) (*GeminiTransl
 // FunctionResponse to `contents` and re-opens the stream.
 type geminiTurn struct {
 	t        *GeminiTranslator
+	model    string // per-turn override of t.model; never empty
 	cfg      *genai.GenerateContentConfig
 	contents []*genai.Content
 }
 
 // Stream implements Translator.
 func (g *GeminiTranslator) Stream(ctx context.Context, in TurnInput) (<-chan AssistantEvent, ResumeFunc, error) {
+	model := g.model
+	if in.Model != "" {
+		model = in.Model
+	}
 	state := &geminiTurn{
 		t:        g,
+		model:    model,
 		cfg:      g.configFor(in),
 		contents: historyToContents(in.History, in.UserText),
 	}
@@ -111,7 +117,7 @@ func (g *GeminiTranslator) configFor(in TurnInput) *genai.GenerateContentConfig 
 
 func (s *geminiTurn) run(ctx context.Context, out chan<- AssistantEvent) {
 	defer close(out)
-	stream := s.t.client.Models.GenerateContentStream(ctx, s.t.model, s.contents, s.cfg)
+	stream := s.t.client.Models.GenerateContentStream(ctx, s.model, s.contents, s.cfg)
 	// lastUsage holds the most recent non-nil UsageMetadata seen on this
 	// stage — the SDK populates it on the final chunk, but we accept any
 	// chunk's reading to stay robust against future SDK changes.

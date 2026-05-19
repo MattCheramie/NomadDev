@@ -22,6 +22,7 @@ type MockTranslator struct {
 	canceled  atomic.Int32
 	streams   atomic.Int64
 	resumeRes []ToolResult
+	inputs    []TurnInput
 }
 
 // NewMockTranslator returns a MockTranslator pre-loaded with stages.
@@ -36,7 +37,10 @@ func (m *MockTranslator) Cancelled() bool { return m.canceled.Load() != 0 }
 func (m *MockTranslator) Streams() int64 { return m.streams.Load() }
 
 // Stream implements Translator.
-func (m *MockTranslator) Stream(ctx context.Context, _ TurnInput) (<-chan AssistantEvent, ResumeFunc, error) {
+func (m *MockTranslator) Stream(ctx context.Context, in TurnInput) (<-chan AssistantEvent, ResumeFunc, error) {
+	m.mu.Lock()
+	m.inputs = append(m.inputs, in)
+	m.mu.Unlock()
 	ch := m.runStage(ctx)
 	resume := func(ctx context.Context, r ToolResult) (<-chan AssistantEvent, error) {
 		m.mu.Lock()
@@ -55,6 +59,17 @@ func (m *MockTranslator) ResumedResults() []ToolResult {
 	defer m.mu.Unlock()
 	out := make([]ToolResult, len(m.resumeRes))
 	copy(out, m.resumeRes)
+	return out
+}
+
+// Inputs returns a snapshot of every TurnInput Stream has been called with,
+// in order. Test-only helper used to assert per-session Model overrides land
+// on the translator side.
+func (m *MockTranslator) Inputs() []TurnInput {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	out := make([]TurnInput, len(m.inputs))
+	copy(out, m.inputs)
 	return out
 }
 

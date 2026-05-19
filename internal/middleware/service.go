@@ -79,6 +79,17 @@ func (s *Service) AvailableToolsFor(mode string) []ToolSpec {
 
 // RuntimeConfig is the per-turn knob set the handler reads from Service.
 type RuntimeConfig struct {
+	// Provider is the active translator runtime identifier (e.g. "openai",
+	// "anthropic"). Used to advertise the model catalogue in HelloPayload
+	// and to validate user.command{set_model} requests. Empty for the mock
+	// runtime — model switching is then a no-op on the wire.
+	Provider string
+	// Model is the server-default model — the one the translator falls
+	// back to when no per-session override is in effect. The wsserver
+	// surfaces this in HelloPayload.Model so the mobile UI can render the
+	// initial picker selection.
+	Model string
+
 	SystemPrompt   string
 	WindowTurns    int
 	MaxConcurrent  int

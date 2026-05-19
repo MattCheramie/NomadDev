@@ -80,6 +80,36 @@ type FactoryConfig struct {
 	Logger *slog.Logger
 }
 
+// effectiveDefaultModel returns c.Model when set, falling back to the
+// per-runtime hard-coded default. Used so RuntimeConfig.Model always carries
+// the model the translator will actually invoke even when the operator left
+// NOMADDEV_*_MODEL unset.
+func effectiveDefaultModel(runtime, configured string) string {
+	if configured != "" {
+		return configured
+	}
+	return defaultModelFor(runtime)
+}
+
+// defaultModelFor returns the hard-coded default model for one runtime
+// identifier, matching the per-translator fallback. Used so RuntimeConfig.Model
+// always carries the actually-active value — the wsserver surfaces this in
+// HelloPayload.Model so the mobile picker renders the correct initial
+// selection even when the operator left NOMADDEV_*_MODEL unset.
+func defaultModelFor(runtime string) string {
+	switch runtime {
+	case RuntimeOpenAI:
+		return "gpt-4o-mini"
+	case RuntimeAnthropic:
+		return "claude-sonnet-4-5"
+	case RuntimeGemini:
+		return "gemini-2.0-flash"
+	case RuntimeDeepSeek:
+		return deepSeekDefaultModel
+	}
+	return ""
+}
+
 // NewService returns a fully wired *Service or nil when Runtime == "none".
 // An error is returned for unknown runtimes and for "gemini" when the binary
 // was built without the `gemini` build tag.
@@ -158,6 +188,8 @@ func NewService(ctx context.Context, c FactoryConfig) (*Service, error) {
 		FSOps:                   c.FSOps,
 		IsDestructiveGitHubTool: c.IsDestructiveGitHubTool,
 		Config: RuntimeConfig{
+			Provider:           c.Runtime,
+			Model:              effectiveDefaultModel(c.Runtime, c.Model),
 			SystemPrompt:       c.SystemPrompt,
 			WindowTurns:        c.WindowTurns,
 			MaxConcurrent:      c.MaxConcurrent,

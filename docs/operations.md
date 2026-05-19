@@ -352,6 +352,24 @@ a `user.command{reset_history}` envelope. The server calls
 sqlite3 /var/lib/nomaddev/history.db "DELETE FROM turns WHERE sid = '<sid>';"
 ```
 
+Resetting history also clears any per-session model override (see below),
+so the picker goes back to the server default on the next intent.
+
+### Switching the active LLM model from the UI
+The mobile Settings screen exposes a "Model" section that lists the
+runtime's catalogue (sourced from `middleware.KnownModels()`). Tapping
+a row fires `user.command{set_model, "<name>"}`; the server validates
+against the active provider's catalogue and stores the override in an
+in-memory per-SID map. The next `user.intent` picks up the new model
+via `TurnInput.Model`; in-flight turns are unaffected.
+
+Provider and catalogue are fixed at orchestrator startup — switching
+the *provider* (e.g. openai → anthropic) still requires restarting the
+binary with a different `NOMADDEV_MIDDLEWARE_RUNTIME`. The override is
+held in memory only; a restart resets every session to the env-var
+default. The mobile client re-applies its remembered selection on
+reconnect by reading `HelloPayload.model`.
+
 ### History summarization compactor
 A background goroutine ("compactor") opt-in via
 `NOMADDEV_HISTORY_SUMMARY_ENABLED` walks every session on a tick and,

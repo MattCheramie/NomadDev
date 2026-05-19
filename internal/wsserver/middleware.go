@@ -157,6 +157,7 @@ func (s *Server) runIntent(
 		SystemPrompt: systemPrompt,
 		Tools:        s.mw.AvailableToolsFor(p.Mode),
 		Mode:         p.Mode,
+		Model:        s.effectiveModel(sess.SID),
 	}
 	eventsCh, resume, err := s.mw.Translator.Stream(ctx, in)
 	if err != nil {
@@ -637,34 +638,81 @@ func (s *Server) handleUserCommand(
 ) {
 	var p event.UserCommandPayload
 	if err := env.UnmarshalPayload(&p); err != nil {
-		s.ackUserCommand(sess, client, env.ID, "", "bad_envelope", err.Error())
+		s.ackUserCommand(sess, client, env.ID, "", "bad_envelope", err.Error(), "")
 		return
 	}
 	switch p.Action {
 	case event.UserCommandResetHistory:
 		if s.mw == nil || s.mw.History == nil {
-			s.ackUserCommand(sess, client, env.ID, p.Action, "not_implemented", "history backend not configured")
+			s.ackUserCommand(sess, client, env.ID, p.Action, "not_implemented", "history backend not configured", "")
 			return
 		}
 		if err := s.mw.History.Reset(context.Background(), sess.SID); err != nil {
 			logger.Warn("user.command: reset_history failed", "err", err)
-			s.ackUserCommand(sess, client, env.ID, p.Action, "internal", err.Error())
+			s.ackUserCommand(sess, client, env.ID, p.Action, "internal", err.Error(), "")
 			return
 		}
+		// Per-session model selection is bound to the conversation; clearing
+		// history takes the picker back to the server default too.
+		s.modelOverrides.Delete(sess.SID)
 		logger.Info("user.command: reset_history ok", "sid", sess.SID)
-		s.ackUserCommand(sess, client, env.ID, p.Action, "", "history cleared")
+		s.ackUserCommand(sess, client, env.ID, p.Action, "", "history cleared", "")
+	case event.UserCommandSetModel:
+		s.handleSetModel(env.ID, p, sess, client, logger)
 	default:
-		s.ackUserCommand(sess, client, env.ID, p.Action, "unknown_action", "unsupported action: "+p.Action)
+		s.ackUserCommand(sess, client, env.ID, p.Action, "unknown_action", "unsupported action: "+p.Action, "")
 	}
 }
 
+// handleSetModel validates and stores a per-session model override. Empty
+// model and unknown model both fail with bad_envelope; mock-only deploys
+// return not_implemented so the client disables the picker.
+func (s *Server) handleSetModel(
+	reqID string, p event.UserCommandPayload,
+	sess *session.Session, client *hub.Client, logger *slog.Logger,
+) {
+	if s.mw == nil || s.mw.Config.Provider == "" || s.mw.Config.Provider == middleware.RuntimeMock {
+		s.ackUserCommand(sess, client, reqID, p.Action, "not_implemented",
+			"model switching unsupported by this runtime", "")
+		return
+	}
+	if p.Model == "" {
+		s.ackUserCommand(sess, client, reqID, p.Action, "bad_envelope", "missing model", "")
+		return
+	}
+	if !middleware.IsKnownModel(s.mw.Config.Provider, p.Model) {
+		s.ackUserCommand(sess, client, reqID, p.Action, "bad_envelope",
+			"unknown model "+p.Model+" for provider "+s.mw.Config.Provider, "")
+		return
+	}
+	s.modelOverrides.Store(sess.SID, p.Model)
+	logger.Info("user.command: set_model ok", "sid", sess.SID, "model", p.Model)
+	s.ackUserCommand(sess, client, reqID, p.Action, "", "model selection updated", p.Model)
+}
+
+// effectiveModel returns the per-session override if set, else the server
+// default. Called from handleUserIntent so the value is locked at turn start;
+// a set_model arriving mid-turn does not affect the in-flight stream.
+func (s *Server) effectiveModel(sid string) string {
+	if v, ok := s.modelOverrides.Load(sid); ok {
+		if m, ok := v.(string); ok && m != "" {
+			return m
+		}
+	}
+	if s.mw != nil {
+		return s.mw.Config.Model
+	}
+	return ""
+}
+
 func (s *Server) ackUserCommand(
-	sess *session.Session, client *hub.Client, reqID, action, errCode, message string,
+	sess *session.Session, client *hub.Client, reqID, action, errCode, message, model string,
 ) {
 	env, err := event.NewReply(event.EventAck, reqID, event.AckPayload{
 		Action:  action,
 		Error:   errCode,
 		Message: message,
+		Model:   model,
 	})
 	if err != nil {
 		return

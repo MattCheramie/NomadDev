@@ -17,6 +17,7 @@ import (
 	"github.com/mattcheramie/nomaddev/internal/event"
 	"github.com/mattcheramie/nomaddev/internal/hub"
 	"github.com/mattcheramie/nomaddev/internal/metrics"
+	"github.com/mattcheramie/nomaddev/internal/middleware"
 	"github.com/mattcheramie/nomaddev/internal/session"
 )
 
@@ -40,12 +41,27 @@ func (s *Server) runConnection(
 	s.hub.Register(client)
 
 	// Send hello synchronously through the session/buffer path so it's part of
-	// the replay record.
-	hello, err := event.NewEnvelope(event.EventHello, event.HelloPayload{
+	// the replay record. Provider / model / available_models are populated
+	// only when a non-mock middleware Service is wired — mock and "none"
+	// runtimes ship a hello identical to the pre-model-switch shape so
+	// existing tests stay byte-stable.
+	helloPayload := event.HelloPayload{
 		SessionID:       claims.Sid,
 		ServerTime:      time.Now().UTC().Format(time.RFC3339Nano),
 		ProtocolVersion: event.ProtocolVersion,
-	})
+	}
+	if s.mw != nil && s.mw.Config.Provider != "" {
+		helloPayload.Provider = s.mw.Config.Provider
+		// Use the effective model so a per-session override applied on a
+		// prior connection (and re-applied by the client on reconnect)
+		// shows the correct initial selection in the picker.
+		helloPayload.Model = s.effectiveModel(claims.Sid)
+		if helloPayload.Model == "" {
+			helloPayload.Model = s.mw.Config.Model
+		}
+		helloPayload.AvailableModels = middleware.ModelsForProvider(s.mw.Config.Provider)
+	}
+	hello, err := event.NewEnvelope(event.EventHello, helloPayload)
 	if err == nil {
 		s.bufferAndSend(sess, client, hello)
 	}

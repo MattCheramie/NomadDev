@@ -77,15 +77,21 @@ func NewOpenAITranslator(_ context.Context, opts OpenAIOptions) (*OpenAITranslat
 type openaiTurn struct {
 	t        *OpenAITranslator
 	system   string
+	model    string // per-turn override of t.model; never empty
 	messages []openai.ChatCompletionMessageParamUnion
 	tools    []openai.ChatCompletionToolParam
 }
 
 // Stream implements Translator.
 func (o *OpenAITranslator) Stream(ctx context.Context, in TurnInput) (<-chan AssistantEvent, ResumeFunc, error) {
+	model := o.model
+	if in.Model != "" {
+		model = in.Model
+	}
 	state := &openaiTurn{
 		t:        o,
 		system:   in.SystemPrompt,
+		model:    model,
 		messages: openaiHistoryToMessages(in.SystemPrompt, in.History, in.UserText),
 		tools:    toOpenAITools(in.Tools),
 	}
@@ -104,7 +110,7 @@ func (s *openaiTurn) run(ctx context.Context, out chan<- AssistantEvent) {
 	defer close(out)
 
 	params := openai.ChatCompletionNewParams{
-		Model:       shared.ChatModel(s.t.model),
+		Model:       shared.ChatModel(s.model),
 		Messages:    s.messages,
 		Temperature: openai.Float(s.t.temperature),
 		MaxTokens:   openai.Int(s.t.maxTokens),

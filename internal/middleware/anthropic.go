@@ -68,15 +68,21 @@ func NewAnthropicTranslator(_ context.Context, opts AnthropicOptions) (*Anthropi
 type anthropicTurn struct {
 	t        *AnthropicTranslator
 	system   string
+	model    string // per-turn override of t.model; never empty
 	tools    []anthropic.ToolUnionParam
 	messages []anthropic.MessageParam
 }
 
 // Stream implements Translator.
 func (a *AnthropicTranslator) Stream(ctx context.Context, in TurnInput) (<-chan AssistantEvent, ResumeFunc, error) {
+	model := a.model
+	if in.Model != "" {
+		model = in.Model
+	}
 	state := &anthropicTurn{
 		t:        a,
 		system:   in.SystemPrompt,
+		model:    model,
 		tools:    toAnthropicTools(in.Tools),
 		messages: anthropicHistoryToMessages(in.History, in.UserText),
 	}
@@ -101,7 +107,7 @@ func (s *anthropicTurn) run(ctx context.Context, out chan<- AssistantEvent) {
 	defer close(out)
 
 	params := anthropic.MessageNewParams{
-		Model:       s.t.model,
+		Model:       s.model,
 		Messages:    s.messages,
 		MaxTokens:   s.t.maxTokens,
 		Temperature: anthropic.Float(s.t.temperature),
