@@ -180,6 +180,42 @@ colourisation so the operator approves the actual change rather than opaque
 strings. The post-approval dispatch re-runs the same single-match check on
 the freshly-read file to close the time-of-check/time-of-use window.
 
+#### `verify_command` — apply, verify, rollback on failure (Phase 14)
+
+`apply_code_patch` accepts an optional `verify_command` string. When set, the
+dispatcher composes three steps into one tool call so the wire layer still
+sees a single `command.request` → `command.result` envelope pair:
+
+1. **Snapshot + apply.** `Engine.ApplyCodePatchWithSnapshot` writes the patch
+   and returns the file's pre-edit bytes plus its resolved absolute path —
+   everything the dispatcher needs to undo the write later.
+2. **Verify.** The dispatcher invokes `Sandbox.Exec` with
+   `tool=execute_script` and `script=verify_command` (shell=`bash`), reusing
+   the calling session's `WorkingDir`, `Timeout`, `Limits`, and `SessionID`
+   so the verify run lands in the same workspace as the patch.
+3. **Decide.** Exit 0 leaves the patched file in place. Any non-zero exit OR
+   any sandbox-side error (timeout / oom / dispatch failure) calls
+   `Engine.RestoreFile` to revert the file to its snapshot, then appends a
+   `verify_command failed (exit=N); rolled back <path>` notification to
+   stderr and emits the verify command's own exit chunk.
+
+The resulting `command.result` therefore carries the verify command's exit
+code with no `SandboxErr*` code, which `ShouldAutoRetry` classifies as a
+retryable shell failure. `BuildErrorReport` then feeds the verify stderr
+(plus the rollback notification — both within the trailing 8 KiB window) to
+the translator on its next stage, and the LLM authors a fix exactly the
+way it would for any other failing tool call. The recovery budget treats a
+verify-rollback the same as any other retryable failure: a success or a
+non-retryable failure resets it; exhaustion escalates the chain to the
+Mobile Control Hub as a `system.error_report` envelope.
+
+The approval pipeline reads `verify_command` out of the call args and copies
+it into the `preview` payload alongside `path` / `line_number` / `unified_diff`
+so the ApprovalSheet renders a "Verify after apply — rollback on non-zero
+exit" row before the operator hits Approve. A configured `verify_command`
+requires a sandbox runner; dispatching without one fails fast with
+`sandbox_bad_request` and never writes the patch.
+
 ## History
 
 The orchestrator persists conversation turns so the LLM has context across

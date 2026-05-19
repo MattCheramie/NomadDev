@@ -424,7 +424,11 @@ type ApplyCodePatchPreview struct {
 	UnifiedDiff string `json:"unified_diff"`
 }
 
-type applyCodePatchResult struct {
+// ApplyCodePatchResult is the JSON envelope runApplyCodePatch emits on stdout
+// after a successful write. Exported so the verify_command composition path
+// in middleware/dispatcher.go can hand it back into the dispatcher's
+// ExecChunk stream alongside the verify command's own output.
+type ApplyCodePatchResult struct {
 	Path         string `json:"path"`
 	BytesWritten int    `json:"bytes_written"`
 	LineNumber   int    `json:"line_number"`
@@ -435,8 +439,12 @@ type applyCodePatchResult struct {
 // needed to either preview or commit the edit. The runApplyCodePatch path
 // then writes content; the PreviewApplyCodePatch path discards it.
 type applyCodePatchPlan struct {
-	resolved    string
-	path        string
+	resolved string
+	path     string
+	// original is the file's pre-edit bytes — captured during compute so
+	// the verify_command rollback path can restore on a failing post-write
+	// check without a second TOCTOU-vulnerable read.
+	original    []byte
 	newContent  string
 	lineNumber  int
 	unifiedDiff string
@@ -461,33 +469,85 @@ func (e *Engine) PreviewApplyCodePatch(ctx context.Context, args map[string]any)
 
 func (e *Engine) runApplyCodePatch(ctx context.Context, args map[string]any, limits Limits, out chan<- sandbox.ExecChunk) {
 	defer close(out)
-	// Re-run the dry-run on the fresh file contents — closes the TOCTOU
-	// window between the approval-time preview and the actual write.
-	plan, err := e.computeApplyCodePatch(ctx, args, limits)
+	_, _, result, err := e.applyCodePatchInner(ctx, args, limits)
 	if err != nil {
 		out <- sandbox.ExecChunk{Stream: sandbox.StreamExit, ExitCode: -1, Err: err}
 		return
 	}
+	emitJSONResult(ctx, out, result)
+}
 
-	f, err := os.OpenFile(plan.resolved, os.O_WRONLY|os.O_TRUNC, 0o644)
-	if err != nil {
-		out <- sandbox.ExecChunk{Stream: sandbox.StreamExit, ExitCode: -1,
-			Err: fmt.Errorf("apply_code_patch open: %w", err)}
-		return
+// ApplyCodePatchWithSnapshot performs the same write as the channel-based
+// runApplyCodePatch path and additionally returns the pre-edit file bytes
+// (`snapshot`) and the resolved absolute path. The composition path in
+// middleware/dispatcher.go uses these two to roll the file back when a
+// post-apply verify_command exits non-zero. Callers without a verify hook
+// should stick to Engine.Run — the snapshot allocation is wasted otherwise.
+func (e *Engine) ApplyCodePatchWithSnapshot(
+	ctx context.Context, args map[string]any, limits Limits,
+) (snapshot []byte, resolvedPath string, result ApplyCodePatchResult, err error) {
+	return e.applyCodePatchInner(ctx, args, limits)
+}
+
+// applyCodePatchInner is the shared core of runApplyCodePatch and
+// ApplyCodePatchWithSnapshot. It re-runs the dry-run on the fresh file
+// contents (closing the TOCTOU window between the approval-time preview
+// and the actual write) and then writes plan.newContent in place.
+func (e *Engine) applyCodePatchInner(
+	ctx context.Context, args map[string]any, limits Limits,
+) (snapshot []byte, resolvedPath string, result ApplyCodePatchResult, err error) {
+	plan, perr := e.computeApplyCodePatch(ctx, args, limits)
+	if perr != nil {
+		return nil, "", ApplyCodePatchResult{}, perr
+	}
+
+	f, oerr := os.OpenFile(plan.resolved, os.O_WRONLY|os.O_TRUNC, 0o644)
+	if oerr != nil {
+		return nil, "", ApplyCodePatchResult{}, fmt.Errorf("apply_code_patch open: %w", oerr)
 	}
 	defer f.Close()
 
-	n, err := f.WriteString(plan.newContent)
-	if err != nil {
-		out <- sandbox.ExecChunk{Stream: sandbox.StreamExit, ExitCode: -1, Err: err}
-		return
+	n, werr := f.WriteString(plan.newContent)
+	if werr != nil {
+		return nil, "", ApplyCodePatchResult{}, werr
 	}
-	emitJSONResult(ctx, out, applyCodePatchResult{
+	return plan.original, plan.resolved, ApplyCodePatchResult{
 		Path:         plan.path,
 		BytesWritten: n,
 		LineNumber:   plan.lineNumber,
 		UnifiedDiff:  plan.unifiedDiff,
-	})
+	}, nil
+}
+
+// RestoreFile writes snapshot back to resolvedPath, which must be a path
+// previously returned by ApplyCodePatchWithSnapshot on the same Engine.
+// Used by the verify_command rollback path so a failing post-apply check
+// reverts the file before the failure is surfaced to the recovery loop.
+//
+// The defense-in-depth scope check guards against a caller that mishandles
+// the resolvedPath value — the path must still resolve under the engine's
+// effective root for the supplied context.
+func (e *Engine) RestoreFile(ctx context.Context, resolvedPath string, snapshot []byte) error {
+	scopedRoot, err := e.rootForCtx(ctx)
+	if err != nil {
+		return err
+	}
+	real, err := filepath.EvalSymlinks(resolvedPath)
+	if err != nil {
+		real = resolvedPath
+	}
+	if !withinRoot(scopedRoot, real) {
+		return fmt.Errorf("%w: restore target %q resolves outside root", ErrPathEscape, resolvedPath)
+	}
+	f, err := os.OpenFile(resolvedPath, os.O_WRONLY|os.O_TRUNC, 0o644)
+	if err != nil {
+		return fmt.Errorf("apply_code_patch restore open: %w", err)
+	}
+	defer f.Close()
+	if _, err := f.Write(snapshot); err != nil {
+		return fmt.Errorf("apply_code_patch restore write: %w", err)
+	}
+	return nil
 }
 
 // computeApplyCodePatch performs the read-side work shared by preview and
@@ -550,6 +610,7 @@ func (e *Engine) computeApplyCodePatch(ctx context.Context, args map[string]any,
 	return applyCodePatchPlan{
 		resolved:    resolved,
 		path:        path,
+		original:    raw,
 		newContent:  newContent,
 		lineNumber:  line,
 		unifiedDiff: diff,

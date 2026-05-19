@@ -174,11 +174,17 @@ func (s *Server) buildApprovalPreview(ctx context.Context, tool string, args map
 	if err != nil {
 		return nil, err
 	}
-	return map[string]any{
+	preview := map[string]any{
 		"path":         pv.Path,
 		"line_number":  pv.LineNumber,
 		"unified_diff": pv.UnifiedDiff,
-	}, nil
+	}
+	// Phase 14: surface the verify_command so the operator sees what will
+	// run after the write — and that a failure will roll back the patch.
+	if vc, _ := args["verify_command"].(string); vc != "" {
+		preview["verify_command"] = vc
+	}
+	return preview, nil
 }
 
 // classifyApprovalErr maps the Approver sentinels to event-layer codes.

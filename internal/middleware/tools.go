@@ -106,13 +106,18 @@ func DefaultTools() []ToolSpec {
 			Name: ToolApplyCodePatch,
 			Description: "Apply a single search/replace edit to a UTF-8 text file inside the workspace. " +
 				"search_string must occur exactly once in the target file. " +
-				"Requires human approval; a unified-diff preview is rendered in the ApprovalSheet before the write.",
+				"Requires human approval; a unified-diff preview is rendered in the ApprovalSheet before the write. " +
+				"When verify_command is set, the orchestrator runs that shell command in the ephemeral " +
+				"sandbox immediately after the write; a non-zero exit rolls the file back to its " +
+				"pre-edit contents and surfaces the verify command's stderr as the tool result, which " +
+				"feeds the automated-recovery loop the same way any retryable failure does.",
 			Parameters: Schema{
 				Type: "object",
 				Properties: map[string]*Schema{
 					"file_path":      {Type: "string", Description: "file path relative to the workspace root"},
 					"search_string":  {Type: "string", Description: "anchor that must occur exactly once in the file"},
 					"replace_string": {Type: "string", Description: "replacement text; may be empty for pure deletion"},
+					"verify_command": {Type: "string", Description: "optional shell command run in the sandbox after the patch lands; non-zero exit triggers automatic rollback (e.g. 'go build ./...' or 'golangci-lint run')"},
 				},
 				Required: []string{"file_path", "search_string", "replace_string"},
 			},
@@ -337,6 +342,15 @@ func validateApplyCodePatch(args map[string]any) error {
 	}
 	if _, ok := v.(string); !ok {
 		return fmt.Errorf("%w: %q must be a string", ErrToolValidation, "replace_string")
+	}
+	if v, ok := args["verify_command"]; ok {
+		s, sok := v.(string)
+		if !sok {
+			return fmt.Errorf("%w: %q must be a string", ErrToolValidation, "verify_command")
+		}
+		if len(s) > 8*1024 {
+			return fmt.Errorf("%w: verify_command exceeds 8 KiB", ErrToolValidation)
+		}
 	}
 	return nil
 }
