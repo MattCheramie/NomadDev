@@ -152,30 +152,42 @@ operator picks one or the other.
 The `search_syntax` tool (Phase 12.x) invokes [`sg`](https://ast-grep.github.io/)
 inside the sandbox container. The default `alpine:3.20` image doesn't
 ship with it, and `NOMADDEV_SANDBOX_NETWORK=none` (the default) blocks
-runtime `apk add`, so the binary has to be pre-baked into the image.
+runtime `apt`/`apk` installs, so the binary has to be pre-baked into the
+image. ast-grep upstream only publishes glibc-linked binaries, so the
+dedicated worker image uses `debian:bookworm-slim` rather than alpine —
+the orchestrator's own container (Stage 4) stays distroless/alpine-built.
 
 The repo's [`Dockerfile`](../Dockerfile) carries a dedicated `sandbox`
 target for exactly this:
 
 ```bash
-docker build --target sandbox -t nomaddev/sandbox:alpine-3.20-sg .
+docker build --target sandbox -t nomaddev/sandbox:bookworm-sg .
 ```
 
 Then point the orchestrator at it:
 
 ```bash
-NOMADDEV_SANDBOX_IMAGE=nomaddev/sandbox:alpine-3.20-sg ./orchestrator
+NOMADDEV_SANDBOX_IMAGE=nomaddev/sandbox:bookworm-sg ./orchestrator
 ```
 
 If you'd rather extend your own base image, the only requirement is that
-`sg` is on `PATH` inside the container:
+`sg` is on `PATH` inside the container. The upstream release zip carries
+both `ast-grep` and `sg` (the short-form CLI the search_syntax handler
+invokes):
 
 ```dockerfile
-FROM your-base:tag
-RUN apk add --no-cache ast-grep bash   # alpine
-# or, on debian-derived bases:
-# RUN apt-get update && apt-get install -y ast-grep bash && rm -rf /var/lib/apt/lists/*
+FROM your-debian-base:tag
+ARG AST_GREP_VERSION=0.42.2
+RUN curl -fsSL -o /tmp/ag.zip \
+      "https://github.com/ast-grep/ast-grep/releases/download/${AST_GREP_VERSION}/app-x86_64-unknown-linux-gnu.zip" \
+ && unzip -o /tmp/ag.zip -d /usr/local/bin/ \
+ && chmod +x /usr/local/bin/ast-grep /usr/local/bin/sg \
+ && rm /tmp/ag.zip
 ```
+
+On alpine you'd need a glibc-compat layer (e.g. `gcompat`) or build
+ast-grep from source against musl, since upstream doesn't ship a
+musl-linked release. The Debian path is the documented one.
 
 When `sg` is missing the tool still degrades gracefully: the container
 exits non-zero with `sg: not found` on stderr, the runner surfaces that

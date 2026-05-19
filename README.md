@@ -86,8 +86,8 @@ binary is pre-baked into the dedicated sandbox image built from the
 `sandbox` Dockerfile target:
 
 ```
-docker build --target sandbox -t nomaddev/sandbox:alpine-3.20-sg .
-NOMADDEV_SANDBOX_IMAGE=nomaddev/sandbox:alpine-3.20-sg ./orchestrator
+docker build --target sandbox -t nomaddev/sandbox:bookworm-sg .
+NOMADDEV_SANDBOX_IMAGE=nomaddev/sandbox:bookworm-sg ./orchestrator
 ```
 
 The envelope returned to the model is capped by the same

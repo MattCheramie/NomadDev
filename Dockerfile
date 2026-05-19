@@ -90,18 +90,42 @@ ENTRYPOINT ["/usr/local/bin/orchestrator"]
 # ---------- Stage 5: sandbox worker image ---------------------------------
 # Ephemeral worker the orchestrator spawns per tool call. Pre-installs
 # ast-grep so the `search_syntax` tool can run with
-# NOMADDEV_SANDBOX_NETWORK=none (the default) — runtime apk-add isn't an
-# option when the sandbox has no network.
+# NOMADDEV_SANDBOX_NETWORK=none (the default) — runtime apt/apk-install
+# isn't an option when the sandbox has no network.
 #
-# `bash` is needed by `execute_script` (default shell). `ast-grep`
-# provides both the `sg` and `ast-grep` binaries.
+# ast-grep upstream only publishes glibc-linked release binaries (no
+# musl variant), so the sandbox base is debian:bookworm-slim rather
+# than alpine. Footprint is ~75 MB compressed; still small for a
+# per-tool-call ephemeral worker, and we get bash + ca-certificates in
+# the base layer without extra installs.
+#
+# Pinned via AST_GREP_VERSION below. Bump in lockstep with any
+# pattern-grammar changes the model is taught to use; the upstream zip
+# ships both `ast-grep` and `sg` (no symlink needed).
 #
 # Build + tag:
-#   docker build --target sandbox -t nomaddev/sandbox:alpine-3.20-sg .
+#   docker build --target sandbox -t nomaddev/sandbox:bookworm-sg .
 # Point the orchestrator at it:
-#   NOMADDEV_SANDBOX_IMAGE=nomaddev/sandbox:alpine-3.20-sg
-FROM alpine:3.20 AS sandbox
-RUN apk add --no-cache ast-grep bash ca-certificates
+#   NOMADDEV_SANDBOX_IMAGE=nomaddev/sandbox:bookworm-sg
+FROM debian:bookworm-slim AS sandbox
+ARG AST_GREP_VERSION=0.42.2
+RUN set -eux; \
+    apt-get update; \
+    apt-get install -y --no-install-recommends bash ca-certificates curl unzip; \
+    case "$(dpkg --print-architecture)" in \
+      amd64) ag_target=x86_64-unknown-linux-gnu ;; \
+      arm64) ag_target=aarch64-unknown-linux-gnu ;; \
+      *) echo "unsupported arch for ast-grep: $(dpkg --print-architecture)" >&2; exit 1 ;; \
+    esac; \
+    curl -fsSL -o /tmp/ast-grep.zip \
+        "https://github.com/ast-grep/ast-grep/releases/download/${AST_GREP_VERSION}/app-${ag_target}.zip"; \
+    unzip -o /tmp/ast-grep.zip -d /usr/local/bin/; \
+    chmod +x /usr/local/bin/ast-grep /usr/local/bin/sg; \
+    rm /tmp/ast-grep.zip; \
+    apt-get purge -y curl unzip; \
+    apt-get autoremove -y; \
+    rm -rf /var/lib/apt/lists/*
 WORKDIR /work
-# Smoke-check the tool is on PATH and prints a version.
+# Smoke-check the binary is on PATH and prints a version. Fails the
+# build (CI gate) if the release format ever changes shape.
 RUN sg --version
