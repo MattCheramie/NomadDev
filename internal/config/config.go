@@ -120,16 +120,27 @@ type SandboxConfig struct {
 }
 
 // MiddlewareConfig governs the Phase 4 NLP middleware that translates
-// user.intent envelopes into typed tool calls via Gemini (or the mock).
+// user.intent envelopes into typed tool calls via Gemini, OpenAI, Anthropic,
+// DeepSeek, or the mock.
 type MiddlewareConfig struct {
-	Runtime          string  // "mock" | "gemini" | "none"
-	APIKey           string  // NOMADDEV_GEMINI_API_KEY
+	Runtime          string  // "mock" | "gemini" | "openai" | "anthropic" | "deepseek" | "none"
+	APIKey           string  // NOMADDEV_GEMINI_API_KEY (Gemini-only; per-provider keys below)
 	Model            string  // e.g. "gemini-2.0-flash"
 	Temperature      float64 // 0.0–1.0
 	MaxTokens        int
 	SystemPrompt     string // inline override
 	SystemPromptPath string // file path; takes precedence over SystemPrompt
 	MaxConcurrent    int    // per-server cap on concurrent user.intent turns
+
+	// Per-provider credentials and model overrides. Selected by Runtime;
+	// the orchestrator wires the matching key/model into FactoryConfig.
+	OpenAIAPIKey    string // NOMADDEV_OPENAI_API_KEY
+	OpenAIBaseURL   string // NOMADDEV_OPENAI_BASE_URL (Azure, proxy, etc.); empty = SDK default
+	OpenAIModel     string // NOMADDEV_OPENAI_MODEL (default "gpt-4o-mini")
+	AnthropicAPIKey string // NOMADDEV_ANTHROPIC_API_KEY
+	AnthropicModel  string // NOMADDEV_ANTHROPIC_MODEL (default "claude-sonnet-4-5")
+	DeepSeekAPIKey  string // NOMADDEV_DEEPSEEK_API_KEY
+	DeepSeekModel   string // NOMADDEV_DEEPSEEK_MODEL (default "deepseek-chat")
 	// MaxAutoRetries caps consecutive failed tool-call dispatches inside one
 	// chain before the middleware escalates the failure to the Mobile
 	// Control Hub as a system.error_report envelope. A success (or a
@@ -333,6 +344,13 @@ func Load() (*Config, error) {
 			SystemPromptPath: os.Getenv("NOMADDEV_MIDDLEWARE_SYSTEM_PROMPT_PATH"),
 			MaxConcurrent:    envInt("NOMADDEV_MIDDLEWARE_MAX_CONCURRENT", 4),
 			MaxAutoRetries:   envInt("NOMADDEV_MAX_AUTORETRIES", 2),
+			OpenAIAPIKey:     os.Getenv("NOMADDEV_OPENAI_API_KEY"),
+			OpenAIBaseURL:    os.Getenv("NOMADDEV_OPENAI_BASE_URL"),
+			OpenAIModel:      envOr("NOMADDEV_OPENAI_MODEL", "gpt-4o-mini"),
+			AnthropicAPIKey:  os.Getenv("NOMADDEV_ANTHROPIC_API_KEY"),
+			AnthropicModel:   envOr("NOMADDEV_ANTHROPIC_MODEL", "claude-sonnet-4-5"),
+			DeepSeekAPIKey:   os.Getenv("NOMADDEV_DEEPSEEK_API_KEY"),
+			DeepSeekModel:    envOr("NOMADDEV_DEEPSEEK_MODEL", "deepseek-chat"),
 		},
 		History: HistoryConfig{
 			Backend:     envOr("NOMADDEV_HISTORY_BACKEND", "sqlite"),

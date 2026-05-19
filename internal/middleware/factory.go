@@ -13,10 +13,22 @@ import (
 
 // Runtime selectors recognized by NewService.
 const (
-	RuntimeNone   = "none"
-	RuntimeMock   = "mock"
-	RuntimeGemini = "gemini"
+	RuntimeNone      = "none"
+	RuntimeMock      = "mock"
+	RuntimeGemini    = "gemini"
+	RuntimeOpenAI    = "openai"
+	RuntimeAnthropic = "anthropic"
+	RuntimeDeepSeek  = "deepseek"
 )
+
+// deepSeekDefaultBaseURL is the public DeepSeek API endpoint, used when the
+// operator selects runtime=deepseek without overriding OpenAIBaseURL. The
+// DeepSeek API is OpenAI-compatible so it shares the OpenAI translator.
+const deepSeekDefaultBaseURL = "https://api.deepseek.com/v1"
+
+// deepSeekDefaultModel is DeepSeek's general-purpose model. Operators can
+// override via NOMADDEV_DEEPSEEK_MODEL.
+const deepSeekDefaultModel = "deepseek-chat"
 
 // FactoryConfig is the runtime-agnostic configuration for NewService.
 type FactoryConfig struct {
@@ -27,6 +39,11 @@ type FactoryConfig struct {
 	Model       string
 	Temperature float64
 	MaxTokens   int
+
+	// OpenAIBaseURL is the API base URL for the OpenAI client. Empty means
+	// SDK default (api.openai.com). The deepseek runtime auto-fills this
+	// with the DeepSeek endpoint if the operator left it empty.
+	OpenAIBaseURL string
 
 	// Per-turn config plumbed into Service.Config.
 	SystemPrompt       string
@@ -75,6 +92,33 @@ func NewService(ctx context.Context, c FactoryConfig) (*Service, error) {
 		tr = defaultMockTranslator()
 	case RuntimeGemini:
 		built, err := newGeminiTranslator(ctx, c)
+		if err != nil {
+			return nil, err
+		}
+		tr = built
+	case RuntimeOpenAI:
+		built, err := newOpenAITranslator(ctx, c)
+		if err != nil {
+			return nil, err
+		}
+		tr = built
+	case RuntimeDeepSeek:
+		// DeepSeek's API is OpenAI-compatible; the only differences are
+		// the base URL and the default model. Defaults applied here so the
+		// shared OpenAI translator stays runtime-agnostic.
+		if c.OpenAIBaseURL == "" {
+			c.OpenAIBaseURL = deepSeekDefaultBaseURL
+		}
+		if c.Model == "" {
+			c.Model = deepSeekDefaultModel
+		}
+		built, err := newOpenAITranslator(ctx, c)
+		if err != nil {
+			return nil, err
+		}
+		tr = built
+	case RuntimeAnthropic:
+		built, err := newAnthropicTranslator(ctx, c)
 		if err != nil {
 			return nil, err
 		}

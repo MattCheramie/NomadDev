@@ -218,3 +218,46 @@ func TestFactory_GeminiWithoutTagReturnsError(t *testing.T) {
 		t.Errorf("error should mention gemini, got %v", err)
 	}
 }
+
+// TestFactory_OpenAIFamilyWithoutTag exercises the openai and deepseek
+// runtime selectors. Both route through newOpenAITranslator and so share
+// the stub error when the binary lacks -tags openai. With the tag present
+// and an APIKey supplied they would each return a real translator; here we
+// just confirm dispatch (and skip silently when built with the tag).
+func TestFactory_OpenAIFamilyWithoutTag(t *testing.T) {
+	for _, rt := range []string{RuntimeOpenAI, RuntimeDeepSeek} {
+		t.Run(rt, func(t *testing.T) {
+			svc, err := NewService(context.Background(), FactoryConfig{
+				Runtime: rt,
+				APIKey:  "test-key", // bypass the explicit empty-key error path
+				History: history.NewMemoryStore(),
+			})
+			if err == nil && svc != nil {
+				t.Skip("built with -tags openai; stub test does not apply")
+			}
+			if err == nil {
+				t.Fatalf("expected error for runtime=%q without -tags openai", rt)
+			}
+			if !strings.Contains(strings.ToLower(err.Error()), "openai") {
+				t.Errorf("error should mention openai (the shared stub), got %v", err)
+			}
+		})
+	}
+}
+
+func TestFactory_AnthropicWithoutTagReturnsError(t *testing.T) {
+	svc, err := NewService(context.Background(), FactoryConfig{
+		Runtime: RuntimeAnthropic,
+		APIKey:  "test-key",
+		History: history.NewMemoryStore(),
+	})
+	if err == nil && svc != nil {
+		t.Skip("built with -tags anthropic; stub test does not apply")
+	}
+	if err == nil {
+		t.Fatal("expected error for anthropic runtime without -tags anthropic")
+	}
+	if !strings.Contains(strings.ToLower(err.Error()), "anthropic") {
+		t.Errorf("error should mention anthropic, got %v", err)
+	}
+}

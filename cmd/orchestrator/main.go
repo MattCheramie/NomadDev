@@ -493,10 +493,29 @@ func buildMiddleware(
 		systemPrompt = string(b)
 	}
 
+	// Per-provider key/model selection. Gemini fields stay on the
+	// top-level APIKey/Model for backwards compat; openai/anthropic/
+	// deepseek live on their own envs and are spliced in here so factory.go
+	// stays runtime-agnostic.
+	apiKey := cfg.Middleware.APIKey
+	model := cfg.Middleware.Model
+	switch cfg.Middleware.Runtime {
+	case middleware.RuntimeOpenAI:
+		apiKey = cfg.Middleware.OpenAIAPIKey
+		model = cfg.Middleware.OpenAIModel
+	case middleware.RuntimeAnthropic:
+		apiKey = cfg.Middleware.AnthropicAPIKey
+		model = cfg.Middleware.AnthropicModel
+	case middleware.RuntimeDeepSeek:
+		apiKey = cfg.Middleware.DeepSeekAPIKey
+		model = cfg.Middleware.DeepSeekModel
+	}
+
 	return middleware.NewService(ctx, middleware.FactoryConfig{
 		Runtime:        cfg.Middleware.Runtime,
-		APIKey:         cfg.Middleware.APIKey,
-		Model:          cfg.Middleware.Model,
+		APIKey:         apiKey,
+		Model:          model,
+		OpenAIBaseURL:  cfg.Middleware.OpenAIBaseURL,
 		Temperature:    cfg.Middleware.Temperature,
 		MaxTokens:      cfg.Middleware.MaxTokens,
 		SystemPrompt:   systemPrompt,
