@@ -121,9 +121,9 @@ func (s *anthropicTurn) run(ctx context.Context, out chan<- AssistantEvent) {
 	// of content_block_delta events carrying text or partial JSON, then
 	// content_block_stop. message_delta carries the stop_reason and usage.
 	type block struct {
-		kind       string // "text" | "tool_use" | "other"
-		toolID     string
-		toolName   string
+		kind        string // "text" | "tool_use" | "other"
+		toolID      string
+		toolName    string
 		toolArgsRaw []byte
 	}
 	blocks := map[int64]*block{}

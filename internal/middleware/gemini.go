@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"log/slog"
+	"math"
 
 	"github.com/mattcheramie/nomaddev/internal/event"
 	"github.com/mattcheramie/nomaddev/internal/history"
@@ -50,9 +51,17 @@ func NewGeminiTranslator(ctx context.Context, opts GeminiOptions) (*GeminiTransl
 	if opts.Temperature == 0 {
 		temp = 0.2
 	}
-	maxTok := int32(opts.MaxTokens)
-	if maxTok == 0 {
+	// Clamp into int32 range; SDK rejects negatives and no real model
+	// accepts > 2^31 tokens anyway, so the bounds check is purely to keep
+	// gosec G115 quiet about the conversion.
+	maxTok := int32(0)
+	switch {
+	case opts.MaxTokens <= 0:
 		maxTok = 4096
+	case opts.MaxTokens > math.MaxInt32:
+		maxTok = math.MaxInt32
+	default:
+		maxTok = int32(opts.MaxTokens)
 	}
 	log := opts.Logger
 	if log == nil {
@@ -272,4 +281,3 @@ func toolResponseContent(r ToolResult) *genai.Content {
 		},
 	}
 }
-
