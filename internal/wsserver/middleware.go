@@ -90,6 +90,20 @@ func (s *Server) handleUserIntent(
 		s.replyError(sess, client, env.ID, event.CodeBadEnvelope, err.Error())
 		return
 	}
+	// Reject up-front when the operator pointed the active runtime at a
+	// model we know rejects vision content blocks (e.g. o3-mini or
+	// deepseek-chat). The upstream API would 4xx anyway with a less
+	// helpful message; doing it here lets the mobile UI surface the real
+	// reason ("switch to deepseek-vl2") instead of an opaque provider
+	// error. Unknown (provider, model) pairs pass through — pricing's
+	// SupportsVision is intentionally permissive on unknowns.
+	if len(images) > 0 && !pricing.SupportsVision(s.mw.Config.Provider, s.mw.Config.Model) {
+		s.replyError(sess, client, env.ID, event.CodeBadEnvelope,
+			"model "+s.mw.Config.Provider+"/"+s.mw.Config.Model+" does not support image inputs; "+
+				"switch the runtime to a vision-capable model "+
+				"(e.g. deepseek-vl2 for DeepSeek, gpt-4o-mini for OpenAI)")
+		return
+	}
 
 	if s.intentSem != nil {
 		select {

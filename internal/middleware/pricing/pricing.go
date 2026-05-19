@@ -50,6 +50,12 @@ var prices = map[string]map[string]Price{
 	"deepseek": {
 		"deepseek-chat":     {InputUSDPerMillion: 0.27, OutputUSDPerMillion: 1.10},
 		"deepseek-reasoner": {InputUSDPerMillion: 0.55, OutputUSDPerMillion: 2.19},
+		// deepseek-vl2 is DeepSeek's vision-capable chat model and is the
+		// only DeepSeek option that accepts image attachments. Pricing
+		// here mirrors deepseek-chat as a conservative placeholder — the
+		// upstream pricing page is the source of truth; refresh when
+		// DeepSeek publishes a separate VL line item.
+		"deepseek-vl2": {InputUSDPerMillion: 0.27, OutputUSDPerMillion: 1.10},
 	},
 	"gemini": {
 		"gemini-2.0-flash":      {InputUSDPerMillion: 0.10, OutputUSDPerMillion: 0.40},

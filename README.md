@@ -121,6 +121,17 @@ and how to switch between the mock and Docker runners.
   session can refer back to them. Allowed media types are restricted to
   `image/jpeg`, `image/png`, `image/gif`, and `image/webp` (the
   intersection of the three providers' supported sets).
+  - **Vision-capable models**: every provider's defaults
+    (`gpt-4o-mini`, `claude-sonnet-4-5`, `gemini-2.0-flash`) accept
+    images. DeepSeek's `deepseek-chat` and `deepseek-reasoner` are
+    text-only; pair the DeepSeek runtime with `NOMADDEV_DEEPSEEK_MODEL=deepseek-vl2`
+    to use vision. OpenAI's `o3-mini` is also text-only.
+  - **Guardrail**: image-bearing `user.intent` envelopes are rejected
+    up-front with a `bad_envelope` error when the active runtime+model
+    is known text-only (see `pricing.SupportsVision`), so the operator
+    sees a clear "switch to deepseek-vl2" diagnostic instead of an
+    opaque upstream-provider 4xx. Unknown models pass through —
+    upstream surfaces any model-specific error.
 
 Translator + dispatcher + approval gate live at
 [`internal/middleware/`](./internal/middleware/); filesystem-only tools live
