@@ -64,7 +64,7 @@ test('renders empty state when there are no turns', () => {
 test('renders turns and pretty-prints the user + assistant text', () => {
   useStore.setState({
     turns: [{
-      intentId: 'I1', userText: 'hello there',
+      intentId: 'I1', userText: 'hello there', userImages: [],
       assistantText: 'general kenobi', toolCalls: [], finished: true,
     }],
   });

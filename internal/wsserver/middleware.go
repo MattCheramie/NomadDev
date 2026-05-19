@@ -2,6 +2,7 @@ package wsserver
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"log/slog"
@@ -84,6 +85,11 @@ func (s *Server) handleUserIntent(
 			"unsupported mode: "+p.Mode)
 		return
 	}
+	images, err := decodeIntentImages(p.Images, s.cfg.Middleware.MaxImagesPerIntent, s.cfg.Middleware.MaxImageBytes)
+	if err != nil {
+		s.replyError(sess, client, env.ID, event.CodeBadEnvelope, err.Error())
+		return
+	}
 
 	if s.intentSem != nil {
 		select {
@@ -109,13 +115,14 @@ func (s *Server) handleUserIntent(
 		if s.intentSem != nil {
 			defer func() { <-s.intentSem }()
 		}
-		s.runIntent(turnCtx, env.ID, p, sess, client, logger)
+		s.runIntent(turnCtx, env.ID, p, images, sess, client, logger)
 	}()
 }
 
 // runIntent drives the translator stream for one user.intent turn.
 func (s *Server) runIntent(
 	ctx context.Context, intentID string, p event.UserIntentPayload,
+	images []middleware.ImageData,
 	sess *session.Session, client *hub.Client, logger *slog.Logger,
 ) {
 	started := time.Now()
@@ -128,7 +135,7 @@ func (s *Server) runIntent(
 	userTurn := history.Turn{
 		SID:   sess.SID,
 		Role:  history.RoleUser,
-		Parts: mustMarshalText(p.Text),
+		Parts: mustMarshalUserTurn(p.Text, images),
 		TS:    time.Now().UTC(),
 	}
 	if _, err := s.mw.History.Append(ctx, userTurn); err != nil {
@@ -158,6 +165,7 @@ func (s *Server) runIntent(
 		SystemPrompt: systemPrompt,
 		Tools:        s.mw.AvailableToolsFor(p.Mode),
 		Mode:         p.Mode,
+		Images:       images,
 	}
 	eventsCh, resume, err := s.mw.Translator.Stream(ctx, in)
 	if err != nil {
@@ -646,11 +654,34 @@ func accumulateUsage(turn *middleware.Usage, stage middleware.Usage, provider, m
 	}
 }
 
-// mustMarshalText serializes "{text: ...}" — the on-disk shape for user and
-// assistant text turns. JSON encoding can only fail on unsupported types; a
-// plain string is safe, so the error is dropped intentionally.
+// mustMarshalText serializes "{text: ...}" — the on-disk shape for
+// assistant text turns. JSON encoding can only fail on unsupported types;
+// a plain string is safe, so the error is dropped intentionally.
 func mustMarshalText(text string) []byte {
 	b, _ := json.Marshal(map[string]any{"text": text})
+	return b
+}
+
+// mustMarshalUserTurn serializes a user turn that may carry image
+// attachments alongside the text. Shape: {"text": "...", "images":
+// [{"media_type": "...", "data": "<base64>"}]}. Images is omitted from
+// the JSON when nil so existing turns persisted before this change parse
+// identically. Re-encodes the decoded byte slices to base64 because
+// history.Turn.Parts is JSON-bytes — a single allocation per image at
+// persist time, much cheaper than buffering both shapes in memory.
+func mustMarshalUserTurn(text string, images []middleware.ImageData) []byte {
+	turn := map[string]any{"text": text}
+	if len(images) > 0 {
+		enc := make([]map[string]string, 0, len(images))
+		for _, img := range images {
+			enc = append(enc, map[string]string{
+				"media_type": img.MediaType,
+				"data":       base64.StdEncoding.EncodeToString(img.Data),
+			})
+		}
+		turn["images"] = enc
+	}
+	b, _ := json.Marshal(turn)
 	return b
 }
 
