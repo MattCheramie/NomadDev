@@ -22,6 +22,26 @@ const (
 // tool's schema.
 var ErrToolValidation = errors.New("middleware: tool args invalid")
 
+// Turn-mode values mirrored from event.UserIntentMode*. Kept here so the
+// middleware package can act on the mode without importing the event package
+// (which would create a cycle for some downstream callers).
+const (
+	ModeNormal = ""
+	ModeAudit  = "audit"
+)
+
+// IsMutatingBaseTool reports whether one of the six base tools mutates host
+// state. GitHub MCP tools are classified separately via the caller-supplied
+// predicate plumbed through Service.IsDestructiveGitHubTool — execute_script
+// is counted as mutating because it can run arbitrary shell, including writes.
+func IsMutatingBaseTool(name string) bool {
+	switch name {
+	case ToolExecuteScript, ToolWritePatch, ToolApplyCodePatch:
+		return true
+	}
+	return false
+}
+
 // ToolSpec is the SDK-agnostic representation of one tool the model may call.
 // The Gemini-tagged build converts these into *genai.FunctionDeclaration in
 // gemini_tools.go.

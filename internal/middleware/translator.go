@@ -61,6 +61,11 @@ type TurnInput struct {
 	History      []history.Turn // already windowed to the configured size
 	SystemPrompt string
 	Tools        []ToolSpec
+	// Mode mirrors UserIntentPayload.Mode. "" = normal; "audit" means the
+	// caller has already filtered Tools to read-only entries — translators
+	// don't need to act on this directly, but it is plumbed through so the
+	// dispatcher can refuse mutating calls defense-in-depth.
+	Mode string
 }
 
 // ResumeFunc resumes a turn after a tool finished running. The returned

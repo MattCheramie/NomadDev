@@ -70,6 +70,7 @@ and how to switch between the mock and Docker runners.
 - [x] Build the loop that receives user intent, queries the LLM, and captures the resulting Function Call.
 - [x] Map the generated Function Calls directly to the Go Sandbox Runner from Phase 3.
 - [x] Format execution results back into JSON for the LLM to interpret.
+- [x] Audit / dry-run mode: `user.intent` envelopes may carry `mode: "audit"`. The orchestrator strips `execute_script`, `write_patch`, `apply_code_patch`, and destructive `github_*` tools from the catalogue before the schema reaches Gemini, and the dispatcher refuses to run them defense-in-depth. The assistant is steered to produce a markdown report.
 
 Translator + dispatcher + approval gate live at
 [`internal/middleware/`](./internal/middleware/); filesystem-only tools live

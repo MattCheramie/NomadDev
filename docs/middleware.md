@@ -92,6 +92,28 @@ All schemas are SDK-agnostic — Gemini-specific conversion lives in
 `gemini_tools.go` under the build tag. See [`github.md`](github.md) for the
 GitHub MCP integration in depth.
 
+### Audit mode (dry-run)
+
+A `user.intent` envelope may carry `mode: "audit"`. When set, the
+orchestrator filters the per-turn tool catalogue handed to Gemini through
+`Service.AvailableToolsFor("audit")`, dropping every mutating tool:
+`execute_script`, `write_patch`, `apply_code_patch`, and every `github_*`
+tool that `githubmcp.IsDestructiveTool` flags. `CompositeDispatcher` and
+the wsserver per-call gate apply the same filter as defense-in-depth, so a
+hallucinated tool name cannot bypass the restriction (the call is rejected
+with `sandbox_unauthorized` / `sandbox_bad_request` and surfaces on the
+wire as a normal `command.result`).
+
+The system prompt is augmented with a steering line that tells the model
+the catalogue has been narrowed to `read_file`, `list_dir`,
+`search_syntax`, and read-only `github_*` tools, and that the expected
+deliverable is a markdown report rather than a mutation. Approval prompts
+are never expected to fire in audit mode — there is nothing destructive
+left in the catalogue to gate.
+
+Unknown values for `mode` are rejected by the wsserver entry point with
+`bad_envelope`; empty / omitted `mode` runs the unfiltered catalogue.
+
 ### Why the fsops/sandbox split
 
 `read_file`, `list_dir`, `write_patch`, and `apply_code_patch` are pure
