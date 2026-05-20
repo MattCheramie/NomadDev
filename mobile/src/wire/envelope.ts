@@ -28,6 +28,7 @@ export const EventToolApprovalDenied = 'tool.approval.denied' as const;
 // Phase 6 client-driven session controls (Settings → Reset history etc.).
 export const EventUserCommand = 'user.command' as const;
 export const UserCommandResetHistory = 'reset_history' as const;
+export const UserCommandSetModel = 'set_model' as const;
 
 export type EventType =
   | typeof EventHello
@@ -77,6 +78,13 @@ export type HelloPayload = {
   session_id: string;
   server_time: string;
   protocol_version: number;
+  // Active translator runtime identifier (e.g. "openai") and its current
+  // model. available_models is the per-provider catalogue the client can
+  // pick from. All three are absent on mock / no-middleware orchestrators —
+  // the Settings picker hides itself in that case.
+  provider?: string;
+  model?: string;
+  available_models?: string[];
 };
 
 export type ClientHelloPayload = {
@@ -176,14 +184,27 @@ export type ToolApprovalDeniedPayload = {
 };
 
 export type UserCommandPayload = {
-  action: typeof UserCommandResetHistory | string;
+  action: typeof UserCommandResetHistory | typeof UserCommandSetModel | string;
+  // Required when action == set_model. Validated against the active provider's
+  // catalogue server-side; unknown values come back as a bad_envelope ack.
+  model?: string;
+};
+
+// AckPayload mirrors the Go-side internal/event.AckPayload. `model` is
+// populated on a successful set_model ack so the client can confirm what
+// the server now considers active.
+export type AckPayload = {
+  action: string;
+  error?: string;
+  message?: string;
+  model?: string;
 };
 
 // Discriminated payload union, type → payload.
 export type PayloadByType = {
   [EventHello]: HelloPayload;
   [EventClientHello]: ClientHelloPayload;
-  [EventAck]: Record<string, never>;
+  [EventAck]: AckPayload;
   [EventPing]: PingPayload;
   [EventPong]: PingPayload;
   [EventError]: ErrorPayload;

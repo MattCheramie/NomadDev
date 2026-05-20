@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/gorilla/websocket"
@@ -40,9 +41,14 @@ type Server struct {
 	mw        *middleware.Service // may be nil — see handleUserIntent
 	sem       chan struct{}       // optional cap on concurrent execs; nil = unlimited
 	intentSem chan struct{}       // optional cap on concurrent user.intent turns; nil = unlimited
-	upgrader  websocket.Upgrader
-	http      *http.Server
-	mux       *http.ServeMux
+	// modelOverrides holds per-SID translator-model overrides driven by
+	// the mobile Settings picker (user.command{set_model}). Lookup is
+	// O(1) on every user.intent so the override path stays cheap. Cleared
+	// on reset_history so a fresh session goes back to the server default.
+	modelOverrides sync.Map // map[string]string — SID → model name
+	upgrader       websocket.Upgrader
+	http           *http.Server
+	mux            *http.ServeMux
 }
 
 // ReadinessProbe is one named dependency the /readyz handler will

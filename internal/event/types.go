@@ -40,6 +40,7 @@ const (
 // UserCommandAction values for UserCommandPayload.Action.
 const (
 	UserCommandResetHistory = "reset_history"
+	UserCommandSetModel     = "set_model"
 )
 
 // UserIntentMode values for UserIntentPayload.Mode.
@@ -89,10 +90,20 @@ const (
 const ProtocolVersion = 1
 
 // HelloPayload is the payload of an EventHello envelope.
+//
+// Provider / Model / AvailableModels are populated when the orchestrator has
+// a non-mock middleware Service wired. Empty / nil fields signal "model
+// switching unsupported by this runtime" — the mobile Settings UI hides the
+// picker accordingly. AvailableModels is sorted alphabetically and filtered
+// to the active provider so the client doesn't show choices that would be
+// rejected on a set_model command.
 type HelloPayload struct {
-	SessionID       string `json:"session_id"`
-	ServerTime      string `json:"server_time"`
-	ProtocolVersion int    `json:"protocol_version"`
+	SessionID       string   `json:"session_id"`
+	ServerTime      string   `json:"server_time"`
+	ProtocolVersion int      `json:"protocol_version"`
+	Provider        string   `json:"provider,omitempty"`
+	Model           string   `json:"model,omitempty"`
+	AvailableModels []string `json:"available_models,omitempty"`
 }
 
 // ClientHelloPayload is the payload of an EventClientHello envelope.
@@ -266,15 +277,23 @@ type ToolApprovalDeniedPayload struct {
 // not natural-language intents — e.g. the mobile Settings "Reset history"
 // button. The orchestrator acks success/failure with an EventAck reply whose
 // correlation_id is the user.command envelope id.
+//
+// Model is required when Action == UserCommandSetModel and ignored otherwise;
+// the server validates it against the active provider's catalogue and rejects
+// unknown values with bad_envelope.
 type UserCommandPayload struct {
-	Action string `json:"action"` // one of UserCommand* constants
+	Action string `json:"action"`          // one of UserCommand* constants
+	Model  string `json:"model,omitempty"` // required for UserCommandSetModel
 }
 
 // AckPayload carries the outcome of a user.command. Error is empty on success.
+// Model echoes the value that is now in effect after a successful set_model;
+// callers can ignore it for other actions.
 type AckPayload struct {
 	Action  string `json:"action"`
 	Error   string `json:"error,omitempty"`
 	Message string `json:"message,omitempty"`
+	Model   string `json:"model,omitempty"`
 }
 
 // SystemErrorReportPayload carries a structured account of a failing tool

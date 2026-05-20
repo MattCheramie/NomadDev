@@ -86,13 +86,17 @@ type RuntimeConfig struct {
 	SandboxLimits  sandbox.ResourceLimits
 	// Provider is the active translator backend name ("mock", "gemini",
 	// "openai", "anthropic", "deepseek"). Used as a Prometheus label on
-	// token + cost counters so dashboards can break down spend by backend.
-	// Populated from FactoryConfig.Runtime.
+	// token + cost counters so dashboards can break down spend by backend,
+	// and surfaced in HelloPayload.Provider so the mobile Settings picker
+	// knows which catalogue to render. Populated from FactoryConfig.Runtime.
 	Provider string
 	// Model is the active model identifier (e.g. "gpt-4o-mini",
-	// "claude-sonnet-4-5"). Pairs with Provider for the pricing lookup.
-	// Populated from FactoryConfig.Model — for the deepseek runtime, the
-	// factory pre-fills the default before the service is constructed.
+	// "claude-sonnet-4-5") — the server default before any per-session
+	// user.command{set_model} override. Pairs with Provider for the pricing
+	// lookup and is echoed in HelloPayload.Model for the picker's initial
+	// selection. Populated from FactoryConfig.Model — for the deepseek
+	// runtime, the factory pre-fills the default before the service is
+	// constructed.
 	Model string
 	// GateDirectCommands wires the approval state machine into the legacy
 	// direct command.request path (Phase 3) as well as the new

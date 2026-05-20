@@ -327,8 +327,33 @@ via `NOMADDEV_HISTORY_SUMMARY_*` env vars (see
   key needed.
 - `gemini` — real Gemini calls; only works with `-tags gemini` (`make
   build-gemini`). Requires `NOMADDEV_GEMINI_API_KEY`.
+- `openai` / `anthropic` / `deepseek` — corresponding SDK-backed
+  translators behind their own build tags.
 - `none` — no middleware service attached; `user.intent` returns
   `error{not_implemented}`.
+
+### Switching models at runtime
+
+The active translator's model is chosen at startup via the per-runtime
+env var (e.g. `NOMADDEV_OPENAI_MODEL`). Within one provider the mobile
+Settings screen can switch models on the fly via
+`user.command{action: "set_model", model: "<name>"}`:
+
+- The hello envelope advertises `provider`, the current `model`, and an
+  `available_models` catalogue sourced from `middleware.KnownModels()`.
+- The server validates the requested model against the active provider's
+  catalogue and stores it in an in-memory per-SID override map.
+- The next `user.intent` picks up the new model via `TurnInput.Model`;
+  in-flight turns are unaffected.
+- `reset_history` clears the override alongside the conversation.
+- The override is held in memory only — restart the orchestrator and
+  every session goes back to its env-var default. The mobile client
+  re-applies its remembered selection on reconnect by reading
+  `HelloPayload.model`.
+
+Cross-provider switching (e.g. openai → anthropic) is intentionally not
+supported from the UI: it would require runtime API key changes and a
+different build-tag binary.
 
 ## Automated error recovery (Phase 13)
 

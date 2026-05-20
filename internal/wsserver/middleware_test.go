@@ -27,6 +27,11 @@ type mwOpts struct {
 	IntentMaxConc     int
 	Approver          middleware.Approver // optional override
 	MaxAutoRetries    int                 // 0 = recovery loop disabled
+	// Provider / Model populate RuntimeConfig so the set_model handler and
+	// hello-payload tests can exercise the model-switch surface without
+	// pulling in a real translator backend.
+	Provider string
+	Model    string
 }
 
 func buildMW(t *testing.T, opts mwOpts) *middleware.Service {
@@ -55,6 +60,8 @@ func buildMW(t *testing.T, opts mwOpts) *middleware.Service {
 		Approver:   approver,
 		History:    history.NewMemoryStore(),
 		Config: middleware.RuntimeConfig{
+			Provider:           opts.Provider,
+			Model:              opts.Model,
 			MaxConcurrent:      opts.IntentMaxConc,
 			DefaultTimeout:     2 * time.Second,
 			GateDirectCommands: opts.GateDirectCommand,
