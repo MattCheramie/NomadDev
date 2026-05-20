@@ -78,6 +78,10 @@ export type ToolCall = {
 export type Turn = {
   intentId: string;
   userText: string;
+  // userImages are data: URIs rendered as thumbnails on the UserBubble.
+  // Populated when the user attached images to the originating intent
+  // via Composer. Omitted (empty array) when none.
+  userImages: string[];
   assistantText: string;
   toolCalls: ToolCall[];
   finished: boolean;
@@ -149,7 +153,7 @@ export type AppState = {
   setCredentials(url: string, token: string): void;
   clearCredentials(): void;
   setStatus(s: ConnectionStatus): void;
-  recordSentIntent(intentId: string, text: string): void;
+  recordSentIntent(intentId: string, text: string, imagePreviewUris?: string[]): void;
   ingest(env: Envelope): { reply?: Envelope } | undefined;
   popApproval(envelopeId: string): void;
   reset(): void;
@@ -180,10 +184,12 @@ export const useStore = create<AppState>((set, get) => ({
   setStatus(s) {
     set({ wsStatus: s });
   },
-  recordSentIntent(intentId, text) {
+  recordSentIntent(intentId, text, imagePreviewUris) {
     set((st) => ({
       turns: [...st.turns, {
-        intentId, userText: text, assistantText: '',
+        intentId, userText: text,
+        userImages: imagePreviewUris ?? [],
+        assistantText: '',
         toolCalls: [], finished: false,
       }],
     }));

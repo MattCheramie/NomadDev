@@ -123,6 +123,50 @@ func TestMiddleware_UserIntent_UsageAccumulatesAcrossStages(t *testing.T) {
 	}
 }
 
+// TestMiddleware_UserIntent_CostReportedForKnownModel drives a single-stage
+// turn whose translator declares (provider, model) = (openai, gpt-4o-mini)
+// — a known entry in internal/middleware/pricing — and 1M prompt + 1M
+// candidate tokens. Expects payload.usage.cost_usd to equal 0.75 and the
+// LLMCostUSDTotal counter to register the same delta.
+func TestMiddleware_UserIntent_CostReportedForKnownModel(t *testing.T) {
+	const provider, model = "openai", "gpt-4o-mini"
+	before := testutil.ToFloat64(metrics.LLMCostUSDTotal.WithLabelValues(provider, model))
+
+	mock := middleware.NewMockTranslator([]middleware.AssistantEvent{
+		{FinalMessage: &middleware.FinalMessage{
+			Text: "hi", FinishReason: "stop",
+			Usage: middleware.Usage{
+				PromptTokens: 1_000_000, CandidatesTokens: 1_000_000, TotalTokens: 2_000_000,
+			},
+		}},
+	})
+	mw := buildMW(t, mwOpts{Translator: mock, AutoGrant: true})
+	mw.Config.Provider = provider
+	mw.Config.Model = model
+	ts, _, _, issuer := newTestServerFull(t, testOpts{Middleware: mw})
+	tok, _ := issuer.Sign("matt", "sess-cost-1", nil)
+	c, _, _ := dialWithAuthHeader(t, ts, tok)
+	defer c.Close()
+	_ = readEnv(t, c) // hello
+
+	intent, _ := event.NewEnvelope(event.EventUserIntent, event.UserIntentPayload{Text: "hi"})
+	writeEnv(t, c, intent)
+
+	msg := readAssistantMessage(t, c, intent.ID)
+	if msg.Usage == nil {
+		t.Fatalf("usage nil; want populated")
+	}
+	// 1M * 0.15 + 1M * 0.60 (per 1M) → 0.75 USD.
+	if got := msg.Usage.CostUSD; got < 0.7499 || got > 0.7501 {
+		t.Errorf("CostUSD = %v, want ≈0.75", got)
+	}
+
+	after := testutil.ToFloat64(metrics.LLMCostUSDTotal.WithLabelValues(provider, model))
+	if delta := after - before; delta < 0.7499 || delta > 0.7501 {
+		t.Errorf("LLMCostUSDTotal delta = %v, want ≈0.75", delta)
+	}
+}
+
 // TestMiddleware_UserIntent_NoUsageOmitsField verifies that turns whose
 // translator never reports tokens (existing mock-translator tests) leave
 // payload.usage nil — both for wire-economy and so old clients keep working.
@@ -159,9 +203,14 @@ func (a llmCounters) sub(b llmCounters) llmCounters {
 }
 
 func snapshotLLMCounters() llmCounters {
+	// buildMW constructs Service directly without going through the
+	// factory, so Provider/Model on RuntimeConfig are empty here. That's
+	// what the orchestrator's metric writes (and reads) for this test
+	// harness — Prometheus accepts empty label values, they just produce
+	// the {provider="", model=""} series.
 	return llmCounters{
-		prompt:     int64(testutil.ToFloat64(metrics.LLMTokensTotal.WithLabelValues("prompt"))),
-		candidates: int64(testutil.ToFloat64(metrics.LLMTokensTotal.WithLabelValues("candidates"))),
-		total:      int64(testutil.ToFloat64(metrics.LLMTokensTotal.WithLabelValues("total"))),
+		prompt:     int64(testutil.ToFloat64(metrics.LLMTokensTotal.WithLabelValues("prompt", "", ""))),
+		candidates: int64(testutil.ToFloat64(metrics.LLMTokensTotal.WithLabelValues("candidates", "", ""))),
+		total:      int64(testutil.ToFloat64(metrics.LLMTokensTotal.WithLabelValues("total", "", ""))),
 	}
 }

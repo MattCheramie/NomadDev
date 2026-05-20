@@ -45,7 +45,11 @@ host or remote state.
   `//go:build openai`; rebuild with `make build-openai`. The same
   translator backs `NOMADDEV_MIDDLEWARE_RUNTIME=deepseek` — the factory
   swaps in the DeepSeek base URL and `deepseek-chat` defaults because
-  DeepSeek's API is OpenAI-compatible.
+  DeepSeek's API is OpenAI-compatible. For vision/image inputs on the
+  DeepSeek runtime, set `NOMADDEV_DEEPSEEK_MODEL=deepseek-vl2` — the
+  default `deepseek-chat` is text-only and will be rejected up-front by
+  the orchestrator's vision guardrail (see
+  [`pricing/capabilities.go`](./pricing/capabilities.go)).
 - `AnthropicTranslator` — Anthropic Messages API client. Behind
   `//go:build anthropic`; rebuild with `make build-anthropic`.
 

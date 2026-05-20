@@ -48,11 +48,16 @@ type FinalMessage struct {
 }
 
 // AssistantEvent is the discriminated event the translator emits during a
-// turn. Exactly one of Text / ToolCall / FinalMessage / Usage / Err is
-// meaningful.
+// turn. Exactly one of Text / Thinking / ToolCall / FinalMessage / Usage / Err
+// is meaningful.
 //
 //   - Text:         one streamed text fragment; the handler increments its
 //     own seq counter and emits an assistant.chunk envelope.
+//   - Thinking:     one streamed fragment of the model's internal reasoning
+//     (currently Anthropic extended thinking only). The handler emits an
+//     assistant.thinking envelope with its own seq counter — thinking is a
+//     parallel stream from Text and does NOT contribute to the terminal
+//     FinalMessage.Text.
 //   - ToolCall:     a discrete function-call instruction. The translator must
 //     stop emitting events on the current channel after this and wait for
 //     the handler to call ResumeFunc.
@@ -67,6 +72,7 @@ type FinalMessage struct {
 //     assistant.message{FinishReason: "error", Error: err.Error()}.
 type AssistantEvent struct {
 	Text         string
+	Thinking     string
 	ToolCall     *ToolCall
 	FinalMessage *FinalMessage
 	Usage        *Usage
@@ -90,6 +96,23 @@ type TurnInput struct {
 	// populates this from the per-session model selection driven by the
 	// mobile Settings picker.
 	Model string
+	// Images attaches decoded image bytes to the current user message. The
+	// orchestrator has already validated MediaType + size against
+	// NOMADDEV_USER_INTENT_MAX_IMAGE* before the translator sees them.
+	// Translators that lack image support (e.g. MockTranslator) ignore this
+	// field; the wire-side request still goes through unchanged.
+	Images []ImageData
+}
+
+// ImageData is one decoded image attached to a turn. MediaType is the
+// MIME type (e.g. "image/jpeg"); Data is the raw image bytes. The original
+// base64 string is decoded once at envelope-parse time, so translators that
+// need base64 (OpenAI's data URL, Anthropic's base64 source) re-encode at
+// call time. Allocations are small relative to the image size, and the
+// Gemini path takes []byte natively.
+type ImageData struct {
+	MediaType string
+	Data      []byte
 }
 
 // ResumeFunc resumes a turn after a tool finished running. The returned

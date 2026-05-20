@@ -130,9 +130,19 @@ export type SandboxHeartbeatPayload = {
   elapsed_ms: number;
 };
 
+// ImageInput is one image attachment on a user.intent envelope. Data is
+// base64-encoded image bytes (no `data:` URL prefix — the orchestrator
+// rehydrates whatever shape each LLM SDK wants). MediaType must be one of
+// "image/jpeg", "image/png", "image/gif", or "image/webp".
+export type ImageInput = {
+  media_type: string;
+  data: string;
+};
+
 export type UserIntentPayload = {
   text: string;
   history_hint?: number;
+  images?: ImageInput[];
 };
 
 export type AssistantChunkPayload = {

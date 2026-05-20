@@ -141,6 +141,31 @@ type MiddlewareConfig struct {
 	AnthropicModel  string // NOMADDEV_ANTHROPIC_MODEL (default "claude-sonnet-4-5")
 	DeepSeekAPIKey  string // NOMADDEV_DEEPSEEK_API_KEY
 	DeepSeekModel   string // NOMADDEV_DEEPSEEK_MODEL (default "deepseek-chat")
+
+	// LLMMaxRetries caps the active SDK's transport-level retry loop for
+	// 408/409/429/5xx. Zero keeps the SDK default (2 for OpenAI/Anthropic;
+	// Gemini's policy is hardcoded by the SDK and not overridable).
+	// Sourced from NOMADDEV_LLM_MAX_RETRIES.
+	LLMMaxRetries int
+
+	// AnthropicThinkingBudget enables Anthropic extended thinking when >0.
+	// Passed verbatim to the SDK's ThinkingConfigEnabledParam.BudgetTokens.
+	// API requires >= 1024 and < MaxTokens.
+	// Sourced from NOMADDEV_ANTHROPIC_THINKING_BUDGET.
+	AnthropicThinkingBudget int64
+
+	// MaxImagesPerIntent caps the number of image attachments accepted on
+	// one user.intent envelope. Sourced from NOMADDEV_USER_INTENT_MAX_IMAGES
+	// (default 4 — matches the practical cap most providers' UIs ship). 0
+	// disables image attachments entirely; the orchestrator rejects any
+	// user.intent that carries an Images field with a bad_envelope error.
+	MaxImagesPerIntent int
+
+	// MaxImageBytes caps the decoded size of a single image attachment.
+	// Sourced from NOMADDEV_USER_INTENT_MAX_IMAGE_BYTES (default 5 MiB —
+	// matches Anthropic's per-image limit, which is the most restrictive
+	// of the three providers). 0 disables image attachments entirely.
+	MaxImageBytes int
 	// MaxAutoRetries caps consecutive failed tool-call dispatches inside one
 	// chain before the middleware escalates the failure to the Mobile
 	// Control Hub as a system.error_report envelope. A success (or a
@@ -335,22 +360,26 @@ func Load() (*Config, error) {
 			HeartbeatInterval:   envDuration("NOMADDEV_SANDBOX_HEARTBEAT_INTERVAL", 5*time.Second),
 		},
 		Middleware: MiddlewareConfig{
-			Runtime:          envOr("NOMADDEV_MIDDLEWARE_RUNTIME", "mock"),
-			APIKey:           os.Getenv("NOMADDEV_GEMINI_API_KEY"),
-			Model:            envOr("NOMADDEV_GEMINI_MODEL", "gemini-2.0-flash"),
-			Temperature:      envFloat("NOMADDEV_GEMINI_TEMPERATURE", 0.2),
-			MaxTokens:        envInt("NOMADDEV_GEMINI_MAX_TOKENS", 4096),
-			SystemPrompt:     os.Getenv("NOMADDEV_MIDDLEWARE_SYSTEM_PROMPT"),
-			SystemPromptPath: os.Getenv("NOMADDEV_MIDDLEWARE_SYSTEM_PROMPT_PATH"),
-			MaxConcurrent:    envInt("NOMADDEV_MIDDLEWARE_MAX_CONCURRENT", 4),
-			MaxAutoRetries:   envInt("NOMADDEV_MAX_AUTORETRIES", 2),
-			OpenAIAPIKey:     os.Getenv("NOMADDEV_OPENAI_API_KEY"),
-			OpenAIBaseURL:    os.Getenv("NOMADDEV_OPENAI_BASE_URL"),
-			OpenAIModel:      envOr("NOMADDEV_OPENAI_MODEL", "gpt-4o-mini"),
-			AnthropicAPIKey:  os.Getenv("NOMADDEV_ANTHROPIC_API_KEY"),
-			AnthropicModel:   envOr("NOMADDEV_ANTHROPIC_MODEL", "claude-sonnet-4-5"),
-			DeepSeekAPIKey:   os.Getenv("NOMADDEV_DEEPSEEK_API_KEY"),
-			DeepSeekModel:    envOr("NOMADDEV_DEEPSEEK_MODEL", "deepseek-chat"),
+			Runtime:                 envOr("NOMADDEV_MIDDLEWARE_RUNTIME", "mock"),
+			APIKey:                  os.Getenv("NOMADDEV_GEMINI_API_KEY"),
+			Model:                   envOr("NOMADDEV_GEMINI_MODEL", "gemini-2.0-flash"),
+			Temperature:             envFloat("NOMADDEV_GEMINI_TEMPERATURE", 0.2),
+			MaxTokens:               envInt("NOMADDEV_GEMINI_MAX_TOKENS", 4096),
+			SystemPrompt:            os.Getenv("NOMADDEV_MIDDLEWARE_SYSTEM_PROMPT"),
+			SystemPromptPath:        os.Getenv("NOMADDEV_MIDDLEWARE_SYSTEM_PROMPT_PATH"),
+			MaxConcurrent:           envInt("NOMADDEV_MIDDLEWARE_MAX_CONCURRENT", 4),
+			MaxAutoRetries:          envInt("NOMADDEV_MAX_AUTORETRIES", 2),
+			OpenAIAPIKey:            os.Getenv("NOMADDEV_OPENAI_API_KEY"),
+			OpenAIBaseURL:           os.Getenv("NOMADDEV_OPENAI_BASE_URL"),
+			OpenAIModel:             envOr("NOMADDEV_OPENAI_MODEL", "gpt-4o-mini"),
+			AnthropicAPIKey:         os.Getenv("NOMADDEV_ANTHROPIC_API_KEY"),
+			AnthropicModel:          envOr("NOMADDEV_ANTHROPIC_MODEL", "claude-sonnet-4-5"),
+			DeepSeekAPIKey:          os.Getenv("NOMADDEV_DEEPSEEK_API_KEY"),
+			DeepSeekModel:           envOr("NOMADDEV_DEEPSEEK_MODEL", "deepseek-chat"),
+			LLMMaxRetries:           envInt("NOMADDEV_LLM_MAX_RETRIES", 2),
+			AnthropicThinkingBudget: envInt64("NOMADDEV_ANTHROPIC_THINKING_BUDGET", 0),
+			MaxImagesPerIntent:      envInt("NOMADDEV_USER_INTENT_MAX_IMAGES", 4),
+			MaxImageBytes:           envInt("NOMADDEV_USER_INTENT_MAX_IMAGE_BYTES", 5*1024*1024),
 		},
 		History: HistoryConfig{
 			Backend:     envOr("NOMADDEV_HISTORY_BACKEND", "sqlite"),

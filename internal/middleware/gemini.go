@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"log/slog"
+	"math"
 
 	"github.com/mattcheramie/nomaddev/internal/event"
 	"github.com/mattcheramie/nomaddev/internal/history"
@@ -30,7 +31,13 @@ type GeminiOptions struct {
 	Model       string  // default "gemini-2.0-flash"
 	Temperature float64 // default 0.2
 	MaxTokens   int     // default 4096
-	Logger      *slog.Logger
+	// MaxRetries is accepted for API uniformity with the OpenAI and
+	// Anthropic constructors but is currently ignored: the google.golang.org/genai
+	// SDK hardcodes its retry policy (3 retries with exponential backoff
+	// per api_client.go's maxRetryCount const) and exposes no override.
+	// Wire it through anyway so future SDK versions can plug in.
+	MaxRetries int
+	Logger     *slog.Logger
 }
 
 // NewGeminiTranslator builds a Translator backed by the Google GenAI SDK.
@@ -50,9 +57,17 @@ func NewGeminiTranslator(ctx context.Context, opts GeminiOptions) (*GeminiTransl
 	if opts.Temperature == 0 {
 		temp = 0.2
 	}
-	maxTok := int32(opts.MaxTokens)
-	if maxTok == 0 {
+	// Clamp into int32 range; SDK rejects negatives and no real model
+	// accepts > 2^31 tokens anyway, so the bounds check is purely to keep
+	// gosec G115 quiet about the conversion.
+	maxTok := int32(0)
+	switch {
+	case opts.MaxTokens <= 0:
 		maxTok = 4096
+	case opts.MaxTokens > math.MaxInt32:
+		maxTok = math.MaxInt32
+	default:
+		maxTok = int32(opts.MaxTokens)
 	}
 	log := opts.Logger
 	if log == nil {
@@ -87,7 +102,7 @@ func (g *GeminiTranslator) Stream(ctx context.Context, in TurnInput) (<-chan Ass
 		t:        g,
 		model:    model,
 		cfg:      g.configFor(in),
-		contents: historyToContents(in.History, in.UserText),
+		contents: historyToContents(in.History, in.UserText, in.Images),
 	}
 	out := make(chan AssistantEvent, 16)
 	go state.run(ctx, out)
@@ -227,10 +242,12 @@ func usageValue(u *genai.GenerateContentResponseUsageMetadata) Usage {
 }
 
 // historyToContents converts the orchestrator's persisted Turn slice plus the
-// new user message into a Gemini Content slice. Each persisted Turn is
-// expected to carry a JSON-serialized {"text": "..."} for user/assistant
-// roles or a {"tool", "args", "output"} blob for tool_call / tool_result.
-func historyToContents(hist []history.Turn, userText string) []*genai.Content {
+// new user message and any image attachments into a Gemini Content slice.
+// Persisted Turns are expected to carry a JSON-serialized {"text": "..."}
+// (optionally with "images") for user/assistant roles, or a tool blob for
+// tool_call / tool_result. Inline images are emitted as genai.Blob parts
+// alongside the Text part — the SDK accepts multiple parts per Content.
+func historyToContents(hist []history.Turn, userText string, images []ImageData) []*genai.Content {
 	out := make([]*genai.Content, 0, len(hist)+1)
 	for _, t := range hist {
 		c := turnToContent(t)
@@ -238,31 +255,50 @@ func historyToContents(hist []history.Turn, userText string) []*genai.Content {
 			out = append(out, c)
 		}
 	}
+	parts := make([]*genai.Part, 0, 1+len(images))
+	parts = append(parts, &genai.Part{Text: userText})
+	for _, img := range images {
+		parts = append(parts, &genai.Part{InlineData: &genai.Blob{
+			Data:     img.Data,
+			MIMEType: img.MediaType,
+		}})
+	}
 	out = append(out, &genai.Content{
 		Role:  "user",
-		Parts: []*genai.Part{{Text: userText}},
+		Parts: parts,
 	})
 	return out
 }
 
 func turnToContent(t history.Turn) *genai.Content {
-	// The minimum supported payload is {"text": "..."}; tool turns get a more
-	// elaborate shape. For now, treat any JSON we can extract a "text" field
-	// from as a plain message. Tool legs are rebuilt by the Resume path, so
-	// missing tool history just means the model loses earlier context — safe
-	// degradation.
+	// The minimum supported payload is {"text": "..."}; user turns may
+	// additionally carry "images" as base64 entries. Tool turns get a more
+	// elaborate shape rebuilt by the Resume path, so missing tool history
+	// just means the model loses earlier context — safe degradation.
 	var raw map[string]any
 	if err := json.Unmarshal(t.Parts, &raw); err != nil {
 		return nil
 	}
-	if text, ok := raw["text"].(string); ok && text != "" {
-		role := "user"
-		if t.Role == history.RoleAssistant {
-			role = "model"
-		}
-		return &genai.Content{Role: role, Parts: []*genai.Part{{Text: text}}}
+	text, _ := raw["text"].(string)
+	imgs := extractHistoryImages(raw)
+	if text == "" && len(imgs) == 0 {
+		return nil
 	}
-	return nil
+	parts := make([]*genai.Part, 0, 1+len(imgs))
+	if text != "" {
+		parts = append(parts, &genai.Part{Text: text})
+	}
+	for _, img := range imgs {
+		parts = append(parts, &genai.Part{InlineData: &genai.Blob{
+			Data:     img.Data,
+			MIMEType: img.MediaType,
+		}})
+	}
+	role := "user"
+	if t.Role == history.RoleAssistant {
+		role = "model"
+	}
+	return &genai.Content{Role: role, Parts: parts}
 }
 
 func toolResponseContent(r ToolResult) *genai.Content {
@@ -278,4 +314,3 @@ func toolResponseContent(r ToolResult) *genai.Content {
 		},
 	}
 }
-

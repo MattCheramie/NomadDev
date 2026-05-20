@@ -20,6 +20,7 @@ const (
 	// Phase 4 NLP middleware flow.
 	EventUserIntent          = "user.intent"
 	EventAssistantChunk      = "assistant.chunk"
+	EventAssistantThinking   = "assistant.thinking"
 	EventAssistantMessage    = "assistant.message"
 	EventToolApprovalRequest = "tool.approval.request"
 	EventToolApprovalGranted = "tool.approval.granted"
@@ -180,6 +181,26 @@ type UserIntentPayload struct {
 	// refuses dispatch of any mutating tool. The assistant is expected to
 	// author a read-only response (typically a markdown report).
 	Mode string `json:"mode,omitempty"`
+	// Images attaches one or more base64-encoded images to the turn — the
+	// orchestrator decodes them, enforces size/count caps from
+	// NOMADDEV_USER_INTENT_MAX_IMAGES and NOMADDEV_USER_INTENT_MAX_IMAGE_BYTES,
+	// then hands the decoded bytes to whichever translator is active. Each
+	// active backend has native image support: Gemini wraps them as
+	// InlineData parts, Anthropic as ImageBlock content blocks, OpenAI as
+	// image_url content parts with a data URL. The mock translator ignores
+	// images.
+	Images []ImageInput `json:"images,omitempty"`
+}
+
+// ImageInput is one image attached to a user.intent turn. Data is the
+// base64-encoded image bytes (no `data:` URL prefix — that's reconstructed
+// by the OpenAI translator at call time). MediaType is the MIME type
+// declaration. Accepted MediaTypes are constrained to the intersection of
+// the three providers' supported types: image/jpeg, image/png, image/gif,
+// and image/webp.
+type ImageInput struct {
+	MediaType string `json:"media_type"`
+	Data      string `json:"data"`
 }
 
 // AssistantChunkPayload is one streamed slice of model-emitted text.
@@ -189,14 +210,31 @@ type AssistantChunkPayload struct {
 	Text string `json:"text"`
 }
 
+// AssistantThinkingPayload is one streamed slice of the model's internal
+// reasoning — currently emitted only when Anthropic extended thinking is
+// enabled via NOMADDEV_ANTHROPIC_THINKING_BUDGET. Seq is independent of
+// AssistantChunkPayload.Seq so a client can render the two streams in
+// parallel. correlation_id ties it back to the originating user.intent.
+type AssistantThinkingPayload struct {
+	Seq  int    `json:"seq"`
+	Text string `json:"text"`
+}
+
 // UsagePayload carries cumulative LLM token usage for one user.intent turn
 // — summed across every translator stage (tool-call legs included) so the
 // Mobile Control Hub can render a running 'Session Cost' ticker without
 // double-counting.
+//
+// CostUSD is the estimated dollar cost of the turn, derived from the
+// per-(provider, model) price table compiled into the orchestrator at
+// internal/middleware/pricing/. It is omitted when zero — either the
+// translator reported no tokens or the active (provider, model) tuple has
+// no entry in the price table.
 type UsagePayload struct {
-	PromptTokens     int64 `json:"prompt_tokens"`
-	CandidatesTokens int64 `json:"candidates_tokens"`
-	TotalTokens      int64 `json:"total_tokens"`
+	PromptTokens     int64   `json:"prompt_tokens"`
+	CandidatesTokens int64   `json:"candidates_tokens"`
+	TotalTokens      int64   `json:"total_tokens"`
+	CostUSD          float64 `json:"cost_usd,omitempty"`
 }
 
 // AssistantMessagePayload is the terminal frame for one user.intent turn.

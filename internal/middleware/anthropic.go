@@ -4,6 +4,7 @@ package middleware
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"log/slog"
 
@@ -17,11 +18,12 @@ import (
 // only when the `anthropic` build tag is set so the default orchestrator
 // binary doesn't pull in the SDK.
 type AnthropicTranslator struct {
-	client      anthropic.Client
-	model       string
-	temperature float64
-	maxTokens   int64
-	log         *slog.Logger
+	client         anthropic.Client
+	model          string
+	temperature    float64
+	maxTokens      int64
+	thinkingBudget int64
+	log            *slog.Logger
 }
 
 // AnthropicOptions is the constructor input for NewAnthropicTranslator.
@@ -30,12 +32,25 @@ type AnthropicOptions struct {
 	Model       string  // default "claude-sonnet-4-5"
 	Temperature float64 // default 0.2
 	MaxTokens   int     // default 4096
-	Logger      *slog.Logger
+	// MaxRetries caps the SDK's built-in 408/409/429/5xx retry loop. Zero
+	// keeps the SDK default (2 retries); negative values are coerced to
+	// zero before being passed to option.WithMaxRetries.
+	MaxRetries int
+	// ThinkingBudget enables Anthropic extended thinking when >0. Passed
+	// verbatim as ThinkingConfigEnabledParam.BudgetTokens. The API requires
+	// the value to be >=1024 and < MaxTokens — neither is enforced here
+	// because the SDK surfaces a clear 4xx on violation.
+	ThinkingBudget int64
+	Logger         *slog.Logger
 }
 
 // NewAnthropicTranslator builds a Translator backed by the Anthropic SDK.
 func NewAnthropicTranslator(_ context.Context, opts AnthropicOptions) (*AnthropicTranslator, error) {
-	cli := anthropic.NewClient(option.WithAPIKey(opts.APIKey))
+	clientOpts := []option.RequestOption{option.WithAPIKey(opts.APIKey)}
+	if opts.MaxRetries > 0 {
+		clientOpts = append(clientOpts, option.WithMaxRetries(opts.MaxRetries))
+	}
+	cli := anthropic.NewClient(clientOpts...)
 
 	model := opts.Model
 	if model == "" {
@@ -54,11 +69,12 @@ func NewAnthropicTranslator(_ context.Context, opts AnthropicOptions) (*Anthropi
 		log = slog.Default()
 	}
 	return &AnthropicTranslator{
-		client:      cli,
-		model:       model,
-		temperature: temp,
-		maxTokens:   maxTok,
-		log:         log,
+		client:         cli,
+		model:          model,
+		temperature:    temp,
+		maxTokens:      maxTok,
+		thinkingBudget: opts.ThinkingBudget,
+		log:            log,
 	}, nil
 }
 
@@ -84,7 +100,7 @@ func (a *AnthropicTranslator) Stream(ctx context.Context, in TurnInput) (<-chan 
 		system:   in.SystemPrompt,
 		model:    model,
 		tools:    toAnthropicTools(in.Tools),
-		messages: anthropicHistoryToMessages(in.History, in.UserText),
+		messages: anthropicHistoryToMessages(in.History, in.UserText, in.Images),
 	}
 	out := make(chan AssistantEvent, 16)
 	go state.run(ctx, out)
@@ -118,6 +134,13 @@ func (s *anthropicTurn) run(ctx context.Context, out chan<- AssistantEvent) {
 	if len(s.tools) > 0 {
 		params.Tools = s.tools
 	}
+	if s.t.thinkingBudget > 0 {
+		params.Thinking = anthropic.ThinkingConfigParamUnion{
+			OfEnabled: &anthropic.ThinkingConfigEnabledParam{
+				BudgetTokens: s.t.thinkingBudget,
+			},
+		}
+	}
 
 	stream := s.t.client.Messages.NewStreaming(ctx, params)
 	defer stream.Close()
@@ -127,9 +150,9 @@ func (s *anthropicTurn) run(ctx context.Context, out chan<- AssistantEvent) {
 	// of content_block_delta events carrying text or partial JSON, then
 	// content_block_stop. message_delta carries the stop_reason and usage.
 	type block struct {
-		kind       string // "text" | "tool_use" | "other"
-		toolID     string
-		toolName   string
+		kind        string // "text" | "tool_use" | "other"
+		toolID      string
+		toolName    string
 		toolArgsRaw []byte
 	}
 	blocks := map[int64]*block{}
@@ -171,6 +194,14 @@ func (s *anthropicTurn) run(ctx context.Context, out chan<- AssistantEvent) {
 				if v.Delta.Text != "" {
 					select {
 					case out <- AssistantEvent{Text: v.Delta.Text}:
+					case <-ctx.Done():
+						return
+					}
+				}
+			case "thinking_delta":
+				if v.Delta.Thinking != "" {
+					select {
+					case out <- AssistantEvent{Thinking: v.Delta.Thinking}:
 					case <-ctx.Done():
 						return
 					}
@@ -252,10 +283,12 @@ func (s *anthropicTurn) run(ctx context.Context, out chan<- AssistantEvent) {
 }
 
 // anthropicHistoryToMessages converts the orchestrator's persisted Turn
-// slice plus the new user message into the SDK's MessageParam slice. Same
-// "extract text field" degradation as the Gemini path — tool legs are
-// rebuilt by Resume.
-func anthropicHistoryToMessages(hist []history.Turn, userText string) []anthropic.MessageParam {
+// slice plus the new user message and any image attachments into the SDK's
+// MessageParam slice. Images attach as ImageBlock content blocks
+// (NewImageBlockBase64) alongside the text block — Anthropic's content
+// array natively interleaves blocks of mixed types. Tool legs are rebuilt
+// by Resume.
+func anthropicHistoryToMessages(hist []history.Turn, userText string, images []ImageData) []anthropic.MessageParam {
 	out := make([]anthropic.MessageParam, 0, len(hist)+1)
 	for _, t := range hist {
 		var raw map[string]any
@@ -263,16 +296,33 @@ func anthropicHistoryToMessages(hist []history.Turn, userText string) []anthropi
 			continue
 		}
 		text, _ := raw["text"].(string)
-		if text == "" {
+		imgs := extractHistoryImages(raw)
+		if text == "" && len(imgs) == 0 {
 			continue
 		}
 		switch t.Role {
 		case history.RoleUser:
-			out = append(out, anthropic.NewUserMessage(anthropic.NewTextBlock(text)))
+			out = append(out, anthropic.NewUserMessage(anthropicContentBlocks(text, imgs)...))
 		case history.RoleAssistant:
-			out = append(out, anthropic.NewAssistantMessage(anthropic.NewTextBlock(text)))
+			if text != "" {
+				out = append(out, anthropic.NewAssistantMessage(anthropic.NewTextBlock(text)))
+			}
 		}
 	}
-	out = append(out, anthropic.NewUserMessage(anthropic.NewTextBlock(userText)))
+	out = append(out, anthropic.NewUserMessage(anthropicContentBlocks(userText, images)...))
+	return out
+}
+
+// anthropicContentBlocks builds the content-block slice for one user
+// message: a text block plus one image block per attachment. Empty text
+// is dropped so a vision-only turn produces just the image blocks.
+func anthropicContentBlocks(text string, images []ImageData) []anthropic.ContentBlockParamUnion {
+	out := make([]anthropic.ContentBlockParamUnion, 0, 1+len(images))
+	if text != "" {
+		out = append(out, anthropic.NewTextBlock(text))
+	}
+	for _, img := range images {
+		out = append(out, anthropic.NewImageBlockBase64(img.MediaType, base64.StdEncoding.EncodeToString(img.Data)))
+	}
 	return out
 }

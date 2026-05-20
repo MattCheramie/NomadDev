@@ -4,6 +4,7 @@ package middleware
 
 import (
 	"context"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -207,5 +208,228 @@ func TestAnthropicTranslator_ToolUseRoundTrip(t *testing.T) {
 	}
 	if final == nil || final.FinishReason != "end_turn" {
 		t.Errorf("stage2 final = %+v, want end_turn", final)
+	}
+}
+
+// TestAnthropicTranslator_RetryOn429 asserts MaxRetries plumbs through to the
+// SDK's transport-level retry loop. First request returns 429, second
+// returns a canned final stream.
+func TestAnthropicTranslator_RetryOn429(t *testing.T) {
+	var attempts int
+	good := anthropicSSE("message_start", `{"type":"message_start","message":{"id":"m1","type":"message","role":"assistant","content":[],"model":"claude-sonnet-4-5","stop_reason":null,"stop_sequence":null,"usage":{"input_tokens":1,"output_tokens":0}}}`) +
+		anthropicSSE("content_block_start", `{"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}`) +
+		anthropicSSE("content_block_delta", `{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"ok"}}`) +
+		anthropicSSE("content_block_stop", `{"type":"content_block_stop","index":0}`) +
+		anthropicSSE("message_delta", `{"type":"message_delta","delta":{"stop_reason":"end_turn","stop_sequence":null},"usage":{"output_tokens":1}}`) +
+		anthropicSSE("message_stop", `{"type":"message_stop"}`)
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/v1/messages", func(w http.ResponseWriter, r *http.Request) {
+		attempts++
+		if attempts == 1 {
+			w.Header().Set("Retry-After", "0")
+			http.Error(w, `{"type":"error","error":{"type":"overloaded_error","message":"backoff"}}`, http.StatusTooManyRequests)
+			return
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte(good))
+		if f, ok := w.(http.Flusher); ok {
+			f.Flush()
+		}
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	tr, err := NewAnthropicTranslator(context.Background(), AnthropicOptions{
+		APIKey:     "test-key",
+		Model:      "claude-sonnet-4-5",
+		MaxRetries: 1,
+	})
+	if err != nil {
+		t.Fatalf("NewAnthropicTranslator: %v", err)
+	}
+	tr.client.Options = append(tr.client.Options, option.WithBaseURL(srv.URL))
+	tr.client.Messages.Options = append(tr.client.Messages.Options, option.WithBaseURL(srv.URL))
+
+	ch, _, err := tr.Stream(context.Background(), TurnInput{
+		SID: "t-retry", UserText: "ping",
+		Tools: DefaultTools(),
+	})
+	if err != nil {
+		t.Fatalf("Stream: %v", err)
+	}
+	for ev := range ch {
+		if ev.Err != nil {
+			t.Fatalf("stream err after retry: %v", ev.Err)
+		}
+	}
+	if attempts != 2 {
+		t.Errorf("stub attempts = %d, want 2 (initial 429 + one retry)", attempts)
+	}
+}
+
+// TestAnthropicTranslator_StreamThinking exercises the new thinking_delta
+// path: the translator must surface AssistantEvent{Thinking:...} ahead of
+// the regular text events.
+func TestAnthropicTranslator_StreamThinking(t *testing.T) {
+	stream := anthropicSSE("message_start", `{"type":"message_start","message":{"id":"m1","type":"message","role":"assistant","content":[],"model":"claude-sonnet-4-5","stop_reason":null,"stop_sequence":null,"usage":{"input_tokens":5,"output_tokens":0}}}`) +
+		anthropicSSE("content_block_start", `{"type":"content_block_start","index":0,"content_block":{"type":"thinking","thinking":""}}`) +
+		anthropicSSE("content_block_delta", `{"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"weighing options"}}`) +
+		anthropicSSE("content_block_stop", `{"type":"content_block_stop","index":0}`) +
+		anthropicSSE("content_block_start", `{"type":"content_block_start","index":1,"content_block":{"type":"text","text":""}}`) +
+		anthropicSSE("content_block_delta", `{"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":"answer"}}`) +
+		anthropicSSE("content_block_stop", `{"type":"content_block_stop","index":1}`) +
+		anthropicSSE("message_delta", `{"type":"message_delta","delta":{"stop_reason":"end_turn","stop_sequence":null},"usage":{"output_tokens":3}}`) +
+		anthropicSSE("message_stop", `{"type":"message_stop"}`)
+
+	stub := newAnthropicStub(t, []string{stream})
+	defer stub.Close()
+
+	tr := newAnthropicTranslatorForTest(t, stub.URL)
+	ch, _, err := tr.Stream(context.Background(), TurnInput{
+		SID: "t-think", UserText: "hard problem", Tools: DefaultTools(),
+	})
+	if err != nil {
+		t.Fatalf("Stream: %v", err)
+	}
+
+	var thinking, text strings.Builder
+	var thinkingBeforeText bool
+	var sawText bool
+	for ev := range ch {
+		if ev.Err != nil {
+			t.Fatalf("event err: %v", ev.Err)
+		}
+		if ev.Thinking != "" {
+			thinking.WriteString(ev.Thinking)
+			if !sawText {
+				thinkingBeforeText = true
+			}
+		}
+		if ev.Text != "" {
+			text.WriteString(ev.Text)
+			sawText = true
+		}
+	}
+	if thinking.String() != "weighing options" {
+		t.Errorf("thinking = %q, want %q", thinking.String(), "weighing options")
+	}
+	if text.String() != "answer" {
+		t.Errorf("text = %q, want %q", text.String(), "answer")
+	}
+	if !thinkingBeforeText {
+		t.Error("thinking event should arrive before any text event")
+	}
+}
+
+// TestAnthropicTranslator_ThinkingBudgetSetsParams asserts the ThinkingBudget
+// option translates into a thinking config block in the outbound POST body
+// when >0, and is absent when 0.
+func TestAnthropicTranslator_ThinkingBudgetSetsParams(t *testing.T) {
+	type captured struct {
+		body []byte
+	}
+	mkSrv := func() (*httptest.Server, *captured) {
+		cap := &captured{}
+		mux := http.NewServeMux()
+		mux.HandleFunc("/v1/messages", func(w http.ResponseWriter, r *http.Request) {
+			b, _ := io.ReadAll(r.Body)
+			cap.body = b
+			// Reply with a minimal terminal frame so the translator drains
+			// cleanly and we can assert on the captured request.
+			term := anthropicSSE("message_start", `{"type":"message_start","message":{"id":"m1","type":"message","role":"assistant","content":[],"model":"claude-sonnet-4-5","stop_reason":null,"stop_sequence":null,"usage":{"input_tokens":1,"output_tokens":0}}}`) +
+				anthropicSSE("message_delta", `{"type":"message_delta","delta":{"stop_reason":"end_turn","stop_sequence":null},"usage":{"output_tokens":1}}`) +
+				anthropicSSE("message_stop", `{"type":"message_stop"}`)
+			w.Header().Set("Content-Type", "text/event-stream")
+			_, _ = w.Write([]byte(term))
+			if f, ok := w.(http.Flusher); ok {
+				f.Flush()
+			}
+		})
+		return httptest.NewServer(mux), cap
+	}
+
+	// Case 1: ThinkingBudget > 0 → body must include thinking block.
+	srv1, cap1 := mkSrv()
+	defer srv1.Close()
+	tr1, _ := NewAnthropicTranslator(context.Background(), AnthropicOptions{
+		APIKey: "test-key", Model: "claude-sonnet-4-5", ThinkingBudget: 4096,
+	})
+	tr1.client.Options = append(tr1.client.Options, option.WithBaseURL(srv1.URL))
+	tr1.client.Messages.Options = append(tr1.client.Messages.Options, option.WithBaseURL(srv1.URL))
+	ch1, _, _ := tr1.Stream(context.Background(), TurnInput{SID: "t1", UserText: "x", Tools: DefaultTools()})
+	for range ch1 {
+	}
+	if !strings.Contains(string(cap1.body), `"thinking"`) {
+		t.Errorf("ThinkingBudget>0 body missing thinking block: %s", string(cap1.body))
+	}
+	if !strings.Contains(string(cap1.body), `"budget_tokens":4096`) {
+		t.Errorf("ThinkingBudget>0 body missing budget_tokens=4096: %s", string(cap1.body))
+	}
+
+	// Case 2: ThinkingBudget == 0 → body must NOT include a thinking block.
+	srv2, cap2 := mkSrv()
+	defer srv2.Close()
+	tr2, _ := NewAnthropicTranslator(context.Background(), AnthropicOptions{
+		APIKey: "test-key", Model: "claude-sonnet-4-5",
+	})
+	tr2.client.Options = append(tr2.client.Options, option.WithBaseURL(srv2.URL))
+	tr2.client.Messages.Options = append(tr2.client.Messages.Options, option.WithBaseURL(srv2.URL))
+	ch2, _, _ := tr2.Stream(context.Background(), TurnInput{SID: "t2", UserText: "x", Tools: DefaultTools()})
+	for range ch2 {
+	}
+	if strings.Contains(string(cap2.body), `"thinking"`) {
+		t.Errorf("ThinkingBudget==0 body should omit thinking block, got: %s", string(cap2.body))
+	}
+}
+
+// TestAnthropicTranslator_ImagesAttachedToUserMessage asserts that images
+// on the current turn land as ImageBlock entries in the outbound POST
+// body alongside the text block.
+func TestAnthropicTranslator_ImagesAttachedToUserMessage(t *testing.T) {
+	var capturedBody []byte
+	terminal := anthropicSSE("message_start", `{"type":"message_start","message":{"id":"m1","type":"message","role":"assistant","content":[],"model":"claude-sonnet-4-5","stop_reason":null,"stop_sequence":null,"usage":{"input_tokens":1,"output_tokens":0}}}`) +
+		anthropicSSE("message_delta", `{"type":"message_delta","delta":{"stop_reason":"end_turn","stop_sequence":null},"usage":{"output_tokens":1}}`) +
+		anthropicSSE("message_stop", `{"type":"message_stop"}`)
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/v1/messages", func(w http.ResponseWriter, r *http.Request) {
+		capturedBody, _ = io.ReadAll(r.Body)
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte(terminal))
+		if f, ok := w.(http.Flusher); ok {
+			f.Flush()
+		}
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	tr, _ := NewAnthropicTranslator(context.Background(), AnthropicOptions{
+		APIKey: "test-key", Model: "claude-sonnet-4-5",
+	})
+	tr.client.Options = append(tr.client.Options, option.WithBaseURL(srv.URL))
+	tr.client.Messages.Options = append(tr.client.Messages.Options, option.WithBaseURL(srv.URL))
+
+	ch, _, err := tr.Stream(context.Background(), TurnInput{
+		SID: "t-img", UserText: "what's in this?", Tools: DefaultTools(),
+		Images: []ImageData{
+			{MediaType: "image/png", Data: []byte("fake-png-bytes")},
+		},
+	})
+	if err != nil {
+		t.Fatalf("Stream: %v", err)
+	}
+	for range ch {
+	}
+
+	body := string(capturedBody)
+	if !strings.Contains(body, `"type":"image"`) {
+		t.Errorf("outbound body missing image block: %s", body)
+	}
+	if !strings.Contains(body, `"media_type":"image/png"`) {
+		t.Errorf("outbound body missing media_type=image/png: %s", body)
+	}
+	if !strings.Contains(body, `"what's in this?"`) {
+		t.Errorf("outbound body missing text block: %s", body)
 	}
 }

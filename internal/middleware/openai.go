@@ -4,6 +4,7 @@ package middleware
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"log/slog"
 
@@ -34,7 +35,11 @@ type OpenAIOptions struct {
 	Model       string  // default "gpt-4o-mini"
 	Temperature float64 // default 0.2
 	MaxTokens   int     // default 4096
-	Logger      *slog.Logger
+	// MaxRetries caps the SDK's built-in 408/409/429/5xx retry loop. Zero
+	// keeps the SDK default (2 retries); negative values are coerced to
+	// zero before being passed to option.WithMaxRetries.
+	MaxRetries int
+	Logger     *slog.Logger
 }
 
 // NewOpenAITranslator builds a Translator backed by the OpenAI Go SDK.
@@ -42,6 +47,9 @@ func NewOpenAITranslator(_ context.Context, opts OpenAIOptions) (*OpenAITranslat
 	clientOpts := []option.RequestOption{option.WithAPIKey(opts.APIKey)}
 	if opts.BaseURL != "" {
 		clientOpts = append(clientOpts, option.WithBaseURL(opts.BaseURL))
+	}
+	if opts.MaxRetries > 0 {
+		clientOpts = append(clientOpts, option.WithMaxRetries(opts.MaxRetries))
 	}
 	cli := openai.NewClient(clientOpts...)
 
@@ -92,7 +100,7 @@ func (o *OpenAITranslator) Stream(ctx context.Context, in TurnInput) (<-chan Ass
 		t:        o,
 		system:   in.SystemPrompt,
 		model:    model,
-		messages: openaiHistoryToMessages(in.SystemPrompt, in.History, in.UserText),
+		messages: openaiHistoryToMessages(in.SystemPrompt, in.History, in.UserText, in.Images),
 		tools:    toOpenAITools(in.Tools),
 	}
 	out := make(chan AssistantEvent, 16)
@@ -245,10 +253,13 @@ func openaiUsage(u openai.CompletionUsage) *Usage {
 }
 
 // openaiHistoryToMessages converts the orchestrator's persisted Turn slice
-// plus a system prompt and the new user message into the SDK's message slice.
-// Tool legs are rebuilt by the Resume path, so missing tool history just means
-// the model loses earlier context — safe degradation, matching the Gemini path.
-func openaiHistoryToMessages(systemPrompt string, hist []history.Turn, userText string) []openai.ChatCompletionMessageParamUnion {
+// plus a system prompt, the new user message, and any image attachments
+// into the SDK's message slice. Images on the current turn become
+// image_url content parts on the new user message; images present in
+// persisted history turns are rehydrated the same way. Tool legs are
+// rebuilt by the Resume path, so missing tool history just means the
+// model loses earlier context — safe degradation, matching the Gemini path.
+func openaiHistoryToMessages(systemPrompt string, hist []history.Turn, userText string, images []ImageData) []openai.ChatCompletionMessageParamUnion {
 	out := make([]openai.ChatCompletionMessageParamUnion, 0, len(hist)+2)
 	if systemPrompt != "" {
 		out = append(out, openai.SystemMessage(systemPrompt))
@@ -259,18 +270,41 @@ func openaiHistoryToMessages(systemPrompt string, hist []history.Turn, userText 
 			continue
 		}
 		text, _ := raw["text"].(string)
-		if text == "" {
+		imgs := extractHistoryImages(raw)
+		if text == "" && len(imgs) == 0 {
 			continue
 		}
 		switch t.Role {
 		case history.RoleUser:
-			out = append(out, openai.UserMessage(text))
+			out = append(out, openaiUserMessage(text, imgs))
 		case history.RoleAssistant:
-			out = append(out, openai.AssistantMessage(text))
+			// Assistant turns are text-only in our persistence today.
+			if text != "" {
+				out = append(out, openai.AssistantMessage(text))
+			}
 		}
 	}
-	out = append(out, openai.UserMessage(userText))
+	out = append(out, openaiUserMessage(userText, images))
 	return out
+}
+
+// openaiUserMessage builds one ChatCompletionMessageParamUnion for a user
+// message, splitting into a multi-part content array when images are
+// present and falling back to the bare-string helper otherwise.
+func openaiUserMessage(text string, images []ImageData) openai.ChatCompletionMessageParamUnion {
+	if len(images) == 0 {
+		return openai.UserMessage(text)
+	}
+	parts := make([]openai.ChatCompletionContentPartUnionParam, 0, 1+len(images))
+	if text != "" {
+		parts = append(parts, openai.TextContentPart(text))
+	}
+	for _, img := range images {
+		parts = append(parts, openai.ImageContentPart(openai.ChatCompletionContentPartImageImageURLParam{
+			URL: "data:" + img.MediaType + ";base64," + base64.StdEncoding.EncodeToString(img.Data),
+		}))
+	}
+	return openai.UserMessage(parts)
 }
 
 func openaiAssistantToolCallMessage(callID, name, argsJSON string) openai.ChatCompletionMessageParamUnion {

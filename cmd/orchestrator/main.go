@@ -512,16 +512,18 @@ func buildMiddleware(
 	}
 
 	return middleware.NewService(ctx, middleware.FactoryConfig{
-		Runtime:        cfg.Middleware.Runtime,
-		APIKey:         apiKey,
-		Model:          model,
-		OpenAIBaseURL:  cfg.Middleware.OpenAIBaseURL,
-		Temperature:    cfg.Middleware.Temperature,
-		MaxTokens:      cfg.Middleware.MaxTokens,
-		SystemPrompt:   systemPrompt,
-		WindowTurns:    cfg.History.WindowTurns,
-		MaxConcurrent:  cfg.Middleware.MaxConcurrent,
-		DefaultTimeout: cfg.Sandbox.DefaultTimeout,
+		Runtime:                 cfg.Middleware.Runtime,
+		APIKey:                  apiKey,
+		Model:                   model,
+		OpenAIBaseURL:           cfg.Middleware.OpenAIBaseURL,
+		MaxRetries:              cfg.Middleware.LLMMaxRetries,
+		AnthropicThinkingBudget: cfg.Middleware.AnthropicThinkingBudget,
+		Temperature:             cfg.Middleware.Temperature,
+		MaxTokens:               cfg.Middleware.MaxTokens,
+		SystemPrompt:            systemPrompt,
+		WindowTurns:             cfg.History.WindowTurns,
+		MaxConcurrent:           cfg.Middleware.MaxConcurrent,
+		DefaultTimeout:          cfg.Sandbox.DefaultTimeout,
 		SandboxLimits: sandbox.ResourceLimits{
 			CPUNanos:    cfg.Sandbox.NanoCPUs,
 			MemoryBytes: cfg.Sandbox.Memory,

@@ -18,6 +18,7 @@ func newOpenAITranslator(ctx context.Context, c FactoryConfig) (Translator, erro
 		Model:       c.Model,
 		Temperature: c.Temperature,
 		MaxTokens:   c.MaxTokens,
+		MaxRetries:  c.MaxRetries,
 		Logger:      c.Logger,
 	})
 	if err != nil {

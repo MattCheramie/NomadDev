@@ -45,6 +45,19 @@ type FactoryConfig struct {
 	// with the DeepSeek endpoint if the operator left it empty.
 	OpenAIBaseURL string
 
+	// MaxRetries caps the SDK-level 408/409/429/5xx retry loop for the
+	// active translator. Zero keeps each SDK at its default (2 for
+	// OpenAI/Anthropic; Gemini's is hardcoded at 3 and not overridable).
+	// Sourced from NOMADDEV_LLM_MAX_RETRIES in cmd/orchestrator/main.go.
+	MaxRetries int
+
+	// AnthropicThinkingBudget enables Anthropic extended thinking when >0.
+	// Value is passed verbatim to ThinkingConfigEnabledParam.BudgetTokens.
+	// The Anthropic API requires >= 1024 and < MaxTokens; values that
+	// violate either bound are rejected by the API at first call rather
+	// than here. Ignored on every non-Anthropic runtime.
+	AnthropicThinkingBudget int64
+
 	// Per-turn config plumbed into Service.Config.
 	SystemPrompt       string
 	WindowTurns        int
@@ -188,13 +201,13 @@ func NewService(ctx context.Context, c FactoryConfig) (*Service, error) {
 		FSOps:                   c.FSOps,
 		IsDestructiveGitHubTool: c.IsDestructiveGitHubTool,
 		Config: RuntimeConfig{
-			Provider:           c.Runtime,
-			Model:              effectiveDefaultModel(c.Runtime, c.Model),
 			SystemPrompt:       c.SystemPrompt,
 			WindowTurns:        c.WindowTurns,
 			MaxConcurrent:      c.MaxConcurrent,
 			DefaultTimeout:     c.DefaultTimeout,
 			SandboxLimits:      c.SandboxLimits,
+			Provider:           c.Runtime,
+			Model:              effectiveDefaultModel(c.Runtime, c.Model),
 			GateDirectCommands: c.GateDirectCommands,
 			MaxAutoRetries:     c.MaxAutoRetries,
 			MaxResultBytes:     c.MaxResultBytes,
