@@ -118,4 +118,13 @@ type RuntimeConfig struct {
 	// the sandbox runner via DispatchOptions for search_syntax calls.
 	// Sourced from NOMADDEV_GITHUB_MAX_RESULT_BYTES; 0 = unlimited.
 	MaxResultBytes int
+
+	// WorkerPool* mirror the dispatch_worker_pool knobs from
+	// config.MiddlewareConfig. WorkerPoolEnabled also signals whether the
+	// tool is in the catalogue; the wsserver layer reads the rest when it
+	// runs a pool.
+	WorkerPoolEnabled       bool
+	WorkerPoolMaxConcurrent int
+	WorkerPoolMaxTasks      int
+	WorkerPoolTaskTimeout   time.Duration
 }

@@ -41,6 +41,10 @@ type Server struct {
 	mw        *middleware.Service // may be nil — see handleUserIntent
 	sem       chan struct{}       // optional cap on concurrent execs; nil = unlimited
 	intentSem chan struct{}       // optional cap on concurrent user.intent turns; nil = unlimited
+	// workerPoolSem caps concurrent dispatch_worker_pool sub-dispatchers
+	// across all sessions. nil when the feature is disabled — runWorkerPool
+	// treats a nil semaphore as "not enabled".
+	workerPoolSem chan struct{}
 	// modelOverrides holds per-SID translator-model overrides driven by
 	// the mobile Settings picker (user.command{set_model}). Lookup is
 	// O(1) on every user.intent so the override path stays cheap. Cleared
@@ -122,6 +126,9 @@ func NewWithOptions(
 	}
 	if mw != nil && mw.Config.MaxConcurrent > 0 {
 		srv.intentSem = make(chan struct{}, mw.Config.MaxConcurrent)
+	}
+	if mw != nil && mw.Config.WorkerPoolEnabled && mw.Config.WorkerPoolMaxConcurrent > 0 {
+		srv.workerPoolSem = make(chan struct{}, mw.Config.WorkerPoolMaxConcurrent)
 	}
 	mux.HandleFunc("/healthz", srv.healthHandler)
 	mux.HandleFunc("/readyz", srv.readyHandler)

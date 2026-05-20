@@ -71,6 +71,35 @@ Out of scope:
   orchestrator is **not** fronted by Tailscale (the default deploy
   assumes Tailscale handles network-level reachability).
 
+## Host-side `git` privilege — the worker pool
+
+The optional Phase 15 worker pool (`dispatch_worker_pool`) is the one
+feature that grants the orchestrator a privilege beyond the Docker
+sandbox boundary the rest of NomadDev runs inside. When
+`NOMADDEV_WORKER_POOL_ENABLED=true`, the orchestrator shells out to the
+**host `git` binary** (worktree add/remove, commit, merge) against
+`NOMADDEV_SANDBOX_WORKSPACE_DIR` — host process and host filesystem
+activity, not a sandboxed container run.
+
+This is **opt-in and off by default** (`NOMADDEV_WORKER_POOL_ENABLED=false`)
+precisely because it widens the orchestrator's privilege. When the
+feature is left at its default, no host `git` ever runs.
+
+When it is enabled, every `git` invocation (in `internal/gitctl`) is
+hardened against a malicious workspace repo:
+
+- `-c core.hooksPath=/dev/null` — repo-supplied git hooks are
+  attacker-influenced; running one on `commit` / `merge` would be host
+  RCE. Hooks never run.
+- `GIT_CONFIG_NOSYSTEM=1`, `GIT_CONFIG_GLOBAL=/dev/null`,
+  `GIT_TERMINAL_PROMPT=0`, and a fixed argv with no shell.
+
+If you operate a deployment with the worker pool enabled, treat the
+pre-cloned workspace repo as part of your trust boundary. See
+[`docs/sandbox.md`](./docs/sandbox.md#host-side-git-the-worker-pool-phase-15)
+and [`docs/middleware.md`](./docs/middleware.md#dispatch_worker_pool--concurrent-worktree-migration-phase-15)
+for the design.
+
 ## What we promise
 
 - We will not pursue legal action against good-faith researchers who

@@ -135,6 +135,40 @@ before invoking `Engine.Run`; the engine routes paths through
 `<root>/<sanitized-sid>/` (created at 0o700 on first use). The
 known limitation noted in Phase 10.2 is closed.
 
+### Host-side `git`: the worker pool (Phase 15)
+
+The optional Phase 15 worker pool (`dispatch_worker_pool` — see
+[`docs/middleware.md`](middleware.md#dispatch_worker_pool--concurrent-worktree-migration-phase-15))
+is the one feature in NomadDev that steps **outside** the Docker sandbox
+boundary described above. Worktree add/remove, commit, and merge have no
+container equivalent, so when `NOMADDEV_WORKER_POOL_ENABLED=true` the
+orchestrator drives the host `git` binary directly through the
+`internal/gitctl` package.
+
+`gitctl` runs `git` against `NOMADDEV_SANDBOX_WORKSPACE_DIR`, which in
+this mode must be a **pre-cloned git repo**. The isolated worktrees the
+pool creates live at `<workspace>/.nomaddev-worktrees/<id>` — one
+directory per sub-task, removed once the pool finishes. This is host
+filesystem and host process activity, not a sandboxed container run.
+
+Because that crosses the sandbox boundary, every `gitctl` invocation is
+hardened:
+
+- `-c core.hooksPath=/dev/null` — repo-supplied git hooks are
+  attacker-influenced; running one would be host RCE. They never run.
+- `GIT_CONFIG_NOSYSTEM=1`, `GIT_CONFIG_GLOBAL=/dev/null` — no
+  system- or user-level git config is consulted.
+- `GIT_TERMINAL_PROMPT=0` — git never blocks waiting for terminal
+  input.
+- A fixed argv with no shell interpolation.
+
+The feature is opt-in and disabled by default precisely because it
+grants this host-side privilege; see
+[`SECURITY.md`](../SECURITY.md) for the security note. The worker pool
+also requires `NOMADDEV_SANDBOX_PER_SESSION_WORKSPACE=false` — the
+per-session subdir layout above is incompatible with the shared-root git
+repo `gitctl` operates on, and the tool returns a clear error otherwise.
+
 ### User-namespace remapping (Phase 10 doc)
 
 Docker's [`userns-remap`](https://docs.docker.com/engine/security/userns-remap/)

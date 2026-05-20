@@ -173,6 +173,17 @@ type MiddlewareConfig struct {
 	// counter. 0 disables the recovery loop entirely; the first retryable
 	// failure escalates. Default 2.
 	MaxAutoRetries int // NOMADDEV_MAX_AUTORETRIES
+
+	// WorkerPool* govern the dispatch_worker_pool tool — concurrent
+	// migration sub-dispatchers that each run headlessly in an isolated git
+	// worktree before being merged back into the primary branch. The feature
+	// is opt-in (disabled by default) because it grants the orchestrator a
+	// new privilege: it shells out to the host `git` binary against
+	// NOMADDEV_SANDBOX_WORKSPACE_DIR, which must be a pre-cloned git repo.
+	WorkerPoolEnabled       bool          // NOMADDEV_WORKER_POOL_ENABLED
+	WorkerPoolMaxConcurrent int           // NOMADDEV_WORKER_POOL_MAX — concurrency cap
+	WorkerPoolMaxTasks      int           // NOMADDEV_WORKER_POOL_MAX_TASKS — tasks-array length cap
+	WorkerPoolTaskTimeout   time.Duration // NOMADDEV_WORKER_POOL_TASK_TIMEOUT — per-sub-dispatcher wall clock
 }
 
 // HistoryConfig governs the persistent conversation store.
@@ -380,6 +391,10 @@ func Load() (*Config, error) {
 			AnthropicThinkingBudget: envInt64("NOMADDEV_ANTHROPIC_THINKING_BUDGET", 0),
 			MaxImagesPerIntent:      envInt("NOMADDEV_USER_INTENT_MAX_IMAGES", 4),
 			MaxImageBytes:           envInt("NOMADDEV_USER_INTENT_MAX_IMAGE_BYTES", 5*1024*1024),
+			WorkerPoolEnabled:       envBool("NOMADDEV_WORKER_POOL_ENABLED", false),
+			WorkerPoolMaxConcurrent: envInt("NOMADDEV_WORKER_POOL_MAX", 4),
+			WorkerPoolMaxTasks:      envInt("NOMADDEV_WORKER_POOL_MAX_TASKS", 8),
+			WorkerPoolTaskTimeout:   envDuration("NOMADDEV_WORKER_POOL_TASK_TIMEOUT", 10*time.Minute),
 		},
 		History: HistoryConfig{
 			Backend:     envOr("NOMADDEV_HISTORY_BACKEND", "sqlite"),

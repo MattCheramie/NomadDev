@@ -35,6 +35,12 @@ const (
 	// used internally as a ToolResult.Output["error_report"] enrichment
 	// the translator reads to author a fix on the next stream stage.
 	EventSystemErrorReport = "system.error_report"
+
+	// Worker-pool sub-task lifecycle progress. Emitted by dispatch_worker_pool
+	// so the client can track each headless sub-dispatcher without waiting
+	// for the whole pool to finish. correlation_id is the originating
+	// user.intent / pool id.
+	EventWorkerUpdate = "worker.update"
 )
 
 // UserCommandAction values for UserCommandPayload.Action.
@@ -294,6 +300,20 @@ type AckPayload struct {
 	Error   string `json:"error,omitempty"`
 	Message string `json:"message,omitempty"`
 	Model   string `json:"model,omitempty"`
+}
+
+// WorkerUpdatePayload is the body of an EventWorkerUpdate envelope — one
+// lifecycle transition of a dispatch_worker_pool sub-task. Phase is one of
+// "started" | "finished" | "merged" | "scope_violation". Status / Summary /
+// Error are populated on the terminal phases.
+type WorkerUpdatePayload struct {
+	PoolID  string `json:"pool_id"`
+	TaskID  string `json:"task_id"`
+	Phase   string `json:"phase"`
+	Branch  string `json:"branch,omitempty"`
+	Status  string `json:"status,omitempty"`
+	Summary string `json:"summary,omitempty"`
+	Error   string `json:"error,omitempty"`
 }
 
 // SystemErrorReportPayload carries a structured account of a failing tool

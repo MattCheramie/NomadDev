@@ -48,6 +48,23 @@ typed tool calls and dispatches them through either
 session ring buffer in `internal/session`, which handles wire-level
 reconnect replay.
 
+Phase 15 adds the optional **concurrent worker pool**. When
+`NOMADDEV_WORKER_POOL_ENABLED=true`, the LLM gains a
+`dispatch_worker_pool` tool that fans a code migration out across
+isolated git worktrees. The orchestration lives in the wsserver layer
+(`internal/wsserver/workerpool.go`) rather than the dispatcher — it needs
+the wsserver's approval plumbing, and routing it through the
+`CompositeDispatcher` would create an import cycle. For each sub-task it
+creates a git worktree + temp branch under
+`<workspace>/.nomaddev-worktrees/`, forks the parent session's windowed
+conversation history into an independent **headless sub-dispatcher** turn
+loop, runs the sub-dispatchers in parallel under a concurrency cap, and
+merges each finished branch back into the primary branch. Worktree
+add/remove, commit, and merge run through `internal/gitctl`, which shells
+out to the host `git` binary — a **host-side git control plane** that
+sits outside the Docker sandbox boundary the rest of NomadDev runs
+inside. See `docs/middleware.md` and `docs/sandbox.md`.
+
 ## Trust boundaries
 
 1. **Public internet ↔ Tailscale.** The orchestrator binds only to the

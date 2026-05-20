@@ -1151,6 +1151,77 @@ See
 [`docs/middleware.md`](./docs/middleware.md#verify_command--apply-verify-rollback-on-failure-phase-14)
 for the dispatcher composition walkthrough.
 
+### Phase 15: Concurrent worker pool — done
+*Closes the "one big migration runs strictly serially" gap: a refactor
+that touches a dozen independent files used to be one long tool-call
+chain, each edit waiting on the last. `dispatch_worker_pool` lets the
+orchestrator fan a migration out across isolated git worktrees, fork the
+conversation context into one headless sub-dispatcher per sub-task, run
+them in parallel under a concurrency cap, and merge each finished branch
+back into the primary branch. Opt-in and off by default — it grants the
+orchestrator a new host-side `git` privilege.*
+
+- [x] **New `dispatch_worker_pool` tool.** Tool spec, arg/result types,
+  `ParseWorkerPoolArgs`, and the up-front disjointness validator live in
+  [`internal/middleware/workerpool.go`](./internal/middleware/workerpool.go);
+  the tool is registered in `IsMutatingBaseTool` / `KnownTool` / `Validate`
+  in [`internal/middleware/tools.go`](./internal/middleware/tools.go) and
+  appended to the catalogue (with approver gating) in
+  [`internal/middleware/factory.go`](./internal/middleware/factory.go)
+  only when `NOMADDEV_WORKER_POOL_ENABLED=true`.
+- [x] **Host-side git control plane.** New
+  [`internal/gitctl`](./internal/gitctl/git.go) package shells out to the
+  host `git` binary (worktree add/remove, commit, merge) against
+  `NOMADDEV_SANDBOX_WORKSPACE_DIR`, which must be a pre-cloned git repo.
+  Every invocation passes `-c core.hooksPath=/dev/null` (repo-supplied
+  hooks never run — they would be host RCE), plus `GIT_CONFIG_NOSYSTEM=1`,
+  `GIT_CONFIG_GLOBAL=/dev/null`, `GIT_TERMINAL_PROMPT=0`, and a fixed argv
+  (no shell).
+- [x] **Headless sub-dispatchers.** `runWorkerPool` /
+  `dispatchOneTask` / `runWorkerToolCall` in
+  [`internal/wsserver/workerpool.go`](./internal/wsserver/workerpool.go)
+  create one git worktree + temp branch per sub-task under
+  `<workspace>/.nomaddev-worktrees/<id>`, fork the parent session's
+  windowed conversation history into an independent headless turn loop
+  seeded with that sub-task's prompt, and run the loop confined to the
+  worktree.
+- [x] **Approval gate intact.** The `dispatch_worker_pool` launch is a
+  mutating tool and takes one human approval; every mutating tool call a
+  headless sub-dispatcher makes (`write_patch`, `apply_code_patch`,
+  `execute_script`, …) still goes through the normal human-approval
+  round-trip. Nothing is auto-granted.
+- [x] **Conflict-free by construction.** Each sub-task declares a `paths`
+  array of files/dirs it will modify; the orchestrator rejects the call
+  up front if any two scopes overlap (equal or nested). After a
+  sub-dispatcher finishes, a post-commit `git diff` check verifies the
+  changed files stayed inside the declared scope — a task that escaped is
+  marked `scope_violation` and is **not** merged (its branch is kept for
+  inspection). Disjoint scopes mean the merge-back never conflicts.
+- [x] **Fork-bomb guard.** A sub-dispatcher's tool catalogue
+  (`SubDispatcherTools`) excludes `dispatch_worker_pool` — workers cannot
+  spawn pools.
+- [x] **Bounds.** `NOMADDEV_WORKER_POOL_MAX` (default `4`) is a
+  server-wide concurrency semaphore; `NOMADDEV_WORKER_POOL_MAX_TASKS`
+  (default `8`) caps the `tasks` array length;
+  `NOMADDEV_WORKER_POOL_TASK_TIMEOUT` (default `10m`) is a
+  per-sub-dispatcher wall-clock timeout. Worktrees are removed after the
+  pool; temp branches are deleted for merged tasks and kept for failed /
+  scope-violated ones. Requires `NOMADDEV_SANDBOX_PER_SESSION_WORKSPACE=false`
+  — the tool returns a clear error otherwise.
+- [x] **Wire + metrics.** New `worker.update` event
+  ([`internal/event/types.go`](./internal/event/types.go)) streams
+  sub-task lifecycle progress; three Prometheus instruments
+  (`nomaddev_worker_pool_dispatches_total`, `nomaddev_worker_pool_tasks_total`,
+  `nomaddev_worker_pool_task_seconds`) land in
+  [`internal/metrics/metrics.go`](./internal/metrics/metrics.go).
+
+See [`docs/middleware.md`](./docs/middleware.md#dispatch_worker_pool--concurrent-worktree-migration-phase-15)
+for the orchestration walkthrough,
+[`docs/events.md`](./docs/events.md#worker-pool-progress) for the
+`worker.update` wire shape, and
+[`docs/adr/0002-concurrent-worker-pool.md`](./docs/adr/0002-concurrent-worker-pool.md)
+for the design decisions.
+
 ---
 
 ## 🚀 Running the orchestrator

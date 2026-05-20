@@ -349,6 +349,62 @@ func (s *Server) consumeStage(
 	return stageResult{}, nil
 }
 
+// requestApproval runs the human-approval round-trip for one tool call when
+// the policy requires it. It builds any tool-specific preview, emits the
+// tool.approval.request envelope, and blocks on the operator's answer.
+//
+// It returns approved=true when the call may proceed — either no approval was
+// required, or it was granted. On a denial, timeout, ctx-cancellation, or a
+// failed preview build it returns approved=false with the classified
+// SandboxErr* code and message; canceled is true only when ctx fired, which
+// the caller propagates as a non-ok (turn-ending) result.
+//
+// It is shared by runToolCall (the interactive turn loop) and runWorkerToolCall
+// (a headless worker-pool sub-dispatcher) so both paths gate mutating tools the
+// same way. It does not emit command.result or touch history — the caller owns
+// those, since the interactive and headless paths persist differently.
+func (s *Server) requestApproval(
+	ctx context.Context, pendingCmdID string, call middleware.ToolCall,
+	sess *session.Session, client *hub.Client,
+) (approved bool, code string, msg string, canceled bool) {
+	required, reason := s.mw.Approver.RequiresApproval(call.Tool, call.Args)
+	if !required {
+		return true, "", "", false
+	}
+	// A non-unique or missing apply_code_patch anchor short-circuits here
+	// without ever bothering the operator.
+	preview, perr := s.buildApprovalPreview(ctx, call.Tool, call.Args)
+	if perr != nil {
+		return false, event.SandboxErrBadRequest, perr.Error(), false
+	}
+
+	approvalID := event.NewID()
+	s.mw.Approver.Register(approvalID)
+	defer s.mw.Approver.Cancel(approvalID)
+
+	timeoutMs := int(s.cfg.Approval.Timeout / time.Millisecond)
+	// The approval card sees redacted args (sensitive keys masked, long
+	// strings truncated) — the human approves intent + tool name, not the
+	// exact byte content. The originals stay in call.Args for dispatch.
+	reqEnv, _ := event.NewReply(event.EventToolApprovalRequest, pendingCmdID, event.ToolApprovalRequestPayload{
+		Tool:             call.Tool,
+		Args:             event.RedactArgs(call.Args),
+		Reason:           reason,
+		PendingCommandID: pendingCmdID,
+		TimeoutMs:        timeoutMs,
+		Preview:          preview,
+	})
+	reqEnv.ID = approvalID
+	s.bufferAndSend(sess, client, reqEnv)
+
+	granted, awaitErr := s.mw.Approver.Await(ctx, approvalID)
+	if granted {
+		return true, "", "", false
+	}
+	c, m := classifyApprovalErr(awaitErr)
+	return false, c, m, errors.Is(awaitErr, context.Canceled)
+}
+
 // runToolCall executes one tool call from the translator. Returns:
 //   - the ToolResult to feed back into resume()
 //   - the raw stderr bytes captured during dispatch (nil on no-stderr paths)
@@ -420,55 +476,26 @@ func (s *Server) runToolCall(
 			nil, -1, msg, true
 	}
 
-	// 3. Approval round-trip if the policy demands it.
-	if required, reason := s.mw.Approver.RequiresApproval(call.Tool, call.Args); required {
-		// 3a. Build any tool-specific preview the ApprovalSheet should show.
-		//     For apply_code_patch this is a dry-run unified-diff render; a
-		//     non-unique or missing search anchor short-circuits here without
-		//     ever bothering the operator.
-		preview, perr := s.buildApprovalPreview(ctx, call.Tool, call.Args)
-		if perr != nil {
-			s.emitResult(sess, client, cmdEnv.ID, time.Now(), -1, event.SandboxErrBadRequest, perr.Error())
-			_ = s.appendToolTurns(ctx, sess.SID, call, nil, event.SandboxErrBadRequest, perr.Error())
-			recordGitHubCall(call.Tool, event.SandboxErrBadRequest, time.Time{})
-			return middleware.ToolResult{CallID: call.ID, Tool: call.Tool, Error: event.SandboxErrBadRequest},
-				nil, -1, perr.Error(), true
-		}
+	// 3. Approval round-trip if the policy demands it. requestApproval emits
+	//    the tool.approval.request envelope and blocks on the human's answer;
+	//    on a denial / timeout / cancel / failed-preview it returns the
+	//    classified code and this leg fast-fails.
+	if approved, code, msg, canceled := s.requestApproval(ctx, cmdEnv.ID, call, sess, client); !approved {
+		s.emitResult(sess, client, cmdEnv.ID, time.Now(), -1, code, msg)
+		_ = s.appendToolTurns(ctx, sess.SID, call, nil, code, msg)
+		// No latency recorded: human approval time isn't an upstream MCP
+		// characteristic and skews the SLO histogram.
+		recordGitHubCall(call.Tool, code, time.Time{})
+		return middleware.ToolResult{CallID: call.ID, Tool: call.Tool, Error: code},
+			nil, -1, msg, !canceled
+	}
 
-		approvalID := event.NewID()
-		s.mw.Approver.Register(approvalID)
-		defer s.mw.Approver.Cancel(approvalID)
-
-		timeoutMs := int(s.cfg.Approval.Timeout / time.Millisecond)
-		// Approval card sees redacted args (sensitive keys masked, long
-		// strings truncated) — the human approves intent + tool name, not
-		// the exact byte content of a 50 KB PR body. The originals stay
-		// in call.Args for the post-grant dispatch.
-		reqEnv, _ := event.NewReply(event.EventToolApprovalRequest, cmdEnv.ID, event.ToolApprovalRequestPayload{
-			Tool:             call.Tool,
-			Args:             event.RedactArgs(call.Args),
-			Reason:           reason,
-			PendingCommandID: cmdEnv.ID,
-			TimeoutMs:        timeoutMs,
-			Preview:          preview,
-		})
-		reqEnv.ID = approvalID
-		s.bufferAndSend(sess, client, reqEnv)
-
-		granted, awaitErr := s.mw.Approver.Await(ctx, approvalID)
-		if !granted {
-			code, msg := classifyApprovalErr(awaitErr)
-			s.emitResult(sess, client, cmdEnv.ID, time.Now(), -1, code, msg)
-			_ = s.appendToolTurns(ctx, sess.SID, call, nil, code, msg)
-			// No latency recorded: human approval time isn't an upstream
-			// MCP characteristic and skews the SLO histogram.
-			recordGitHubCall(call.Tool, code, time.Time{})
-			if errors.Is(awaitErr, context.Canceled) {
-				return middleware.ToolResult{CallID: call.ID, Tool: call.Tool, Error: event.SandboxErrCanceled},
-					nil, -1, msg, false
-			}
-			return middleware.ToolResult{CallID: call.ID, Tool: call.Tool, Error: code}, nil, -1, msg, true
-		}
+	// 3b. dispatch_worker_pool is an orchestration tool, not an execution
+	//     tool: it spawns headless sub-dispatchers rather than streaming an
+	//     ExecChunk channel. Handle it here — after the single launch
+	//     approval — bypassing the Dispatcher entirely.
+	if call.Tool == middleware.ToolDispatchWorkerPool {
+		return s.runWorkerPool(ctx, intentID, cmdEnv.ID, call, sess, client, logger)
 	}
 
 	// 4. Dispatch. The dispatcher returns an ExecChunk channel mirroring the

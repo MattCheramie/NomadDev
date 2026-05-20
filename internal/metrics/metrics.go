@@ -141,8 +141,39 @@ var (
 	}, []string{"outcome"})
 )
 
+// Worker-pool (dispatch_worker_pool) metrics. A pool dispatch fans out into N
+// headless sub-dispatchers, each running in its own git worktree.
+var (
+	// WorkerPoolDispatchesTotal counts dispatch_worker_pool invocations.
+	// outcome ∈ {"ok","partial","failed"} — "ok" when every sub-task merged,
+	// "partial" when some failed, "failed" on a structural error (no git
+	// repo, all sub-tasks failed, …).
+	WorkerPoolDispatchesTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "nomaddev_worker_pool_dispatches_total",
+		Help: "Count of dispatch_worker_pool invocations, labeled by aggregate outcome.",
+	}, []string{"outcome"})
+
+	// WorkerPoolTasksTotal counts individual sub-tasks. status ∈
+	// {"success","failed","scope_violation","canceled"}.
+	WorkerPoolTasksTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "nomaddev_worker_pool_tasks_total",
+		Help: "Count of worker-pool sub-tasks, labeled by terminal status.",
+	}, []string{"status"})
+
+	// WorkerPoolTaskSeconds is the wall-clock duration of one headless
+	// sub-dispatcher, from turn start to its terminal frame.
+	WorkerPoolTaskSeconds = prometheus.NewHistogram(prometheus.HistogramOpts{
+		Name:    "nomaddev_worker_pool_task_seconds",
+		Help:    "Wall-clock duration of one worker-pool sub-dispatcher turn loop.",
+		Buckets: prometheus.ExponentialBuckets(0.1, 2, 12), // 100ms → ~7m
+	})
+)
+
 func init() {
 	Registry.MustRegister(
+		WorkerPoolDispatchesTotal,
+		WorkerPoolTasksTotal,
+		WorkerPoolTaskSeconds,
 		WSConnectsTotal,
 		WSActiveConnections,
 		WSInboundRejectedTotal,

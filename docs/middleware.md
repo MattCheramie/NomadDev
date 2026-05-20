@@ -254,6 +254,108 @@ exit" row before the operator hits Approve. A configured `verify_command`
 requires a sandbox runner; dispatching without one fails fast with
 `sandbox_bad_request` and never writes the patch.
 
+### `dispatch_worker_pool` — concurrent worktree migration (Phase 15)
+
+The base tools above run one tool call at a time: a refactor that touches
+a dozen independent files is one long, strictly serial chain, each edit
+waiting on the last. `dispatch_worker_pool` (Phase 15) lets the model fan
+that work out — it takes a `tasks` array and, for each sub-task, runs an
+independent, headless sub-dispatcher in parallel inside its own git
+worktree, then merges the results back.
+
+The tool is **opt-in**: it is added to the catalogue only when
+`NOMADDEV_WORKER_POOL_ENABLED=true`. It is a mutating tool, so the
+`dispatch_worker_pool` launch itself takes one human approval through the
+normal `tool.approval.request` gate.
+
+Each entry in `tasks` carries:
+
+```jsonc
+{
+  "id": "rename-logger",                    // stable per-task identifier
+  "prompt": "Rename pkg/log.Logger to ...", // the sub-dispatcher's instruction
+  "paths": ["internal/log", "cmd/cli/main.go"] // files/dirs this task may touch
+}
+```
+
+`ParseWorkerPoolArgs` (in
+[`internal/middleware/workerpool.go`](../internal/middleware/workerpool.go))
+parses and validates the call. The `tasks` array length is capped by
+`NOMADDEV_WORKER_POOL_MAX_TASKS` (default 8). The validator then checks
+**disjointness**: it rejects the whole call up front if any two tasks'
+`paths` overlap — equal paths, or one nested inside the other. This is the
+property that makes the merge-back conflict-free, so it is enforced before
+any worktree is created.
+
+#### Orchestration flow
+
+The orchestration lives in the wsserver layer
+([`internal/wsserver/workerpool.go`](../internal/wsserver/workerpool.go)),
+not the dispatcher — `runWorkerToolCall` needs the wsserver's approval
+plumbing and session context, and routing the pool through the
+`CompositeDispatcher` would introduce an import cycle. `runWorkerPool`
+drives the pool:
+
+1. **Worktree per task.** For each sub-task, `internal/gitctl` creates an
+   isolated git worktree plus a temporary branch under
+   `<workspace>/.nomaddev-worktrees/<id>`. This requires
+   `NOMADDEV_SANDBOX_WORKSPACE_DIR` to be a **pre-cloned git repo**; the
+   tool returns a clear error if it is not. It also requires
+   `NOMADDEV_SANDBOX_PER_SESSION_WORKSPACE=false` — the per-session
+   workspace layout is incompatible with the shared-root git repo, and the
+   tool refuses to run otherwise.
+2. **Fork the conversation context.** `dispatchOneTask` spawns one
+   independent, **headless sub-dispatcher** turn loop per worktree. Each
+   is seeded with the parent session's windowed conversation history (the
+   same `LoadWindow` the parent turn used) plus that sub-task's `prompt`,
+   so a worker inherits the context the operator built up without sharing
+   live state with its siblings.
+3. **Run in parallel under a cap.** Sub-dispatchers run concurrently,
+   bounded by `NOMADDEV_WORKER_POOL_MAX` (default 4), a server-wide
+   semaphore. `NOMADDEV_WORKER_POOL_TASK_TIMEOUT` (default `10m`) is a
+   per-sub-dispatcher wall-clock timeout.
+4. **Per-edit approval.** Each headless sub-dispatcher routes its tool
+   calls through `runWorkerToolCall`, which is both **scoped** to the
+   worktree and **approved** — every mutating tool call a worker makes
+   (`write_patch`, `apply_code_patch`, `execute_script`, …) still goes
+   through the normal human-approval round-trip. The operator approves
+   each task's edits; nothing is auto-granted just because it ran inside a
+   pool.
+5. **Scope check, then merge.** After a sub-dispatcher finishes, a
+   post-commit `git diff` confirms the changed files stayed within the
+   task's declared `paths`. A task that escaped its scope is marked
+   `scope_violation` and is **not** merged — its branch is kept so the
+   operator can inspect what it touched. Tasks that stayed in scope have
+   their branch merged back into the primary branch. Because every merged
+   branch touches a disjoint set of files, the merge-back never conflicts.
+6. **Cleanup.** Worktrees are removed once the pool finishes. Temp
+   branches are deleted for successfully-merged tasks and **kept** for
+   failed or scope-violated tasks so they remain available for inspection.
+
+Progress streams to the client as `worker.update` envelopes correlated to
+the parent `user.intent` id — see
+[`docs/events.md`](./events.md#worker-pool-progress).
+
+#### Fork-bomb guard
+
+A headless sub-dispatcher's tool catalogue is built by
+`middleware.SubDispatcherTools`, which excludes `dispatch_worker_pool`
+itself. A worker therefore cannot spawn its own pool — the recursion is
+cut off at the catalogue, not relied on at runtime.
+
+#### The host-side `git` privilege
+
+`internal/gitctl` is the one place in NomadDev that shells out to a host
+binary outside the Docker sandbox boundary. Worktree add/remove, commit,
+and merge all run the host `git` against the workspace dir. Repo-supplied
+git hooks are attacker-influenced — running one would be host RCE — so
+every `gitctl` invocation passes `-c core.hooksPath=/dev/null` (hooks
+never run), plus `GIT_CONFIG_NOSYSTEM=1`, `GIT_CONFIG_GLOBAL=/dev/null`,
+and `GIT_TERMINAL_PROMPT=0`, and uses a fixed argv with no shell
+interpolation. This new privilege is why the whole feature is opt-in and
+disabled by default; see [`docs/sandbox.md`](./sandbox.md#host-side-git-the-worker-pool-phase-15)
+and [`SECURITY.md`](../SECURITY.md).
+
 ## History
 
 The orchestrator persists conversation turns so the LLM has context across
