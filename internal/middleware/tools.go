@@ -7,8 +7,9 @@ import (
 )
 
 // Tool name constants. The middleware speaks these; the sandbox runner
-// recognizes ToolExecuteScript and ToolSearchSyntax; fsops recognizes
-// the remaining three.
+// recognizes ToolExecuteScript and ToolSearchSyntax; fsops recognizes the
+// four read/write tools; ToolPinFile and ToolUnpinFile are served by the
+// dispatcher's persistent-reference-buffer path.
 const (
 	ToolExecuteScript  = "execute_script"
 	ToolReadFile       = "read_file"
@@ -16,6 +17,8 @@ const (
 	ToolWritePatch     = "write_patch"
 	ToolApplyCodePatch = "apply_code_patch"
 	ToolSearchSyntax   = "search_syntax"
+	ToolPinFile        = "pin_file"
+	ToolUnpinFile      = "unpin_file"
 )
 
 // ErrToolValidation is returned by Validate when the args don't satisfy a
@@ -30,10 +33,12 @@ const (
 	ModeAudit  = "audit"
 )
 
-// IsMutatingBaseTool reports whether one of the six base tools mutates host
+// IsMutatingBaseTool reports whether one of the base tools mutates host
 // state. GitHub MCP tools are classified separately via the caller-supplied
 // predicate plumbed through Service.IsDestructiveGitHubTool — execute_script
 // is counted as mutating because it can run arbitrary shell, including writes.
+// pin_file / unpin_file are not mutating: they only touch the in-memory
+// reference buffer, so they stay available in audit mode.
 func IsMutatingBaseTool(name string) bool {
 	switch name {
 	case ToolExecuteScript, ToolWritePatch, ToolApplyCodePatch:
@@ -64,7 +69,7 @@ type Schema struct {
 	Maximum     *float64           `json:"maximum,omitempty"`
 }
 
-// DefaultTools returns the four-tool catalogue Phase 4 ships.
+// DefaultTools returns the base tool catalogue exposed to the model.
 func DefaultTools() []ToolSpec {
 	return []ToolSpec{
 		{
@@ -161,6 +166,37 @@ func DefaultTools() []ToolSpec {
 				Required: []string{"pattern"},
 			},
 		},
+		{
+			Name: ToolPinFile,
+			Description: "Pin the current contents of a UTF-8 text file into the persistent " +
+				"reference buffer. Pinned files are injected at the top of the system prompt on " +
+				"every turn and survive history compaction, so use this to keep critical " +
+				"architectural files in context during long, multi-step tasks. Paths are relative " +
+				"to the workspace root; '..' is not allowed. Re-pinning the same path refreshes " +
+				"its stored contents. A file larger than the read cap (256 KiB) is pinned " +
+				"truncated. Read-only; does not require approval. Release a pin with unpin_file.",
+			Parameters: Schema{
+				Type: "object",
+				Properties: map[string]*Schema{
+					"path": {Type: "string", Description: "file path relative to the workspace root"},
+				},
+				Required: []string{"path"},
+			},
+		},
+		{
+			Name: ToolUnpinFile,
+			Description: "Remove a file from the persistent reference buffer once it is no longer " +
+				"needed for the current task, freeing the memory and prompt space it occupied. " +
+				"Paths are relative to the workspace root. Unpinning a file that is not pinned is " +
+				"a no-op, not an error. Read-only; does not require approval.",
+			Parameters: Schema{
+				Type: "object",
+				Properties: map[string]*Schema{
+					"path": {Type: "string", Description: "file path relative to the workspace root"},
+				},
+				Required: []string{"path"},
+			},
+		},
 	}
 }
 
@@ -174,7 +210,8 @@ const GitHubToolPrefix = "github_"
 // the upstream server at dispatch time, so this layer only does a prefix check.
 func KnownTool(name string) bool {
 	switch name {
-	case ToolExecuteScript, ToolReadFile, ToolListDir, ToolWritePatch, ToolApplyCodePatch, ToolSearchSyntax:
+	case ToolExecuteScript, ToolReadFile, ToolListDir, ToolWritePatch, ToolApplyCodePatch,
+		ToolSearchSyntax, ToolPinFile, ToolUnpinFile:
 		return true
 	}
 	return strings.HasPrefix(name, GitHubToolPrefix)
@@ -200,6 +237,10 @@ func Validate(tool string, args map[string]any) error {
 		return validateApplyCodePatch(args)
 	case ToolSearchSyntax:
 		return validateSearchSyntax(args)
+	case ToolPinFile:
+		return validatePinFile(args)
+	case ToolUnpinFile:
+		return validateUnpinFile(args)
 	}
 	if strings.HasPrefix(tool, GitHubToolPrefix) {
 		return nil
@@ -243,6 +284,20 @@ func validateReadFile(args map[string]any) error {
 }
 
 func validateListDir(args map[string]any) error {
+	if _, err := reqString(args, "path"); err != nil {
+		return err
+	}
+	return nil
+}
+
+func validatePinFile(args map[string]any) error {
+	if _, err := reqString(args, "path"); err != nil {
+		return err
+	}
+	return nil
+}
+
+func validateUnpinFile(args map[string]any) error {
 	if _, err := reqString(args, "path"); err != nil {
 		return err
 	}

@@ -95,9 +95,11 @@ without it.
 | `write_patch` | fsops | `{path, content, mode?, create?}` | required |
 | `apply_code_patch` | fsops | `{file_path, search_string, replace_string}` | required (with dry-run diff preview in the ApprovalSheet) |
 | `search_syntax` | sandbox.Runner (ast-grep `sg` in container) | `{pattern, lang?, path?, max_matches?, globs?}` | auto-granted (read-only) |
+| `pin_file` | fsops read + `history.ReferenceBuffer` | `{path}` | auto-granted (read-only) |
+| `unpin_file` | `history.ReferenceBuffer` | `{path}` | auto-granted (read-only) |
 | `github_*` (~75 tools) | githubmcp (subprocess) | per-tool schema from upstream MCP server | required for every mutator (`create_`, `update_`, `delete_`, `merge_`, `push_`, …); read-only ops auto-granted |
 
-The six base tools have schemas declared in `internal/middleware/tools.go`;
+The eight base tools have schemas declared in `internal/middleware/tools.go`;
 `github_*` schemas are fetched at orchestrator startup from the upstream
 `github-mcp-server` binary and converted by `internal/githubmcp/schema.go`.
 All schemas are SDK-agnostic — Gemini-specific conversion lives in
@@ -118,8 +120,10 @@ wire as a normal `command.result`).
 
 The system prompt is augmented with a steering line that tells the model
 the catalogue has been narrowed to `read_file`, `list_dir`,
-`search_syntax`, and read-only `github_*` tools, and that the expected
-deliverable is a markdown report rather than a mutation. Approval prompts
+`search_syntax`, `pin_file`, `unpin_file`, and read-only `github_*` tools,
+and that the expected deliverable is a markdown report rather than a
+mutation. `pin_file` / `unpin_file` are not mutating — they only touch the
+in-memory reference buffer — so they survive the audit-mode filter. Approval prompts
 are never expected to fire in audit mode — there is nothing destructive
 left in the catalogue to gate.
 
@@ -318,6 +322,43 @@ a JSON array `[{"role": "user|assistant", "text": "...", "ts": <nanos>}]`
 and expects `{"summary": "..."}` back. Disabled by default; configure
 via `NOMADDEV_HISTORY_SUMMARY_*` env vars (see
 [`docs/operations.md`](./operations.md#history-summarization-compactor)).
+
+### Persistent reference buffer
+
+The compactor above is lossy by design: during a long, multi-step
+execution chain it can summarize away a critical architectural file the
+model read early on, leaving the tool dispatcher without context on core
+data structures. The persistent reference buffer
+([`internal/history/pins.go`](../internal/history/pins.go)) is the escape
+hatch.
+
+`ReferenceBuffer` is an in-memory, per-session map of pinned workspace
+files — `sid -> path -> raw bytes` — kept **entirely separate from the
+`Store` event log**, so the compactor never sees it. Two tools drive it:
+
+- `pin_file` reads a file through the existing fsops `read_file` path
+  (reusing its path-safety, symlink and byte-cap guarantees) and stores
+  the raw contents under `(SID, path)`. Re-pinning the same path refreshes
+  it.
+- `unpin_file` drops a path from the buffer once the task no longer needs
+  it, freeing the memory and prompt space it occupied. Unpinning an
+  unpinned path is a clean no-op.
+
+On every turn `runIntent` calls `ReferenceBuffer.Render(SID)` and prepends
+the result — a `=== PINNED REFERENCE FILES ===` block — to the system
+prompt, ahead of any audit-mode steering. Pinned files therefore stay in
+full context no matter how aggressively history is compacted.
+
+Properties:
+
+- **In-memory only.** State is process-local and lost on restart; there
+  is no SQLite table and no migration. A `reset_history` command clears a
+  session's pins alongside its event log.
+- **Bounded.** Conservative ceilings (256 KiB per file, 1 MiB aggregate
+  per session, 32 files) keep the per-turn prompt cost in check; crossing
+  one returns an `ErrPinCapExceeded` tool-result error so the model can
+  `unpin_file` something.
+- **Concurrency-safe.** A single mutex guards `Pin` / `Unpin` / `Render`.
 
 ## Runtime selection
 

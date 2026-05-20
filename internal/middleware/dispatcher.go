@@ -1,6 +1,7 @@
 package middleware
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -8,6 +9,7 @@ import (
 	"time"
 
 	"github.com/mattcheramie/nomaddev/internal/fsops"
+	"github.com/mattcheramie/nomaddev/internal/history"
 	"github.com/mattcheramie/nomaddev/internal/sandbox"
 )
 
@@ -55,17 +57,22 @@ type GitHubCaller interface {
 }
 
 // CompositeDispatcher routes calls by tool name. execute_script goes to the
-// sandbox.Runner; the four fsops tools go to the fsops.Engine; anything
-// prefixed with "github_" goes to the GitHub MCP backend.
+// sandbox.Runner; the four fsops tools go to the fsops.Engine; pin_file /
+// unpin_file go to the persistent reference buffer; anything prefixed with
+// "github_" goes to the GitHub MCP backend.
 type CompositeDispatcher struct {
 	Sandbox sandbox.Runner
 	FSOps   *fsops.Engine
 	GitHub  GitHubCaller
+	// Pins backs the pin_file / unpin_file tools. May be nil — Dispatch
+	// returns ErrBadRequest for those tools when it is. Set by NewService
+	// after construction, the same way GitHub is wired.
+	Pins *history.ReferenceBuffer
 }
 
 // NewCompositeDispatcher constructs a dispatcher. Any of Sandbox / FSOps /
-// GitHub may be nil — Dispatch returns ErrBadRequest if the matched backend
-// is missing at call time.
+// GitHub / Pins may be nil — Dispatch returns ErrBadRequest if the matched
+// backend is missing at call time.
 func NewCompositeDispatcher(r sandbox.Runner, fs *fsops.Engine) *CompositeDispatcher {
 	return &CompositeDispatcher{Sandbox: r, FSOps: fs}
 }
@@ -113,6 +120,19 @@ func (c *CompositeDispatcher) Dispatch(ctx context.Context, call ToolCall, opts 
 			}
 		}
 		return c.FSOps.Run(fsCtx, fsops.Call{Tool: call.Tool, Args: call.Args}, opts.FSOpsLimits)
+	case ToolPinFile:
+		if c.Pins == nil {
+			return nil, fmt.Errorf("%w: reference buffer not configured", sandbox.ErrBadRequest)
+		}
+		if c.FSOps == nil {
+			return nil, fmt.Errorf("%w: fsops engine not configured", sandbox.ErrBadRequest)
+		}
+		return c.pinFile(ctx, call, opts), nil
+	case ToolUnpinFile:
+		if c.Pins == nil {
+			return nil, fmt.Errorf("%w: reference buffer not configured", sandbox.ErrBadRequest)
+		}
+		return c.unpinFile(call, opts), nil
 	}
 	if strings.HasPrefix(call.Tool, GitHubToolPrefix) {
 		if c.GitHub == nil {
@@ -248,4 +268,98 @@ func (c *CompositeDispatcher) applyCodePatchWithVerify(
 		out <- verifyExit
 	}()
 	return out, nil
+}
+
+// pinFile reads path through the fsops read_file tool — reusing its
+// path-safety, symlink and byte-cap guarantees — and stores the result in
+// the persistent reference buffer. The returned channel follows the
+// sandbox.Runner contract: a stdout confirmation then exactly one terminal
+// exit chunk. A read failure or a buffer-cap rejection surfaces as exit -1
+// so wsserver classifies it as a tool-result error.
+func (c *CompositeDispatcher) pinFile(
+	ctx context.Context, call ToolCall, opts DispatchOptions,
+) <-chan sandbox.ExecChunk {
+	out := make(chan sandbox.ExecChunk, 2)
+	go func() {
+		defer close(out)
+
+		path, _ := call.Args["path"].(string)
+		if path == "" {
+			out <- sandbox.ExecChunk{Stream: sandbox.StreamExit, ExitCode: -1,
+				Err: fmt.Errorf("%w: pin_file requires a non-empty 'path'", sandbox.ErrBadRequest)}
+			return
+		}
+
+		fsCtx := fsops.WithSessionID(ctx, opts.SessionID)
+		readCh, err := c.FSOps.Run(fsCtx,
+			fsops.Call{Tool: fsops.ToolReadFile, Args: map[string]any{"path": path}},
+			opts.FSOpsLimits)
+		if err != nil {
+			out <- sandbox.ExecChunk{Stream: sandbox.StreamExit, ExitCode: -1, Err: err}
+			return
+		}
+
+		var buf bytes.Buffer
+		var readExit sandbox.ExecChunk
+		gotExit := false
+		for chunk := range readCh {
+			switch chunk.Stream {
+			case sandbox.StreamStdout:
+				buf.Write(chunk.Data)
+			case sandbox.StreamExit:
+				readExit = chunk
+				gotExit = true
+			}
+		}
+		if !gotExit {
+			out <- sandbox.ExecChunk{Stream: sandbox.StreamExit, ExitCode: -1,
+				Err: fmt.Errorf("pin_file: read_file closed without an exit chunk")}
+			return
+		}
+		if readExit.Err != nil || readExit.ExitCode != 0 {
+			rerr := readExit.Err
+			if rerr == nil {
+				rerr = fmt.Errorf("%w: read_file exited %d", sandbox.ErrBadRequest, readExit.ExitCode)
+			}
+			out <- sandbox.ExecChunk{Stream: sandbox.StreamExit, ExitCode: -1, Err: rerr}
+			return
+		}
+
+		if perr := c.Pins.Pin(opts.SessionID, path, buf.Bytes()); perr != nil {
+			out <- sandbox.ExecChunk{Stream: sandbox.StreamExit, ExitCode: -1,
+				Err: fmt.Errorf("%w: %v", sandbox.ErrBadRequest, perr)}
+			return
+		}
+
+		msg := fmt.Sprintf("pinned %q (%d bytes) to the persistent reference buffer; "+
+			"it will stay at the top of the prompt until unpinned", path, buf.Len())
+		out <- sandbox.ExecChunk{Stream: sandbox.StreamStdout, Data: []byte(msg)}
+		out <- sandbox.ExecChunk{Stream: sandbox.StreamExit, ExitCode: 0}
+	}()
+	return out
+}
+
+// unpinFile drops path from the reference buffer. Unpinning a path that was
+// never pinned is reported as a clean no-op (exit 0), not a failure, so the
+// automated-recovery loop is not triggered for a harmless call.
+func (c *CompositeDispatcher) unpinFile(call ToolCall, opts DispatchOptions) <-chan sandbox.ExecChunk {
+	out := make(chan sandbox.ExecChunk, 2)
+	defer close(out)
+
+	path, _ := call.Args["path"].(string)
+	if path == "" {
+		out <- sandbox.ExecChunk{Stream: sandbox.StreamExit, ExitCode: -1,
+			Err: fmt.Errorf("%w: unpin_file requires a non-empty 'path'", sandbox.ErrBadRequest)}
+		return out
+	}
+
+	var msg string
+	if c.Pins.Unpin(opts.SessionID, path) {
+		msg = fmt.Sprintf("unpinned %q from the persistent reference buffer", path)
+	} else {
+		msg = fmt.Sprintf("%q was not pinned; nothing to unpin", path)
+	}
+	out <- sandbox.ExecChunk{Stream: sandbox.StreamStdout, Data: []byte(msg)}
+	out <- sandbox.ExecChunk{Stream: sandbox.StreamExit, ExitCode: 0}
+	return out
 }
