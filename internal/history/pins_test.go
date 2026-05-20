@@ -67,7 +67,7 @@ func TestReferenceBuffer_RenderDeterministicOrder(t *testing.T) {
 	ai := strings.Index(out, "alpha.go")
 	mi := strings.Index(out, "mid.go")
 	zi := strings.Index(out, "zeta.go")
-	if ai < 0 || mi < 0 || zi < 0 || !(ai < mi && mi < zi) {
+	if ai < 0 || mi < 0 || zi < 0 || ai >= mi || mi >= zi {
 		t.Errorf("paths not lexicographically ordered: alpha=%d mid=%d zeta=%d", ai, mi, zi)
 	}
 }
