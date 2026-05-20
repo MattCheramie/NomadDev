@@ -31,12 +31,6 @@ func (s *Server) handleCommandRequest(
 	dispatchCtx context.Context,
 	env event.Envelope, client *hub.Client, sess *session.Session, logger *slog.Logger,
 ) {
-	if s.runner == nil {
-		s.replyError(sess, client, env.ID, event.CodeNotImplemented,
-			"sandbox runner not configured")
-		return
-	}
-
 	var p event.CommandRequestPayload
 	if err := env.UnmarshalPayload(&p); err != nil {
 		s.replyError(sess, client, env.ID, event.CodeBadEnvelope, err.Error())
@@ -62,6 +56,23 @@ func (s *Server) handleCommandRequest(
 		s.emitResult(sess, client, env.ID, time.Now(),
 			-1, event.SandboxErrUnauthorized,
 			"token lacks tools:"+p.Tool+" scope")
+		return
+	}
+
+	// Daemon tools (monitor_daemon / stop_daemon / list_daemons) manage
+	// long-lived host processes, not one-shot container execs — they don't
+	// use the sandbox runner and they don't fit the "terminal exit chunk"
+	// channel contract. handleDaemonCommand owns its own brief semaphore use
+	// and approval round-trip, so this dispatch happens before both.
+	if p.Tool == sandbox.ToolMonitorDaemon || p.Tool == sandbox.ToolStopDaemon ||
+		p.Tool == sandbox.ToolListDaemons {
+		s.handleDaemonCommand(dispatchCtx, env.ID, p, sess, client, logger)
+		return
+	}
+
+	if s.runner == nil {
+		s.replyError(sess, client, env.ID, event.CodeNotImplemented,
+			"sandbox runner not configured")
 		return
 	}
 

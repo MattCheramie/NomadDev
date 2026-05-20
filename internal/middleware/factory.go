@@ -79,6 +79,12 @@ type FactoryConfig struct {
 	WorkerPoolMaxTasks      int
 	WorkerPoolTaskTimeout   time.Duration
 
+	// DaemonMonitorEnabled gates the monitor_daemon / stop_daemon /
+	// list_daemons tools: when true they are appended to the catalogue and
+	// monitor_daemon is added to the approval allowlist. Mirrors
+	// config.SandboxConfig.DaemonEnabled (NOMADDEV_DAEMON_MONITOR_ENABLED).
+	DaemonMonitorEnabled bool
+
 	// Wired-in collaborators.
 	Sandbox sandbox.Runner
 	FSOps   *fsops.Engine
@@ -197,6 +203,16 @@ func NewService(ctx context.Context, c FactoryConfig) (*Service, error) {
 		approver.AddRequired(ToolDispatchWorkerPool)
 	}
 
+	// monitor_daemon family is opt-in like the worker pool. monitor_daemon
+	// runs an arbitrary host command, so it is always approval-gated
+	// regardless of NOMADDEV_APPROVAL_REQUIRED_TOOLS; stop_daemon and
+	// list_daemons are not gated (the former only kills a process the session
+	// already owns, the latter is read-only).
+	if c.DaemonMonitorEnabled {
+		tools = append(tools, DaemonToolSpecs()...)
+		approver.AddRequired(ToolMonitorDaemon)
+	}
+
 	if c.GitHub != nil {
 		dispatcher.GitHub = c.GitHub
 		tools = append(tools, c.GitHubTools...)
@@ -236,6 +252,8 @@ func NewService(ctx context.Context, c FactoryConfig) (*Service, error) {
 			WorkerPoolMaxConcurrent: c.WorkerPoolMaxConcurrent,
 			WorkerPoolMaxTasks:      c.WorkerPoolMaxTasks,
 			WorkerPoolTaskTimeout:   c.WorkerPoolTaskTimeout,
+
+			DaemonMonitorEnabled: c.DaemonMonitorEnabled,
 		},
 	}, nil
 }

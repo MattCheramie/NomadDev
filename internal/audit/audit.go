@@ -29,6 +29,8 @@ const (
 	KindAuthRevoke    = "auth.revoke"
 	KindApprovalGrant = "approval.granted"
 	KindApprovalDeny  = "approval.denied"
+	KindDaemonStart   = "daemon.start"
+	KindDaemonStop    = "daemon.stop"
 )
 
 // Outcome values for the Outcome field. Stable strings.

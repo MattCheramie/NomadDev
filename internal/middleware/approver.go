@@ -86,6 +86,8 @@ func (p *PolicyApprover) RequiresApproval(tool string, _ map[string]any) (bool, 
 		return true, "writes to the host workspace"
 	case ToolApplyCodePatch:
 		return true, "edits a file via search/replace"
+	case ToolMonitorDaemon:
+		return true, "starts a long-running process on the host"
 	}
 	if strings.HasPrefix(tool, GitHubToolPrefix) {
 		return true, "mutates GitHub state"

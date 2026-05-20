@@ -41,6 +41,15 @@ const (
 	// for the whole pool to finish. correlation_id is the originating
 	// user.intent / pool id.
 	EventWorkerUpdate = "worker.update"
+
+	// Daemon stdout/stderr lines streamed by the monitor_daemon tool.
+	// correlation_id is the originating command.request id. Unlike
+	// command.chunk, these envelopes are emitted intermittently AFTER the
+	// terminal command.result has already fired — the command.request that
+	// launched the daemon completes immediately, then the daemon's output
+	// trickles in over the life of the background process. A client must
+	// keep listening past command.result until a frame with closed:true.
+	EventSystemLogEvent = "system.log_event"
 )
 
 // UserCommandAction values for UserCommandPayload.Action.
@@ -339,4 +348,29 @@ type SystemErrorReportPayload struct {
 	Attempt        int    `json:"attempt"`
 	MaxAttempts    int    `json:"max_attempts"`
 	Escalated      bool   `json:"escalated"`
+}
+
+// SystemLogEventPayload is the body of an EventSystemLogEvent envelope — one
+// line of output from a background process started by the monitor_daemon
+// tool. correlation_id is the launching command.request.id; daemon_id is the
+// stable id for the background process so a client can demultiplex several
+// concurrent daemons that share one correlation_id is unlikely but possible.
+//
+// Seq is per-(daemon_id, stream) and increases from 0 so a client can detect
+// gaps within one stream — gaps are expected under sustained high-rate output
+// because the runner drops lines rather than block the daemon's own pipe.
+//
+// The frame with Closed==true is the last system.log_event for a daemon: the
+// background process has exited or been killed. ExitCode carries the process
+// exit status on a clean exit; Reason is one of "exited", "killed",
+// "line_cap" (a line was truncated to the per-line byte cap), or
+// "buffer_overflow" (output outran the consumer and lines were dropped).
+type SystemLogEventPayload struct {
+	DaemonID string `json:"daemon_id"`
+	Stream   string `json:"stream"`
+	Seq      int    `json:"seq"`
+	Line     string `json:"line,omitempty"`
+	Closed   bool   `json:"closed,omitempty"`
+	ExitCode int    `json:"exit_code,omitempty"`
+	Reason   string `json:"reason,omitempty"`
 }
