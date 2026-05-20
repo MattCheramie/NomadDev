@@ -169,6 +169,46 @@ also requires `NOMADDEV_SANDBOX_PER_SESSION_WORKSPACE=false` — the
 per-session subdir layout above is incompatible with the shared-root git
 repo `gitctl` operates on, and the tool returns a clear error otherwise.
 
+### Daemon monitoring: `monitor_daemon`
+
+The `monitor_daemon` tool (with companions `stop_daemon` and `list_daemons`)
+is the **second** feature that steps outside the Docker sandbox boundary. A
+one-shot container is force-removed the instant its exec returns, so it
+cannot host a long-running daemon — a dev server, a file watcher, a log
+tailer. `monitor_daemon` instead starts the command as a **detached process
+on the orchestrator host** (`sh -c <command>` in its own process group, via
+`SysProcAttr.Setpgid` — nohup-style detachment), exactly the host-side
+posture the worker pool uses for `git`.
+
+The tool is non-blocking by design: the launching `command.request`
+completes — and releases its sandbox concurrency slot — as soon as the
+daemon has spawned, so the orchestrator can keep processing commands. The
+daemon's stdout/stderr then stream back asynchronously as `system.log_event`
+envelopes (see [`docs/events.md`](events.md#daemon-log-streaming)).
+
+Lifecycle and safety:
+
+- **Opt-in.** Disabled unless `NOMADDEV_DAEMON_MONITOR_ENABLED=true`. Like
+  the worker pool, it grants a host-execution privilege, so it is off by
+  default.
+- **Approval-gated.** `monitor_daemon` runs an arbitrary host command and
+  always requires human approval (it is added to the approval allowlist
+  automatically). `stop_daemon` and `list_daemons` are not gated —
+  `stop_daemon` only kills a process the session already owns, and
+  `list_daemons` is read-only.
+- **No orphans.** Every daemon is tracked in a per-session registry. When a
+  session's WebSocket connection ends, all of its daemons are killed (the
+  whole process group: `SIGTERM`, then `SIGKILL` after a grace window).
+- **No resource caps.** Unlike a container exec, a host daemon has no
+  cgroup memory / CPU / pids limit. A runaway daemon can exhaust the host —
+  another reason the feature is opt-in. Output lines are capped (16 KiB per
+  line) and the per-daemon log channel drops lines under sustained
+  high-rate output rather than blocking the process.
+
+| Knob | Default | Effect |
+|---|---|---|
+| `NOMADDEV_DAEMON_MONITOR_ENABLED` | `false` | Enables the `monitor_daemon` / `stop_daemon` / `list_daemons` tools. |
+
 ### User-namespace remapping (Phase 10 doc)
 
 Docker's [`userns-remap`](https://docs.docker.com/engine/security/userns-remap/)

@@ -117,6 +117,13 @@ type SandboxConfig struct {
 	// whenever a real chunk is forwarded so chatty jobs don't
 	// double-emit. 0 disables heartbeats entirely.
 	HeartbeatInterval time.Duration
+	// DaemonEnabled gates the monitor_daemon / stop_daemon / list_daemons
+	// tools. The feature is opt-in (disabled by default) because, like the
+	// worker pool, it grants the orchestrator a new privilege: monitor_daemon
+	// runs an operator-authorized command as a detached process on the HOST,
+	// outside the ephemeral-container boundary. Sourced from
+	// NOMADDEV_DAEMON_MONITOR_ENABLED.
+	DaemonEnabled bool
 }
 
 // MiddlewareConfig governs the Phase 4 NLP middleware that translates
@@ -369,6 +376,7 @@ func Load() (*Config, error) {
 			RequireDigest:       envBool("NOMADDEV_SANDBOX_REQUIRE_DIGEST", false),
 			PerSessionWorkspace: envBool("NOMADDEV_SANDBOX_PER_SESSION_WORKSPACE", false),
 			HeartbeatInterval:   envDuration("NOMADDEV_SANDBOX_HEARTBEAT_INTERVAL", 5*time.Second),
+			DaemonEnabled:       envBool("NOMADDEV_DAEMON_MONITOR_ENABLED", false),
 		},
 		Middleware: MiddlewareConfig{
 			Runtime:                 envOr("NOMADDEV_MIDDLEWARE_RUNTIME", "mock"),

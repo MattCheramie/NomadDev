@@ -19,6 +19,12 @@ const (
 	ToolSearchSyntax   = "search_syntax"
 	ToolPinFile        = "pin_file"
 	ToolUnpinFile      = "unpin_file"
+	// Daemon tools — opt-in (NOMADDEV_DAEMON_MONITOR_ENABLED). monitor_daemon
+	// runs a detached host process; stop_daemon / list_daemons manage them.
+	// Served by the wsserver daemon path, not the CompositeDispatcher.
+	ToolMonitorDaemon = "monitor_daemon"
+	ToolStopDaemon    = "stop_daemon"
+	ToolListDaemons   = "list_daemons"
 )
 
 // ErrToolValidation is returned by Validate when the args don't satisfy a
@@ -41,7 +47,8 @@ const (
 // reference buffer, so they stay available in audit mode.
 func IsMutatingBaseTool(name string) bool {
 	switch name {
-	case ToolExecuteScript, ToolWritePatch, ToolApplyCodePatch, ToolDispatchWorkerPool:
+	case ToolExecuteScript, ToolWritePatch, ToolApplyCodePatch, ToolDispatchWorkerPool,
+		ToolMonitorDaemon, ToolStopDaemon:
 		return true
 	}
 	return false
@@ -200,6 +207,52 @@ func DefaultTools() []ToolSpec {
 	}
 }
 
+// DaemonToolSpecs returns the ToolSpecs for monitor_daemon / stop_daemon /
+// list_daemons. Kept out of DefaultTools() so the factory appends them only
+// when the feature is enabled — the same opt-in shape as WorkerPoolSpec.
+func DaemonToolSpecs() []ToolSpec {
+	return []ToolSpec{
+		{
+			Name: ToolMonitorDaemon,
+			Description: "Start a long-running daemon process — a dev server, file " +
+				"watcher, or log tailer — as a detached process on the orchestrator host. " +
+				"The call returns immediately; the daemon keeps running in the background " +
+				"and its stdout/stderr stream back afterward as system.log_event envelopes. " +
+				"Each daemon gets an id: use stop_daemon to terminate it and list_daemons " +
+				"to see what is running. Requires human approval.",
+			Parameters: Schema{
+				Type: "object",
+				Properties: map[string]*Schema{
+					"command":     {Type: "string", Description: "the shell command to run as a background daemon"},
+					"working_dir": {Type: "string", Description: "optional working directory for the daemon process"},
+				},
+				Required: []string{"command"},
+			},
+		},
+		{
+			Name: ToolStopDaemon,
+			Description: "Stop a daemon previously started with monitor_daemon, " +
+				"terminating its whole process group.",
+			Parameters: Schema{
+				Type: "object",
+				Properties: map[string]*Schema{
+					"daemon_id": {Type: "string", Description: "the daemon id returned by monitor_daemon"},
+				},
+				Required: []string{"daemon_id"},
+			},
+		},
+		{
+			Name: ToolListDaemons,
+			Description: "List the daemons currently running for this session, each with " +
+				"its id, command, and uptime. Read-only; does not require approval.",
+			Parameters: Schema{
+				Type:       "object",
+				Properties: map[string]*Schema{},
+			},
+		},
+	}
+}
+
 // GitHubToolPrefix is reserved for tools provided by the GitHub MCP backend.
 // Kept here (not in internal/githubmcp) so the middleware package can recognize
 // them without importing the backend — avoids a build-tag dependency cycle.
@@ -211,7 +264,8 @@ const GitHubToolPrefix = "github_"
 func KnownTool(name string) bool {
 	switch name {
 	case ToolExecuteScript, ToolReadFile, ToolListDir, ToolWritePatch, ToolApplyCodePatch,
-		ToolSearchSyntax, ToolPinFile, ToolUnpinFile, ToolDispatchWorkerPool:
+		ToolSearchSyntax, ToolPinFile, ToolUnpinFile, ToolDispatchWorkerPool,
+		ToolMonitorDaemon, ToolStopDaemon, ToolListDaemons:
 		return true
 	}
 	return strings.HasPrefix(name, GitHubToolPrefix)
@@ -243,6 +297,12 @@ func Validate(tool string, args map[string]any) error {
 		return validateUnpinFile(args)
 	case ToolDispatchWorkerPool:
 		return validateDispatchWorkerPool(args)
+	case ToolMonitorDaemon:
+		return validateMonitorDaemon(args)
+	case ToolStopDaemon:
+		return validateStopDaemon(args)
+	case ToolListDaemons:
+		return nil
 	}
 	if strings.HasPrefix(tool, GitHubToolPrefix) {
 		return nil
@@ -428,6 +488,29 @@ func validateApplyCodePatch(args map[string]any) error {
 		if len(s) > 8*1024 {
 			return fmt.Errorf("%w: verify_command exceeds 8 KiB", ErrToolValidation)
 		}
+	}
+	return nil
+}
+
+func validateMonitorDaemon(args map[string]any) error {
+	command, err := reqString(args, "command")
+	if err != nil {
+		return err
+	}
+	if len(command) > 64*1024 {
+		return fmt.Errorf("%w: command exceeds 64 KiB", ErrToolValidation)
+	}
+	if v, ok := args["working_dir"]; ok {
+		if _, sok := v.(string); !sok {
+			return fmt.Errorf("%w: %q must be a string", ErrToolValidation, "working_dir")
+		}
+	}
+	return nil
+}
+
+func validateStopDaemon(args map[string]any) error {
+	if _, err := reqString(args, "daemon_id"); err != nil {
+		return err
 	}
 	return nil
 }

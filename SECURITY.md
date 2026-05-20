@@ -100,6 +100,33 @@ pre-cloned workspace repo as part of your trust boundary. See
 and [`docs/middleware.md`](./docs/middleware.md#dispatch_worker_pool--concurrent-worktree-migration-phase-15)
 for the design.
 
+## Host-side process privilege — `monitor_daemon`
+
+The optional `monitor_daemon` tool is a second feature that runs **outside
+the Docker sandbox boundary**: it starts an operator-authorized command as
+a detached process on the orchestrator host (`sh -c`, own process group)
+so a long-running daemon can outlive a one-shot container. Unlike the
+worker pool — which only ever runs the hardened `git` binary — this runs
+an *arbitrary* host command, so it carries a broader privilege.
+
+Mitigations:
+
+- **Opt-in and off by default** (`NOMADDEV_DAEMON_MONITOR_ENABLED=false`).
+  With the default, the `monitor_daemon` / `stop_daemon` / `list_daemons`
+  tools are absent from the catalogue and a direct `command.request`
+  for them is rejected.
+- **Always human-approved.** `monitor_daemon` is auto-added to the
+  approval allowlist; every launch requires an explicit `tool.approval`
+  grant.
+- **No orphans.** Every daemon is tracked per session and its whole
+  process group is killed when the session's connection ends.
+- **No resource caps.** A host daemon has no cgroup memory / CPU / pids
+  limit. A runaway daemon can exhaust the host — size the host and trust
+  the operators you grant this to accordingly.
+
+See [`docs/sandbox.md`](./docs/sandbox.md#daemon-monitoring-monitor_daemon)
+for the design.
+
 ## What we promise
 
 - We will not pursue legal action against good-faith researchers who

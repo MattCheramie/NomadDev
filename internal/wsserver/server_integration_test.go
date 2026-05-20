@@ -47,6 +47,7 @@ type testOpts struct {
 	ApprovalTimeout      time.Duration
 	SPA                  config.SPAConfig
 	HeartbeatInterval    time.Duration
+	DaemonEnabled        bool
 }
 
 func newTestServerFull(t *testing.T, opts testOpts) (*httptest.Server, *Server, session.Store, *auth.IssuerSigner) {
@@ -67,6 +68,7 @@ func newTestServerFull(t *testing.T, opts testOpts) (*httptest.Server, *Server, 
 			DefaultTimeout:    2 * time.Second,
 			MaxConcurrent:     opts.SandboxMaxConcurrent,
 			HeartbeatInterval: opts.HeartbeatInterval,
+			DaemonEnabled:     opts.DaemonEnabled,
 		},
 		Approval: config.ApprovalConfig{
 			Timeout: opts.ApprovalTimeout,

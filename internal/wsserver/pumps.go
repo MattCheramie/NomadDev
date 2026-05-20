@@ -72,6 +72,13 @@ func (s *Server) runConnection(
 	<-done
 
 	s.hub.Unregister(client)
+	// Kill every daemon this session started so no background process
+	// outlives the connection that launched it.
+	if s.daemons != nil {
+		if n := s.daemons.StopAllForSession(client.SID); n > 0 {
+			logger.Info("ws: stopped session daemons", "count", n)
+		}
+	}
 	_ = conn.Close()
 	logger.Info("ws: disconnected")
 }

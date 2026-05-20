@@ -127,4 +127,8 @@ type RuntimeConfig struct {
 	WorkerPoolMaxConcurrent int
 	WorkerPoolMaxTasks      int
 	WorkerPoolTaskTimeout   time.Duration
+
+	// DaemonMonitorEnabled signals whether the monitor_daemon family is in
+	// the catalogue. Mirrors config.SandboxConfig.DaemonEnabled.
+	DaemonMonitorEnabled bool
 }

@@ -498,6 +498,16 @@ func (s *Server) runToolCall(
 		return s.runWorkerPool(ctx, intentID, cmdEnv.ID, call, sess, client, logger)
 	}
 
+	// 3c. The monitor_daemon family manages long-lived host processes whose
+	//     output streams back asynchronously as system.log_event envelopes —
+	//     it cannot use the terminating ExecChunk channel the Dispatcher
+	//     returns. Handle it here, after approval, like the worker pool.
+	if call.Tool == middleware.ToolMonitorDaemon ||
+		call.Tool == middleware.ToolStopDaemon ||
+		call.Tool == middleware.ToolListDaemons {
+		return s.runDaemonToolCall(ctx, cmdEnv.ID, call, sess, client)
+	}
+
 	// 4. Dispatch. The dispatcher returns an ExecChunk channel mirroring the
 	//    sandbox.Runner contract; we reuse emitChunk / emitResult.
 	//

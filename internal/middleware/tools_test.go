@@ -294,3 +294,88 @@ func TestValidate_GitHubPrefix_Passthrough(t *testing.T) {
 		t.Fatalf("github_* nil-args passthrough returned %v, want nil", err)
 	}
 }
+
+func TestDaemonToolSpecs(t *testing.T) {
+	specs := DaemonToolSpecs()
+	if len(specs) != 3 {
+		t.Fatalf("DaemonToolSpecs len = %d, want 3", len(specs))
+	}
+	seen := map[string]bool{}
+	for _, s := range specs {
+		seen[s.Name] = true
+	}
+	for _, want := range []string{ToolMonitorDaemon, ToolStopDaemon, ToolListDaemons} {
+		if !seen[want] {
+			t.Errorf("DaemonToolSpecs missing %q", want)
+		}
+	}
+	// Daemon tools are opt-in: they must NOT be in the default catalogue.
+	for _, s := range DefaultTools() {
+		if s.Name == ToolMonitorDaemon || s.Name == ToolStopDaemon || s.Name == ToolListDaemons {
+			t.Errorf("DefaultTools must not include daemon tool %q", s.Name)
+		}
+	}
+}
+
+func TestKnownTool_Daemon(t *testing.T) {
+	for _, name := range []string{ToolMonitorDaemon, ToolStopDaemon, ToolListDaemons} {
+		if !KnownTool(name) {
+			t.Errorf("KnownTool(%q) = false, want true", name)
+		}
+	}
+}
+
+func TestIsMutatingBaseTool_Daemon(t *testing.T) {
+	if !IsMutatingBaseTool(ToolMonitorDaemon) {
+		t.Error("monitor_daemon should be mutating")
+	}
+	if !IsMutatingBaseTool(ToolStopDaemon) {
+		t.Error("stop_daemon should be mutating")
+	}
+	// list_daemons is read-only and stays available in audit mode.
+	if IsMutatingBaseTool(ToolListDaemons) {
+		t.Error("list_daemons should not be mutating")
+	}
+}
+
+func TestValidate_MonitorDaemon(t *testing.T) {
+	if err := Validate(ToolMonitorDaemon, map[string]any{"command": "npm run dev"}); err != nil {
+		t.Fatalf("Validate(monitor_daemon) OK case: %v", err)
+	}
+	if err := Validate(ToolMonitorDaemon, map[string]any{
+		"command": "npm run dev", "working_dir": "frontend",
+	}); err != nil {
+		t.Fatalf("Validate(monitor_daemon) with working_dir: %v", err)
+	}
+	if err := Validate(ToolMonitorDaemon, map[string]any{}); !errors.Is(err, ErrToolValidation) {
+		t.Fatalf("missing command: want ErrToolValidation, got %v", err)
+	}
+	if err := Validate(ToolMonitorDaemon, map[string]any{
+		"command": strings.Repeat("a", 64*1024+1),
+	}); !errors.Is(err, ErrToolValidation) {
+		t.Fatalf("oversize command: want ErrToolValidation, got %v", err)
+	}
+	if err := Validate(ToolMonitorDaemon, map[string]any{
+		"command": "ok", "working_dir": 42,
+	}); !errors.Is(err, ErrToolValidation) {
+		t.Fatalf("non-string working_dir: want ErrToolValidation, got %v", err)
+	}
+}
+
+func TestValidate_StopDaemon(t *testing.T) {
+	if err := Validate(ToolStopDaemon, map[string]any{"daemon_id": "01HX"}); err != nil {
+		t.Fatalf("Validate(stop_daemon) OK case: %v", err)
+	}
+	if err := Validate(ToolStopDaemon, map[string]any{}); !errors.Is(err, ErrToolValidation) {
+		t.Fatalf("missing daemon_id: want ErrToolValidation, got %v", err)
+	}
+}
+
+func TestValidate_ListDaemons(t *testing.T) {
+	if err := Validate(ToolListDaemons, nil); err != nil {
+		t.Fatalf("Validate(list_daemons) nil args: %v", err)
+	}
+	if err := Validate(ToolListDaemons, map[string]any{}); err != nil {
+		t.Fatalf("Validate(list_daemons) empty args: %v", err)
+	}
+}

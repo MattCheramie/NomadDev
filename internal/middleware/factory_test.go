@@ -154,6 +154,50 @@ func TestFactory_NoGitHub_DefaultsPreserved(t *testing.T) {
 	}
 }
 
+func TestFactory_DaemonMonitorEnabled_AppendsToolsAndGates(t *testing.T) {
+	svc, err := NewService(context.Background(), FactoryConfig{
+		Runtime:              RuntimeMock,
+		History:              history.NewMemoryStore(),
+		DaemonMonitorEnabled: true,
+	})
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	// DefaultTools (8) + DaemonToolSpecs (3).
+	if got := len(svc.AvailableTools()); got != 11 {
+		t.Fatalf("AvailableTools count = %d, want 11", got)
+	}
+	pa, ok := svc.Approver.(*PolicyApprover)
+	if !ok {
+		t.Fatalf("approver type = %T", svc.Approver)
+	}
+	if req, _ := pa.RequiresApproval(ToolMonitorDaemon, nil); !req {
+		t.Error("monitor_daemon not auto-gated")
+	}
+	// stop_daemon / list_daemons are not approval-gated.
+	if req, _ := pa.RequiresApproval(ToolStopDaemon, nil); req {
+		t.Error("stop_daemon should not be gated")
+	}
+	if req, _ := pa.RequiresApproval(ToolListDaemons, nil); req {
+		t.Error("list_daemons should not be gated")
+	}
+}
+
+func TestFactory_DaemonMonitorDisabled_NoTools(t *testing.T) {
+	svc, err := NewService(context.Background(), FactoryConfig{
+		Runtime: RuntimeMock,
+		History: history.NewMemoryStore(),
+	})
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	for _, s := range svc.AvailableTools() {
+		if s.Name == ToolMonitorDaemon || s.Name == ToolStopDaemon || s.Name == ToolListDaemons {
+			t.Fatalf("daemon tool %q present when DaemonMonitorEnabled=false", s.Name)
+		}
+	}
+}
+
 // fakeSandboxRunner satisfies sandbox.Runner and records the ExecRequest
 // it receives, so the dispatcher routing test can assert that
 // search_syntax is forwarded with MaxResultBytes plumbed through.

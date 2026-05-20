@@ -39,8 +39,12 @@ type Server struct {
 	readiness []ReadinessProbe    // probed by /readyz
 	runner    sandbox.Runner      // may be nil — see handleCommandRequest
 	mw        *middleware.Service // may be nil — see handleUserIntent
-	sem       chan struct{}       // optional cap on concurrent execs; nil = unlimited
-	intentSem chan struct{}       // optional cap on concurrent user.intent turns; nil = unlimited
+	// daemons tracks monitor_daemon background processes per session. nil when
+	// the feature is disabled (NOMADDEV_DAEMON_MONITOR_ENABLED=false); the
+	// daemon handlers treat a nil registry as "not enabled".
+	daemons   *sandbox.DaemonRegistry
+	sem       chan struct{} // optional cap on concurrent execs; nil = unlimited
+	intentSem chan struct{} // optional cap on concurrent user.intent turns; nil = unlimited
 	// workerPoolSem caps concurrent dispatch_worker_pool sub-dispatchers
 	// across all sessions. nil when the feature is disabled — runWorkerPool
 	// treats a nil semaphore as "not enabled".
@@ -123,6 +127,9 @@ func NewWithOptions(
 	}
 	if runner != nil && cfg.Sandbox.MaxConcurrent > 0 {
 		srv.sem = make(chan struct{}, cfg.Sandbox.MaxConcurrent)
+	}
+	if cfg.Sandbox.DaemonEnabled {
+		srv.daemons = sandbox.NewDaemonRegistry()
 	}
 	if mw != nil && mw.Config.MaxConcurrent > 0 {
 		srv.intentSem = make(chan struct{}, mw.Config.MaxConcurrent)

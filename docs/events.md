@@ -46,6 +46,7 @@ All messages — in both directions — are JSON envelopes with this shape:
 | `EventToolApprovalDenied`  | `tool.approval.denied`  | C→S | Refuse the pending tool call. Payload: `{reason}`. `correlation_id` = the `tool.approval.request.id`. |
 | `EventSystemErrorReport` | `system.error_report` | S→C | Sent to the Mobile Control Hub when the middleware exhausts `NOMADDEV_MAX_AUTORETRIES` auto-fix attempts on a failing tool call. Payload: `{tool, original_call_id, exit_code, error_code, error_message, stderr, attempt, max_attempts, escalated:true}`. `correlation_id` = the originating `user.intent.id`. The same payload shape (with `escalated:false`) is also stashed into `ToolResult.Output["error_report"]` and fed to the translator on each intermediate retry — see "Automated error recovery" below. |
 | `EventWorkerUpdate`   | `worker.update`     | S→C       | Sub-task lifecycle progress for a `dispatch_worker_pool` run (Phase 15). One emitted on each phase transition of every sub-task in the pool. Payload: `{pool_id, task_id, phase, branch, status, summary, error}`. `correlation_id` = the originating `user.intent.id` so the client attributes the pool to the right turn. See "Worker pool progress" below. |
+| `EventSystemLogEvent` | `system.log_event`  | S→C       | One stdout/stderr line from a background process started by the `monitor_daemon` tool. Payload: `{daemon_id, stream, seq, line, closed, exit_code, reason}`. `correlation_id` = the launching `command.request.id`. Emitted intermittently **after** that request's terminal `command.result` — see "Daemon log streaming" below. |
 
 ## Example payloads
 
@@ -234,3 +235,45 @@ A successful sub-task typically produces `started` → `finished` →
 `merged`; a task whose edits left its declared scope produces `started` →
 `finished` → `scope_violation` and its branch is retained for inspection
 rather than merged.
+
+## Daemon log streaming
+
+The `monitor_daemon` tool (opt-in, `NOMADDEV_DAEMON_MONITOR_ENABLED=true`)
+starts a long-running process on the orchestrator host and streams its
+output back as `system.log_event` envelopes. It **inverts the usual
+"`command.result` is terminal" invariant**: the launching `command.request`
+finishes immediately — its `command.result` reports `exit_code:0` once the
+daemon has spawned — and the daemon's output then trickles in afterward.
+A client must keep listening past `command.result` until it sees a
+`system.log_event` with `closed:true`.
+
+The `system.log_event` payload is `SystemLogEventPayload`:
+
+| Field       | Type    | Notes |
+|-------------|---------|-------|
+| `daemon_id` | string  | Stable id of the background process — pass it to `stop_daemon`. |
+| `stream`    | string  | `stdout` or `stderr`. Empty on the terminal frame. |
+| `seq`       | integer | Per-`(daemon_id, stream)` counter from 0; a gap means output was dropped. |
+| `line`      | string  | One log line, valid utf-8, no trailing newline. |
+| `closed`    | boolean | `true` on the single terminal frame — the daemon has exited or been killed. |
+| `exit_code` | integer | Process exit status, on the `closed` frame. |
+| `reason`    | string  | `exited` / `killed` on the terminal frame; `line_cap` (line truncated) or `buffer_overflow` (lines dropped) on a marker frame. |
+
+```
+client                          orchestrator
+──────                          ────────────
+command.request(id=C, tool=monitor_daemon) ──▶
+              ◀── tool.approval.request(correlation_id=C)
+tool.approval.granted ──────────────────────▶
+              ◀── command.chunk(correlation_id=C, "daemon started: D")
+              ◀── command.result(correlation_id=C, exit_code=0)
+                                (daemon runs in the background)
+              ◀── system.log_event(correlation_id=C, daemon_id=D, line="…")
+              ◀── system.log_event(correlation_id=C, daemon_id=D, line="…")
+                                ... until the daemon exits or is stopped ...
+              ◀── system.log_event(correlation_id=C, daemon_id=D, closed=true)
+```
+
+Every daemon a session starts is killed when that session's WebSocket
+connection ends. `stop_daemon` terminates one early; `list_daemons` reports
+the session's running daemons.
