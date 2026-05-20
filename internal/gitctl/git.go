@@ -22,8 +22,8 @@ type Repo struct {
 
 // Sentinel errors.
 var (
-	ErrNotARepo     = errors.New("gitctl: workspace is not a git repository")
-	ErrGitMissing   = errors.New("gitctl: git binary not found on PATH")
+	ErrNotARepo      = errors.New("gitctl: workspace is not a git repository")
+	ErrGitMissing    = errors.New("gitctl: git binary not found on PATH")
 	ErrMergeConflict = errors.New("gitctl: merge produced conflicts")
 )
 
@@ -77,7 +77,11 @@ func (r *Repo) run(ctx context.Context, dir string, args ...string) (stdout, std
 	}
 	fullArgs := append(hardened, args...)
 
-	cmd := exec.CommandContext(ctx, r.git, fullArgs...)
+	// G204: launching git is the entire purpose of this package. The binary
+	// is resolved via exec.LookPath, every arg is a fixed git subcommand plus
+	// hardening -c flags, and dynamic values (refs, ids, absolute worktree
+	// paths) are validated by the callers — see the package doc.
+	cmd := exec.CommandContext(ctx, r.git, fullArgs...) //nolint:gosec
 	cmd.Dir = dir
 	cmd.Env = append(os.Environ(),
 		"GIT_TERMINAL_PROMPT=0",

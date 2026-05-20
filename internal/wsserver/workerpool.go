@@ -10,8 +10,8 @@ import (
 	"time"
 
 	"github.com/mattcheramie/nomaddev/internal/event"
-	"github.com/mattcheramie/nomaddev/internal/githubmcp"
 	"github.com/mattcheramie/nomaddev/internal/gitctl"
+	"github.com/mattcheramie/nomaddev/internal/githubmcp"
 	"github.com/mattcheramie/nomaddev/internal/history"
 	"github.com/mattcheramie/nomaddev/internal/hub"
 	"github.com/mattcheramie/nomaddev/internal/metrics"

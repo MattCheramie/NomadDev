@@ -28,8 +28,7 @@ func (t *poolScriptTranslator) Stream(
 ) (<-chan middleware.AssistantEvent, middleware.ResumeFunc, error) {
 	stages := t.scripts[in.UserText]
 	idx := 0
-	var emit func() <-chan middleware.AssistantEvent
-	emit = func() <-chan middleware.AssistantEvent {
+	emit := func() <-chan middleware.AssistantEvent {
 		cur := idx
 		idx++
 		out := make(chan middleware.AssistantEvent, 8)
