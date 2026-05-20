@@ -132,6 +132,19 @@ and how to switch between the mock and Docker runners.
     sees a clear "switch to deepseek-vl2" diagnostic instead of an
     opaque upstream-provider 4xx. Unknown models pass through —
     upstream surfaces any model-specific error.
+- [x] Runtime model switching from the mobile UI. The `hello` envelope
+  advertises the active `provider`, the current `model`, and the
+  provider's `available_models` catalogue (from
+  [`middleware.KnownModels()`](./internal/middleware/models.go)); the
+  mobile Settings screen renders a picker from it. Tapping a row sends a
+  `user.command{action:"set_model"}` envelope — the orchestrator
+  validates the model against the active provider's catalogue, stores a
+  per-session (per-SID) override, and the next `user.intent` picks it up
+  via `TurnInput.Model`. `reset_history` clears the override; the client
+  re-applies its remembered choice on reconnect by reading
+  `hello.model`. Switching the *provider itself* (e.g. openai →
+  anthropic) stays a startup-only knob — it needs different credentials
+  and a different build tag.
 
 Translator + dispatcher + approval gate live at
 [`internal/middleware/`](./internal/middleware/); filesystem-only tools live
@@ -184,7 +197,7 @@ Tailscale IP that exposes `/ws` also serves the UI at `/`. Three routes
 - [x] Prometheus `/metrics` endpoint covering WS, replay, sandbox, middleware turns, and LLM token usage.
 - [x] Multi-stage `Dockerfile` (distroless/static, pure-Go SQLite, no cgo) + `docker-compose.yml`.
 - [x] Hardened systemd unit + non-destructive installer script.
-- [x] Mobile offline outbox + interactive Settings (Reset history, Force reconnect).
+- [x] Mobile offline outbox + interactive Settings (Reset history, Force reconnect, Model picker).
 - [x] Tag-driven release workflow → binaries + multi-arch GHCR image.
 
 mTLS / per-cert subject mapping is an explicit non-goal for this round —
