@@ -176,6 +176,8 @@ func NewService(ctx context.Context, c FactoryConfig) (*Service, error) {
 
 	approver := NewPolicyApprover(c.ApprovalRequiredTools, c.ApprovalAutoGrant, c.ApprovalTimeout)
 	dispatcher := NewCompositeDispatcher(c.Sandbox, c.FSOps)
+	pins := history.NewReferenceBuffer()
+	dispatcher.Pins = pins
 	tools := DefaultTools()
 
 	if c.GitHub != nil {
@@ -199,6 +201,7 @@ func NewService(ctx context.Context, c FactoryConfig) (*Service, error) {
 		History:                 c.History,
 		Tools:                   tools,
 		FSOps:                   c.FSOps,
+		Pins:                    pins,
 		IsDestructiveGitHubTool: c.IsDestructiveGitHubTool,
 		Config: RuntimeConfig{
 			SystemPrompt:       c.SystemPrompt,

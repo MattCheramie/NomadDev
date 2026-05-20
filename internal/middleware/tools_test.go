@@ -8,8 +8,8 @@ import (
 
 func TestTools_DefaultTools_AllEntries(t *testing.T) {
 	specs := DefaultTools()
-	if len(specs) != 6 {
-		t.Fatalf("want 6 tools, got %d", len(specs))
+	if len(specs) != 8 {
+		t.Fatalf("want 8 tools, got %d", len(specs))
 	}
 	seen := map[string]bool{}
 	for _, s := range specs {
@@ -18,6 +18,7 @@ func TestTools_DefaultTools_AllEntries(t *testing.T) {
 	for _, want := range []string{
 		ToolExecuteScript, ToolReadFile, ToolListDir,
 		ToolWritePatch, ToolApplyCodePatch, ToolSearchSyntax,
+		ToolPinFile, ToolUnpinFile,
 	} {
 		if !seen[want] {
 			t.Errorf("DefaultTools missing %q", want)
@@ -71,6 +72,30 @@ func TestValidate_ReadFile_MissingPath(t *testing.T) {
 func TestValidate_ListDir_OK(t *testing.T) {
 	if err := Validate(ToolListDir, map[string]any{"path": "sub"}); err != nil {
 		t.Fatalf("Validate: %v", err)
+	}
+}
+
+func TestValidate_PinFile(t *testing.T) {
+	if err := Validate(ToolPinFile, map[string]any{"path": "core.go"}); err != nil {
+		t.Fatalf("Validate(pin_file) OK case: %v", err)
+	}
+	if err := Validate(ToolPinFile, map[string]any{}); !errors.Is(err, ErrToolValidation) {
+		t.Fatalf("Validate(pin_file) missing path: want ErrToolValidation, got %v", err)
+	}
+}
+
+func TestValidate_UnpinFile(t *testing.T) {
+	if err := Validate(ToolUnpinFile, map[string]any{"path": "core.go"}); err != nil {
+		t.Fatalf("Validate(unpin_file) OK case: %v", err)
+	}
+	if err := Validate(ToolUnpinFile, map[string]any{}); !errors.Is(err, ErrToolValidation) {
+		t.Fatalf("Validate(unpin_file) missing path: want ErrToolValidation, got %v", err)
+	}
+}
+
+func TestKnownTool_PinUnpin(t *testing.T) {
+	if !KnownTool(ToolPinFile) || !KnownTool(ToolUnpinFile) {
+		t.Fatal("pin_file / unpin_file rejected by KnownTool")
 	}
 }
 

@@ -169,6 +169,14 @@ func (s *Server) runIntent(
 	}
 
 	systemPrompt := s.mw.Config.SystemPrompt
+	// Inject any pinned reference files at the very top of the system prompt.
+	// They live outside the event log, so the history compactor can never
+	// summarize them away during a long execution chain.
+	if s.mw.Pins != nil {
+		if pinned := s.mw.Pins.Render(sess.SID); pinned != "" {
+			systemPrompt = pinned + systemPrompt
+		}
+	}
 	if p.Mode == event.UserIntentModeAudit {
 		systemPrompt = appendAuditInstruction(systemPrompt)
 	}
@@ -736,6 +744,11 @@ func (s *Server) handleUserCommand(
 			logger.Warn("user.command: reset_history failed", "err", err)
 			s.ackUserCommand(sess, client, env.ID, p.Action, "internal", err.Error(), "")
 			return
+		}
+		// A history reset wipes the session's context; pinned reference
+		// files are context too, so drop them alongside the event log.
+		if s.mw.Pins != nil {
+			s.mw.Pins.Reset(sess.SID)
 		}
 		// Per-session model selection is bound to the conversation; clearing
 		// history takes the picker back to the server default too.

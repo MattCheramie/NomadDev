@@ -26,6 +26,11 @@ type Service struct {
 	// builds the tool.approval.request envelope. Optional; nil when the
 	// orchestrator is wired without an fsops backend.
 	FSOps *fsops.Engine
+	// Pins is the process-local persistent reference buffer backing the
+	// pin_file / unpin_file tools. The same instance is wired into the
+	// CompositeDispatcher; the wsserver layer reads it to inject pinned
+	// files at the top of the system prompt every turn.
+	Pins *history.ReferenceBuffer
 	// IsDestructiveGitHubTool, when non-nil, classifies a github_* tool as
 	// mutating. Wired by NewService from FactoryConfig so the middleware
 	// package can stay free of the githubmcp build tag. Used by audit mode

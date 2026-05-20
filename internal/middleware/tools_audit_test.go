@@ -12,7 +12,7 @@ func TestAuditMode_IsMutatingBaseTool(t *testing.T) {
 			t.Errorf("IsMutatingBaseTool(%q) = false, want true", name)
 		}
 	}
-	readOnly := []string{ToolReadFile, ToolListDir, ToolSearchSyntax}
+	readOnly := []string{ToolReadFile, ToolListDir, ToolSearchSyntax, ToolPinFile, ToolUnpinFile}
 	for _, name := range readOnly {
 		if IsMutatingBaseTool(name) {
 			t.Errorf("IsMutatingBaseTool(%q) = true, want false", name)
@@ -44,8 +44,10 @@ func TestAuditMode_AvailableToolsFor_StripsMutators(t *testing.T) {
 	want := []string{
 		"github_get_file_contents",
 		ToolListDir,
+		ToolPinFile,
 		ToolReadFile,
 		ToolSearchSyntax,
+		ToolUnpinFile,
 	}
 	sort.Strings(want)
 	if len(gotNames) != len(want) {

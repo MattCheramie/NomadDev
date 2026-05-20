@@ -87,9 +87,9 @@ func TestFactory_GitHubBackend_WiresDispatcherToolsAndApproval(t *testing.T) {
 		t.Fatalf("NewService: %v", err)
 	}
 
-	// Tools merged: DefaultTools (6) + github tools (3).
-	if got := len(svc.AvailableTools()); got != 9 {
-		t.Fatalf("AvailableTools count = %d, want 9", got)
+	// Tools merged: DefaultTools (8) + github tools (3).
+	if got := len(svc.AvailableTools()); got != 11 {
+		t.Fatalf("AvailableTools count = %d, want 11", got)
 	}
 
 	// Dispatcher routes github_* to the fake caller.
@@ -139,8 +139,8 @@ func TestFactory_NoGitHub_DefaultsPreserved(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewService: %v", err)
 	}
-	if got := len(svc.AvailableTools()); got != 6 {
-		t.Fatalf("AvailableTools count = %d, want 6 (DefaultTools)", got)
+	if got := len(svc.AvailableTools()); got != 8 {
+		t.Fatalf("AvailableTools count = %d, want 8 (DefaultTools)", got)
 	}
 	cd := svc.Dispatcher.(*CompositeDispatcher)
 	if cd.GitHub != nil {
@@ -186,6 +186,26 @@ func TestDispatcher_RoutesSearchSyntaxToSandbox(t *testing.T) {
 	}
 	if runner.last.MaxResultBytes != 4096 {
 		t.Errorf("runner.last.MaxResultBytes = %d, want 4096", runner.last.MaxResultBytes)
+	}
+}
+
+func TestFactory_WiresReferenceBuffer(t *testing.T) {
+	svc, err := NewService(context.Background(), FactoryConfig{
+		Runtime: RuntimeMock,
+		History: history.NewMemoryStore(),
+	})
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	if svc.Pins == nil {
+		t.Fatal("Service.Pins not constructed")
+	}
+	cd, ok := svc.Dispatcher.(*CompositeDispatcher)
+	if !ok {
+		t.Fatalf("dispatcher type = %T, want *CompositeDispatcher", svc.Dispatcher)
+	}
+	if cd.Pins != svc.Pins {
+		t.Fatal("dispatcher and Service hold different reference buffers")
 	}
 }
 

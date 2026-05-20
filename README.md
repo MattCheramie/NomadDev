@@ -67,6 +67,7 @@ and how to switch between the mock and Docker runners.
 *Objective: Standardize natural language into actionable system commands.*
 - [x] Integrate the Gemini API via Google AI Studio.
 - [x] Define JSON schemas for core system tools (e.g., `execute_script`, `read_file`, `write_patch`, `apply_code_patch`, `search_syntax`).
+- [x] Persistent reference buffer: `pin_file` / `unpin_file` tools store raw file contents in an in-memory, per-session map in `internal/history` — kept out of the event log so the summarization compactor can't drop them — and `LoadWindow`'s caller injects them at the top of the system prompt every turn, keeping critical architectural files in context through long execution chains.
 - [x] Build the loop that receives user intent, queries the LLM, and captures the resulting Function Call.
 - [x] Map the generated Function Calls directly to the Go Sandbox Runner from Phase 3.
 - [x] Format execution results back into JSON for the LLM to interpret.
