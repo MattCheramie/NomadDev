@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
 	"os/exec"
 	"sync"
 	"sync/atomic"
@@ -42,6 +43,10 @@ const (
 	// blocking the pipe would deadlock the child. Mirrors the per-client
 	// bufferAndSend drop policy.
 	daemonChanBuf = 256
+	// daemonDrainGrace is how long the reaper waits for the scanners to drain
+	// after the process exits before force-closing the pipe read ends — a
+	// grandchild that inherited the pipe must not be able to wedge the reaper.
+	daemonDrainGrace = 2 * time.Second
 	// daemonStopGrace is how long Stop waits after SIGTERM before SIGKILL.
 	daemonStopGrace = 5 * time.Second
 )
@@ -93,17 +98,34 @@ func StartDaemon(id, sessionID, command, workingDir string) (*Daemon, error) {
 	// and so Stop can signal the whole group — children included.
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 
-	stdout, err := cmd.StdoutPipe()
+	// Use our own os.Pipe pairs rather than cmd.StdoutPipe: cmd.Wait closes a
+	// StdoutPipe the moment the process exits, which races a fast-exiting
+	// daemon's last lines away before the scanner reads them. cmd.Wait does
+	// not touch a plain *os.File, so the scanners drain reliably.
+	outR, outW, err := os.Pipe()
 	if err != nil {
 		return nil, fmt.Errorf("monitor_daemon: stdout pipe: %w", err)
 	}
-	stderr, err := cmd.StderrPipe()
+	errR, errW, err := os.Pipe()
 	if err != nil {
+		_ = outR.Close()
+		_ = outW.Close()
 		return nil, fmt.Errorf("monitor_daemon: stderr pipe: %w", err)
 	}
+	cmd.Stdout = outW
+	cmd.Stderr = errW
+
 	if err := cmd.Start(); err != nil {
+		for _, f := range []*os.File{outR, outW, errR, errW} {
+			_ = f.Close()
+		}
 		return nil, fmt.Errorf("monitor_daemon: start: %w", err)
 	}
+	// The child holds its own dup of each write end; drop the parent's copy
+	// so the read end sees EOF once the child (and any fd-inheriting
+	// grandchild) has exited.
+	_ = outW.Close()
+	_ = errW.Close()
 
 	lines := make(chan LogLine, daemonChanBuf)
 	d := &Daemon{
@@ -119,16 +141,29 @@ func StartDaemon(id, sessionID, command, workingDir string) (*Daemon, error) {
 
 	var scanWG sync.WaitGroup
 	scanWG.Add(2)
-	go scanPipe(stdout, StreamStdout, lines, &scanWG)
-	go scanPipe(stderr, StreamStderr, lines, &scanWG)
+	go scanPipe(outR, StreamStdout, lines, &scanWG)
+	go scanPipe(errR, StreamStderr, lines, &scanWG)
 
 	go func() {
-		// Wait first: it reaps the process and returns even when a
-		// backgrounded grandchild still holds the stdout pipe open (it also
-		// closes the pipes, which unblocks the scanners). Then join the
-		// scanners so the terminal frame lands after the last output line.
 		waitErr := cmd.Wait()
-		scanWG.Wait()
+		// cmd.Wait reaped the process but did not close our read ends, so the
+		// scanners keep draining buffered output. Give them a short grace,
+		// then force the read ends closed so a grandchild that inherited the
+		// pipe cannot wedge this reaper.
+		scanDone := make(chan struct{})
+		go func() {
+			scanWG.Wait()
+			close(scanDone)
+		}()
+		select {
+		case <-scanDone:
+		case <-time.After(daemonDrainGrace):
+			_ = outR.Close()
+			_ = errR.Close()
+			<-scanDone
+		}
+		_ = outR.Close()
+		_ = errR.Close()
 
 		reason := "exited"
 		if d.stopped.Load() {
