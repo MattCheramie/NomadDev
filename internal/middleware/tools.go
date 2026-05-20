@@ -41,7 +41,7 @@ const (
 // reference buffer, so they stay available in audit mode.
 func IsMutatingBaseTool(name string) bool {
 	switch name {
-	case ToolExecuteScript, ToolWritePatch, ToolApplyCodePatch:
+	case ToolExecuteScript, ToolWritePatch, ToolApplyCodePatch, ToolDispatchWorkerPool:
 		return true
 	}
 	return false
@@ -211,7 +211,7 @@ const GitHubToolPrefix = "github_"
 func KnownTool(name string) bool {
 	switch name {
 	case ToolExecuteScript, ToolReadFile, ToolListDir, ToolWritePatch, ToolApplyCodePatch,
-		ToolSearchSyntax, ToolPinFile, ToolUnpinFile:
+		ToolSearchSyntax, ToolPinFile, ToolUnpinFile, ToolDispatchWorkerPool:
 		return true
 	}
 	return strings.HasPrefix(name, GitHubToolPrefix)
@@ -241,6 +241,8 @@ func Validate(tool string, args map[string]any) error {
 		return validatePinFile(args)
 	case ToolUnpinFile:
 		return validateUnpinFile(args)
+	case ToolDispatchWorkerPool:
+		return validateDispatchWorkerPool(args)
 	}
 	if strings.HasPrefix(tool, GitHubToolPrefix) {
 		return nil

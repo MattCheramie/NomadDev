@@ -45,6 +45,7 @@ All messages — in both directions — are JSON envelopes with this shape:
 | `EventToolApprovalGranted` | `tool.approval.granted` | C→S | Allow the pending tool call. `correlation_id` = the `tool.approval.request.id`. Empty payload. |
 | `EventToolApprovalDenied`  | `tool.approval.denied`  | C→S | Refuse the pending tool call. Payload: `{reason}`. `correlation_id` = the `tool.approval.request.id`. |
 | `EventSystemErrorReport` | `system.error_report` | S→C | Sent to the Mobile Control Hub when the middleware exhausts `NOMADDEV_MAX_AUTORETRIES` auto-fix attempts on a failing tool call. Payload: `{tool, original_call_id, exit_code, error_code, error_message, stderr, attempt, max_attempts, escalated:true}`. `correlation_id` = the originating `user.intent.id`. The same payload shape (with `escalated:false`) is also stashed into `ToolResult.Output["error_report"]` and fed to the translator on each intermediate retry — see "Automated error recovery" below. |
+| `EventWorkerUpdate`   | `worker.update`     | S→C       | Sub-task lifecycle progress for a `dispatch_worker_pool` run (Phase 15). One emitted on each phase transition of every sub-task in the pool. Payload: `{pool_id, task_id, phase, branch, status, summary, error}`. `correlation_id` = the originating `user.intent.id` so the client attributes the pool to the right turn. See "Worker pool progress" below. |
 
 ## Example payloads
 
@@ -205,3 +206,31 @@ user.intent(id=U) ─────────▶
 
 `MaxAutoRetries=0` disables the loop — the first retryable failure
 escalates immediately.
+
+## Worker pool progress
+
+When the LLM calls `dispatch_worker_pool` (Phase 15 — see
+[`docs/middleware.md`](middleware.md#dispatch_worker_pool--concurrent-worktree-migration-phase-15)),
+the orchestrator runs one headless sub-dispatcher per sub-task in its own
+git worktree. `worker.update` envelopes stream the lifecycle of each
+sub-task so the client can render per-task progress while the pool runs.
+
+A `worker.update` is emitted on each phase transition of each sub-task;
+its `correlation_id` is the originating `user.intent.id`, so all updates
+for one pool group under the same turn. The payload is
+`WorkerUpdatePayload`:
+
+| Field      | Type   | Notes |
+|------------|--------|-------|
+| `pool_id`  | string | Identifier for the whole `dispatch_worker_pool` run. Stable across every update in the pool. |
+| `task_id`  | string | The sub-task's `id` from the `tasks` array — which task this update is about. |
+| `phase`    | string | One of `started` (worktree created, sub-dispatcher launched), `finished` (sub-dispatcher's turn loop completed), `merged` (branch merged back into the primary branch), or `scope_violation` (the task's changed files escaped its declared `paths`; the branch is kept, not merged). |
+| `branch`   | string | The temporary branch name for this sub-task's worktree. |
+| `status`   | string | Outcome string for the sub-task (e.g. `success`, `failed`, `scope_violation`, `canceled`). |
+| `summary`  | string | Short human-readable summary of what the sub-task did. |
+| `error`    | string | Empty on success; the failure reason otherwise. |
+
+A successful sub-task typically produces `started` → `finished` →
+`merged`; a task whose edits left its declared scope produces `started` →
+`finished` → `scope_violation` and its branch is retained for inspection
+rather than merged.

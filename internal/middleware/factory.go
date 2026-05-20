@@ -71,6 +71,14 @@ type FactoryConfig struct {
 	// NOMADDEV_GITHUB_MAX_RESULT_BYTES in cmd/orchestrator/main.go.
 	MaxResultBytes int
 
+	// WorkerPool* configure the dispatch_worker_pool tool. WorkerPoolEnabled
+	// gates whether the tool is appended to the catalogue at all; the rest
+	// bound a pool's concurrency, task count, and per-sub-dispatcher timeout.
+	WorkerPoolEnabled       bool
+	WorkerPoolMaxConcurrent int
+	WorkerPoolMaxTasks      int
+	WorkerPoolTaskTimeout   time.Duration
+
 	// Wired-in collaborators.
 	Sandbox sandbox.Runner
 	FSOps   *fsops.Engine
@@ -180,6 +188,15 @@ func NewService(ctx context.Context, c FactoryConfig) (*Service, error) {
 	dispatcher.Pins = pins
 	tools := DefaultTools()
 
+	// dispatch_worker_pool is opt-in: it is only appended to the catalogue
+	// when the operator enabled it. It is always approval-gated — the launch
+	// is a single human-approved boundary — so it is added to the approver's
+	// required set regardless of NOMADDEV_APPROVAL_REQUIRED_TOOLS.
+	if c.WorkerPoolEnabled {
+		tools = append(tools, WorkerPoolSpec())
+		approver.AddRequired(ToolDispatchWorkerPool)
+	}
+
 	if c.GitHub != nil {
 		dispatcher.GitHub = c.GitHub
 		tools = append(tools, c.GitHubTools...)
@@ -214,6 +231,11 @@ func NewService(ctx context.Context, c FactoryConfig) (*Service, error) {
 			GateDirectCommands: c.GateDirectCommands,
 			MaxAutoRetries:     c.MaxAutoRetries,
 			MaxResultBytes:     c.MaxResultBytes,
+
+			WorkerPoolEnabled:       c.WorkerPoolEnabled,
+			WorkerPoolMaxConcurrent: c.WorkerPoolMaxConcurrent,
+			WorkerPoolMaxTasks:      c.WorkerPoolMaxTasks,
+			WorkerPoolTaskTimeout:   c.WorkerPoolTaskTimeout,
 		},
 	}, nil
 }
