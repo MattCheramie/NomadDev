@@ -24,9 +24,10 @@ All messages — in both directions — are JSON envelopes with this shape:
 
 | Constant              | Wire string         | Direction | Purpose |
 |-----------------------|---------------------|-----------|---------|
-| `EventHello`          | `hello`             | S→C       | Sent immediately after upgrade. |
+| `EventHello`          | `hello`             | S→C       | Sent immediately after upgrade. Payload: `{session_id, server_time, protocol_version, provider?, model?, available_models?}`. The last three are present only when a non-mock middleware backend is wired: `provider` is the active runtime, `model` is the model currently in effect (a per-session `set_model` override if one is active for the SID, else the server default), and `available_models` is the provider's switchable catalogue. All three are omitted on mock / no-middleware deploys. |
 | `EventClientHello`    | `client.hello`      | C→S       | Reconnect handshake with `last_event_id`. |
-| `EventAck`            | `ack`               | S→C       | Acknowledges a received event. |
+| `EventAck`            | `ack`               | S→C       | Acknowledges a `user.command`. Payload: `{action, error?, message?, model?}`. `error` is empty on success and otherwise an error code (`bad_envelope`, `not_implemented`, `internal`, `unknown_action`). `model` echoes the now-active model on a successful `set_model`. `correlation_id` = the originating `user.command.id`. |
+| `EventUserCommand`    | `user.command`      | C→S       | Client-driven session control that is not a natural-language turn. Payload: `{action, model?}`. `action == "reset_history"` wipes the SID's conversation history (and clears any model override); `action == "set_model"` switches the active LLM model for the session — `model` is required and validated against the active provider's `available_models` catalogue, unknown values come back as a `bad_envelope` ack. The server replies with exactly one `ack`. |
 | `EventPing`           | `ping`              | both      | App-layer heartbeat. |
 | `EventPong`           | `pong`              | both      | Reply to `ping`. |
 | `EventError`          | `error`             | S→C       | Structured error with `code` + `message`. |
@@ -49,12 +50,21 @@ All messages — in both directions — are JSON envelopes with this shape:
 
 **hello (S→C):**
 ```json
-{"id":"01HX...","type":"hello","ts":"...","payload":{"session_id":"sess-1","server_time":"...","protocol_version":1}}
+{"id":"01HX...","type":"hello","ts":"...","payload":{"session_id":"sess-1","server_time":"...","protocol_version":1,"provider":"openai","model":"gpt-4o-mini","available_models":["gpt-4o","gpt-4o-mini","o3-mini"]}}
 ```
+
+A mock / no-middleware orchestrator omits the `provider` / `model` /
+`available_models` fields entirely.
 
 **client.hello (C→S):**
 ```json
 {"id":"01HX...","type":"client.hello","ts":"...","payload":{"last_event_id":"01HX..."}}
+```
+
+**user.command + ack (C→S, S→C):**
+```json
+{"id":"01HX-cmd","type":"user.command","ts":"...","payload":{"action":"set_model","model":"gpt-4o"}}
+{"id":"01HX-ack","type":"ack","ts":"...","correlation_id":"01HX-cmd","payload":{"action":"set_model","model":"gpt-4o","message":"model selection updated"}}
 ```
 
 **ping / pong:**

@@ -90,6 +90,27 @@ counts the orchestrator reports on `nomaddev_llm_tokens_total{type=…}`.
 `reset()` clears it alongside the rest of the per-session state, so a
 fresh session always starts at zero.
 
+### Model picker
+
+The Settings drawer renders a "Model" section when the `hello` envelope
+carried a `provider` and a non-empty `available_models` catalogue —
+mock / no-middleware orchestrators omit those fields, so the section
+stays hidden. Each catalogue entry is a tappable row; the active model
+(`state.currentModel`) shows a checkmark.
+
+Tapping a row sends `user.command{action:"set_model", model}` and sets
+`state.pendingModel` for an optimistic checkmark while the ack is in
+flight. The `ack` reducer resolves it: a clean ack promotes
+`pendingModel` to `currentModel`; a failed ack (`bad_envelope` —
+e.g. an unknown model) clears `pendingModel` and records `lastError`.
+Tapping the row already in effect is a no-op — no wire round-trip.
+
+`provider` / `currentModel` / `availableModels` are populated from
+every `hello`, so on reconnect the picker reflects whatever model the
+server reports — including a `set_model` override the orchestrator is
+still holding for the SID. `reset()` does **not** clear them: the
+catalogue is a property of the connection, not the conversation.
+
 `sandbox.heartbeat` envelopes update `ToolCall.elapsedMs` without
 touching `lines`. The `LiveTerminal` component
 (`mobile/src/components/LiveTerminal.tsx`) replaces the old
