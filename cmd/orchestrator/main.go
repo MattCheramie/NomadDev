@@ -537,6 +537,7 @@ func buildMiddleware(
 		WorkerPoolMaxTasks:      cfg.Middleware.WorkerPoolMaxTasks,
 		WorkerPoolTaskTimeout:   cfg.Middleware.WorkerPoolTaskTimeout,
 		DaemonMonitorEnabled:    cfg.Sandbox.DaemonEnabled,
+		DocFetchAllowedDomains:  cfg.Middleware.DocFetchAllowedDomains,
 		Sandbox:                 runner,
 		FSOps:                   fs,
 		History:                 store,

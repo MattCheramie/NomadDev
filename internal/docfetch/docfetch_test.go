@@ -46,10 +46,10 @@ func TestIsNonPublicIP(t *testing.T) {
 
 func TestIsBlockedIP_Loopback(t *testing.T) {
 	lo := net.ParseIP("127.0.0.1")
-	if !New().isBlockedIP(lo) {
+	if !New(Config{}).isBlockedIP(lo) {
 		t.Error("production fetcher must block loopback")
 	}
-	if newFetcher(FetchTimeout, true).isBlockedIP(lo) {
+	if newFetcher(FetchTimeout, true, Config{}).isBlockedIP(lo) {
 		t.Error("loopback-allowed fetcher must permit loopback")
 	}
 }
@@ -62,7 +62,7 @@ func TestFetch_HTML(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	res, err := newFetcher(5*time.Second, true).Fetch(context.Background(), srv.URL)
+	res, err := newFetcher(5*time.Second, true, Config{}).Fetch(context.Background(), srv.URL)
 	if err != nil {
 		t.Fatalf("Fetch: %v", err)
 	}
@@ -84,7 +84,7 @@ func TestFetch_PlainText(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	res, err := newFetcher(time.Second, true).Fetch(context.Background(), srv.URL)
+	res, err := newFetcher(time.Second, true, Config{}).Fetch(context.Background(), srv.URL)
 	if err != nil {
 		t.Fatalf("Fetch: %v", err)
 	}
@@ -101,7 +101,7 @@ func TestFetch_SizeCap(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	res, err := newFetcher(10*time.Second, true).Fetch(context.Background(), srv.URL)
+	res, err := newFetcher(10*time.Second, true, Config{}).Fetch(context.Background(), srv.URL)
 	if err != nil {
 		t.Fatalf("Fetch: %v", err)
 	}
@@ -120,7 +120,7 @@ func TestFetch_Timeout(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	_, err := newFetcher(50*time.Millisecond, true).Fetch(context.Background(), srv.URL)
+	_, err := newFetcher(50*time.Millisecond, true, Config{}).Fetch(context.Background(), srv.URL)
 	if err == nil {
 		t.Fatal("Fetch: want timeout error, got nil")
 	}
@@ -130,7 +130,7 @@ func TestFetch_Timeout(t *testing.T) {
 }
 
 func TestFetch_BadScheme(t *testing.T) {
-	f := newFetcher(time.Second, true)
+	f := newFetcher(time.Second, true, Config{})
 	for _, u := range []string{"file:///etc/passwd", "ftp://host/x", "gopher://host"} {
 		if _, err := f.Fetch(context.Background(), u); !errors.Is(err, ErrBadScheme) {
 			t.Errorf("Fetch(%q) err = %v, want ErrBadScheme", u, err)
@@ -146,7 +146,7 @@ func TestFetch_BlockedTarget(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	_, err := New().Fetch(context.Background(), srv.URL)
+	_, err := New(Config{}).Fetch(context.Background(), srv.URL)
 	if !errors.Is(err, ErrBlockedTarget) {
 		t.Fatalf("Fetch loopback err = %v, want ErrBlockedTarget", err)
 	}
@@ -159,7 +159,7 @@ func TestFetch_UnsupportedType(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	_, err := newFetcher(time.Second, true).Fetch(context.Background(), srv.URL)
+	_, err := newFetcher(time.Second, true, Config{}).Fetch(context.Background(), srv.URL)
 	if !errors.Is(err, ErrUnsupportedType) {
 		t.Fatalf("Fetch err = %v, want ErrUnsupportedType", err)
 	}
@@ -171,7 +171,7 @@ func TestFetch_HTTPErrorStatus(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	if _, err := newFetcher(time.Second, true).Fetch(context.Background(), srv.URL); err == nil {
+	if _, err := newFetcher(time.Second, true, Config{}).Fetch(context.Background(), srv.URL); err == nil {
 		t.Fatal("Fetch: want error on HTTP 404, got nil")
 	}
 }
@@ -187,7 +187,7 @@ func TestFetch_FollowsRedirect(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	res, err := newFetcher(2*time.Second, true).Fetch(context.Background(), srv.URL+"/start")
+	res, err := newFetcher(2*time.Second, true, Config{}).Fetch(context.Background(), srv.URL+"/start")
 	if err != nil {
 		t.Fatalf("Fetch: %v", err)
 	}

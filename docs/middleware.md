@@ -231,7 +231,7 @@ envelope on stdout:
 }
 ```
 
-Four guards make it safe to leave un-gated:
+Five guards make it safe to leave un-gated:
 
 1. **SSRF guard.** Only `http`/`https` URLs are accepted. The HTTP client's
    dialer carries a `Control` hook that inspects the *resolved* IP for every
@@ -239,21 +239,32 @@ Four guards make it safe to leave un-gated:
    private, RFC4193 unique-local, link-local, RFC6598 carrier-grade-NAT and
    unspecified/multicast addresses. Because the check runs at dial time on the
    real IP, DNS rebinding cannot slip past it.
-2. **Strict 10 s timeout.** A single `context` deadline bounds connect, TLS,
+2. **Exfiltration screen.** Before any request leaves the host, the URL is
+   inspected for data a crafted URL would smuggle out (see
+   [`exfil.go`](../internal/docfetch/exfil.go)): credentials in the userinfo
+   component, values matching a known secret format (AWS / GitHub / Google /
+   Slack / OpenAI keys, JWTs, PEM private keys), query parameters named like a
+   credential, and high-entropy base64/hex tokens in the path, query or
+   fragment. A hit refuses the fetch with `ErrSuspiciousURL`. Operators can add
+   a hard control on top: `NOMADDEV_DOC_FETCH_ALLOWED_DOMAINS` pins fetches to
+   an allowlist of documentation domains (and their subdomains, enforced on
+   every redirect hop too) — a non-listed host is refused, and a listed host is
+   trusted enough to skip the content scan.
+3. **Strict 10 s timeout.** A single `context` deadline bounds connect, TLS,
    headers and body read; the redirect chain is capped at 5 hops.
-3. **2 MB response cap.** The body is read through an `io.LimitReader`; bytes
+4. **2 MB response cap.** The body is read through an `io.LimitReader`; bytes
    past the cap are dropped and `truncated` is set so the model knows the
    payload is partial.
-4. **HTML stripped to text.** `text/html` is parsed with
+5. **HTML stripped to text.** `text/html` is parsed with
    `golang.org/x/net/html`; `script`, `style`, `nav`, `footer`, `aside` and
    other chrome are dropped and the readable content is converted to markdown
    (headings, links, lists, code, blockquotes, tables). Non-HTML `text/*`
    responses are returned verbatim; any other content type is rejected.
 
 Read-only, so it requires no approval and stays available in audit mode. A
-fetch failure (SSRF refusal, bad scheme, unsupported content type) surfaces as
-a `sandbox_bad_request` tool-result error; a timeout surfaces as
-`sandbox_timeout`.
+fetch failure (SSRF refusal, suspicious/off-allowlist URL, bad scheme,
+unsupported content type) surfaces as a `sandbox_bad_request` tool-result
+error; a timeout surfaces as `sandbox_timeout`.
 
 ### `apply_code_patch` — surgical edit with a preview-gated approval
 
