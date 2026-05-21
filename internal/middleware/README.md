@@ -73,8 +73,11 @@ treats as "reply with `event.error{not_implemented}`".
   `internal/fsops.Engine` running as native Go on the workspace directory.
 - `pin_file`, `unpin_file` → `internal/history.ReferenceBuffer`.
 - `fetch_external_docs` → `internal/docfetch.Fetcher`, an in-process hardened
-  HTTP GET (SSRF guard, 10 s timeout, 2 MB cap) that strips a documentation
-  page to markdown.
+  HTTP GET (SSRF guard, exfiltration screen, 10 s timeout, 2 MB cap) that
+  strips a documentation page to markdown. The exfiltration screen refuses a
+  crafted URL that embeds credentials or a secret-shaped value;
+  `FactoryConfig.DocFetchAllowedDomains` (`NOMADDEV_DOC_FETCH_ALLOWED_DOMAINS`)
+  optionally pins it to a documentation-domain allowlist.
 - `github_*` → `internal/githubmcp.Caller` (subprocess MCP).
 
 The split keeps `internal/sandbox` to the ops that genuinely need

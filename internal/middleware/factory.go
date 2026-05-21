@@ -86,6 +86,12 @@ type FactoryConfig struct {
 	// config.SandboxConfig.DaemonEnabled (NOMADDEV_DAEMON_MONITOR_ENABLED).
 	DaemonMonitorEnabled bool
 
+	// DocFetchAllowedDomains, when non-empty, pins the fetch_external_docs
+	// tool to these domains and their subdomains; every other host is
+	// refused. Empty permits any public host (the docfetch exfiltration
+	// screen still applies). Sourced from NOMADDEV_DOC_FETCH_ALLOWED_DOMAINS.
+	DocFetchAllowedDomains []string
+
 	// Wired-in collaborators.
 	Sandbox sandbox.Runner
 	FSOps   *fsops.Engine
@@ -193,10 +199,10 @@ func NewService(ctx context.Context, c FactoryConfig) (*Service, error) {
 	dispatcher := NewCompositeDispatcher(c.Sandbox, c.FSOps)
 	pins := history.NewReferenceBuffer()
 	dispatcher.Pins = pins
-	// fetch_external_docs is always-on and configless — its 10s timeout and
-	// 2 MB cap are fixed in the docfetch package — so the backend is wired
-	// unconditionally here.
-	dispatcher.Docs = docfetch.New()
+	// fetch_external_docs is always-on — its 10s timeout and 2 MB cap are
+	// fixed in the docfetch package — so the backend is wired unconditionally.
+	// DocFetchAllowedDomains, when set, pins it to an operator allowlist.
+	dispatcher.Docs = docfetch.New(docfetch.Config{AllowedDomains: c.DocFetchAllowedDomains})
 	tools := DefaultTools()
 
 	// dispatch_worker_pool is opt-in: it is only appended to the catalogue

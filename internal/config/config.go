@@ -191,6 +191,14 @@ type MiddlewareConfig struct {
 	WorkerPoolMaxConcurrent int           // NOMADDEV_WORKER_POOL_MAX — concurrency cap
 	WorkerPoolMaxTasks      int           // NOMADDEV_WORKER_POOL_MAX_TASKS — tasks-array length cap
 	WorkerPoolTaskTimeout   time.Duration // NOMADDEV_WORKER_POOL_TASK_TIMEOUT — per-sub-dispatcher wall clock
+
+	// DocFetchAllowedDomains pins the fetch_external_docs tool to a set of
+	// documentation domains (and their subdomains); any other host is
+	// refused. Empty (the default) permits any public host — the docfetch
+	// package's exfiltration screen, which refuses URLs that carry embedded
+	// secrets, still applies either way. Sourced from
+	// NOMADDEV_DOC_FETCH_ALLOWED_DOMAINS (comma-separated).
+	DocFetchAllowedDomains []string
 }
 
 // HistoryConfig governs the persistent conversation store.
@@ -403,6 +411,7 @@ func Load() (*Config, error) {
 			WorkerPoolMaxConcurrent: envInt("NOMADDEV_WORKER_POOL_MAX", 4),
 			WorkerPoolMaxTasks:      envInt("NOMADDEV_WORKER_POOL_MAX_TASKS", 8),
 			WorkerPoolTaskTimeout:   envDuration("NOMADDEV_WORKER_POOL_TASK_TIMEOUT", 10*time.Minute),
+			DocFetchAllowedDomains:  envCSV("NOMADDEV_DOC_FETCH_ALLOWED_DOMAINS", nil),
 		},
 		History: HistoryConfig{
 			Backend:     envOr("NOMADDEV_HISTORY_BACKEND", "sqlite"),

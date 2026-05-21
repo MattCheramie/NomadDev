@@ -9,6 +9,10 @@
 //     link-local or otherwise non-public address — an SSRF guard re-checked on
 //     every redirect hop via the dialer Control hook, so DNS rebinding cannot
 //     slip past it;
+//   - the URL is screened for exfiltration before any request is made: a URL
+//     that embeds credentials or carries a secret-shaped value is refused, so
+//     a crafted URL cannot smuggle data out (see exfil.go). An operator may
+//     also pin fetches to a domain allowlist via Config.AllowedDomains;
 //   - the whole request is bounded by a strict timeout;
 //   - the response body is capped, with anything past the cap dropped and
 //     Result.Truncated set.
@@ -74,10 +78,23 @@ type Result struct {
 	Truncated bool `json:"truncated"`
 }
 
+// Config tunes a Fetcher.
+type Config struct {
+	// AllowedDomains, when non-empty, pins fetches to these domains and their
+	// subdomains: any other host is refused with ErrDomainNotAllowed. An empty
+	// list permits any public host (the exfiltration screen still applies).
+	// Entries may be bare ("example.com") or wildcard ("*.example.com"); both
+	// match the domain itself and every subdomain.
+	AllowedDomains []string
+}
+
 // Fetcher performs hardened documentation fetches. Construct it with New.
 type Fetcher struct {
 	client  *http.Client
 	timeout time.Duration
+	// allowedDomains is the normalised Config.AllowedDomains allowlist; empty
+	// means "any public host".
+	allowedDomains []string
 	// allowLoopback relaxes the SSRF guard's loopback block. It is set only
 	// by newFetcher from within the test suite so tests can exercise the full
 	// fetch path against an httptest.Server (which binds 127.0.0.1). It is
@@ -85,22 +102,42 @@ type Fetcher struct {
 	allowLoopback bool
 }
 
-// New returns a production Fetcher: loopback and private targets are blocked
-// and the timeout is FetchTimeout.
-func New() *Fetcher {
-	return newFetcher(FetchTimeout, false)
+// New returns a production Fetcher: loopback and private targets are blocked,
+// the timeout is FetchTimeout, and cfg.AllowedDomains (if set) pins the
+// reachable hosts.
+func New(cfg Config) *Fetcher {
+	return newFetcher(FetchTimeout, false, cfg)
 }
 
 // newFetcher builds a Fetcher with an explicit timeout and loopback policy.
 // Production code calls New; the test suite calls this directly so it can use
 // a short timeout and reach an httptest.Server on loopback.
-func newFetcher(timeout time.Duration, allowLoopback bool) *Fetcher {
+func newFetcher(timeout time.Duration, allowLoopback bool, cfg Config) *Fetcher {
 	if timeout <= 0 {
 		timeout = FetchTimeout
 	}
-	f := &Fetcher{timeout: timeout, allowLoopback: allowLoopback}
+	f := &Fetcher{
+		timeout:        timeout,
+		allowLoopback:  allowLoopback,
+		allowedDomains: normalizeDomains(cfg.AllowedDomains),
+	}
 	f.client = f.buildClient()
 	return f
+}
+
+// normalizeDomains lower-cases each allowlist entry, trims surrounding space
+// and a leading "*." wildcard, and drops blanks.
+func normalizeDomains(in []string) []string {
+	out := make([]string, 0, len(in))
+	for _, d := range in {
+		d = strings.ToLower(strings.TrimSpace(d))
+		d = strings.TrimPrefix(d, "*.")
+		d = strings.TrimSuffix(d, ".")
+		if d != "" {
+			out = append(out, d)
+		}
+	}
+	return out
 }
 
 func (f *Fetcher) buildClient() *http.Client {
@@ -130,6 +167,12 @@ func (f *Fetcher) buildClient() *http.Client {
 			}
 			if !isHTTPScheme(req.URL.Scheme) {
 				return ErrBadScheme
+			}
+			// A configured allowlist binds every hop, not just the first —
+			// a server cannot redirect the fetch off a trusted domain.
+			if len(f.allowedDomains) > 0 &&
+				!hostAllowed(strings.ToLower(req.URL.Hostname()), f.allowedDomains) {
+				return fmt.Errorf("%w: %q", ErrDomainNotAllowed, req.URL.Hostname())
 			}
 			return nil
 		},
@@ -198,6 +241,12 @@ func (f *Fetcher) Fetch(ctx context.Context, rawURL string) (Result, error) {
 	}
 	if u.Host == "" {
 		return Result{}, fmt.Errorf("docfetch: url has no host")
+	}
+
+	// Refuse the fetch before any request leaves the host when the URL is
+	// off-allowlist or looks like it is smuggling secrets out.
+	if err := screenURL(u, f.allowedDomains); err != nil {
+		return Result{}, err
 	}
 
 	ctx, cancel := context.WithTimeout(ctx, f.timeout)
@@ -293,6 +342,8 @@ func classifyTransportErr(err error) error {
 	switch {
 	case errors.Is(err, ErrBlockedTarget):
 		return fmt.Errorf("docfetch: %w", ErrBlockedTarget)
+	case errors.Is(err, ErrDomainNotAllowed):
+		return fmt.Errorf("docfetch: %w", ErrDomainNotAllowed)
 	case errors.Is(err, ErrBadScheme):
 		return ErrBadScheme
 	case errors.Is(err, context.DeadlineExceeded):
