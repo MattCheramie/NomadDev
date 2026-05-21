@@ -3,6 +3,7 @@ package middleware
 import (
 	"errors"
 	"fmt"
+	"net/url"
 	"strings"
 )
 
@@ -19,6 +20,11 @@ const (
 	ToolSearchSyntax   = "search_syntax"
 	ToolPinFile        = "pin_file"
 	ToolUnpinFile      = "unpin_file"
+	// fetch_external_docs retrieves an external http(s) documentation page,
+	// strips it to markdown, and returns the text. Served in-process by the
+	// dispatcher's docfetch backend — read-only, so it needs no approval and
+	// stays available in audit mode.
+	ToolFetchExternalDocs = "fetch_external_docs"
 	// Daemon tools — opt-in (NOMADDEV_DAEMON_MONITOR_ENABLED). monitor_daemon
 	// runs a detached host process; stop_daemon / list_daemons manage them.
 	// Served by the wsserver daemon path, not the CompositeDispatcher.
@@ -204,6 +210,23 @@ func DefaultTools() []ToolSpec {
 				Required: []string{"path"},
 			},
 		},
+		{
+			Name: ToolFetchExternalDocs,
+			Description: "Fetch a documentation page from an external http(s) URL and return it " +
+				"as plain markdown text. The orchestrator issues a single GET request, strips " +
+				"all HTML, CSS, scripts and navigation chrome, and returns just the readable " +
+				"text — use this to re-check an external API's current schema when a script is " +
+				"failing against it. Requests to private, loopback or link-local addresses are " +
+				"refused; the response is capped at 2 MB and the request times out after 10 " +
+				"seconds. Read-only; does not require approval.",
+			Parameters: Schema{
+				Type: "object",
+				Properties: map[string]*Schema{
+					"url": {Type: "string", Description: "absolute http(s) URL of the documentation page to fetch"},
+				},
+				Required: []string{"url"},
+			},
+		},
 	}
 }
 
@@ -264,7 +287,7 @@ const GitHubToolPrefix = "github_"
 func KnownTool(name string) bool {
 	switch name {
 	case ToolExecuteScript, ToolReadFile, ToolListDir, ToolWritePatch, ToolApplyCodePatch,
-		ToolSearchSyntax, ToolPinFile, ToolUnpinFile, ToolDispatchWorkerPool,
+		ToolSearchSyntax, ToolPinFile, ToolUnpinFile, ToolFetchExternalDocs, ToolDispatchWorkerPool,
 		ToolMonitorDaemon, ToolStopDaemon, ToolListDaemons:
 		return true
 	}
@@ -295,6 +318,8 @@ func Validate(tool string, args map[string]any) error {
 		return validatePinFile(args)
 	case ToolUnpinFile:
 		return validateUnpinFile(args)
+	case ToolFetchExternalDocs:
+		return validateFetchExternalDocs(args)
 	case ToolDispatchWorkerPool:
 		return validateDispatchWorkerPool(args)
 	case ToolMonitorDaemon:
@@ -362,6 +387,33 @@ func validatePinFile(args map[string]any) error {
 func validateUnpinFile(args map[string]any) error {
 	if _, err := reqString(args, "path"); err != nil {
 		return err
+	}
+	return nil
+}
+
+// validateFetchExternalDocs checks the url arg up-front: it must be a
+// non-empty, parseable absolute http(s) URL of a sane length. The deeper SSRF
+// screening (rejecting private/loopback addresses) needs DNS resolution and so
+// runs in the docfetch backend at dispatch time, not here.
+func validateFetchExternalDocs(args map[string]any) error {
+	rawURL, err := reqString(args, "url")
+	if err != nil {
+		return err
+	}
+	if len(rawURL) > 2048 {
+		return fmt.Errorf("%w: url exceeds 2048 bytes", ErrToolValidation)
+	}
+	u, perr := url.Parse(strings.TrimSpace(rawURL))
+	if perr != nil {
+		return fmt.Errorf("%w: url is not parseable: %v", ErrToolValidation, perr)
+	}
+	switch strings.ToLower(u.Scheme) {
+	case "http", "https":
+	default:
+		return fmt.Errorf("%w: url scheme must be http or https", ErrToolValidation)
+	}
+	if u.Host == "" {
+		return fmt.Errorf("%w: url must include a host", ErrToolValidation)
 	}
 	return nil
 }

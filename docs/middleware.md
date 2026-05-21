@@ -97,9 +97,10 @@ without it.
 | `search_syntax` | sandbox.Runner (ast-grep `sg` in container) | `{pattern, lang?, path?, max_matches?, globs?}` | auto-granted (read-only) |
 | `pin_file` | fsops read + `history.ReferenceBuffer` | `{path}` | auto-granted (read-only) |
 | `unpin_file` | `history.ReferenceBuffer` | `{path}` | auto-granted (read-only) |
+| `fetch_external_docs` | `internal/docfetch` (in-process) | `{url}` | auto-granted (read-only) |
 | `github_*` (~75 tools) | githubmcp (subprocess) | per-tool schema from upstream MCP server | required for every mutator (`create_`, `update_`, `delete_`, `merge_`, `push_`, …); read-only ops auto-granted |
 
-The eight base tools have schemas declared in `internal/middleware/tools.go`;
+The nine base tools have schemas declared in `internal/middleware/tools.go`;
 `github_*` schemas are fetched at orchestrator startup from the upstream
 `github-mcp-server` binary and converted by `internal/githubmcp/schema.go`.
 All schemas are SDK-agnostic — Gemini-specific conversion lives in
@@ -120,10 +121,11 @@ wire as a normal `command.result`).
 
 The system prompt is augmented with a steering line that tells the model
 the catalogue has been narrowed to `read_file`, `list_dir`,
-`search_syntax`, `pin_file`, `unpin_file`, and read-only `github_*` tools,
-and that the expected deliverable is a markdown report rather than a
-mutation. `pin_file` / `unpin_file` are not mutating — they only touch the
-in-memory reference buffer — so they survive the audit-mode filter. Approval prompts
+`search_syntax`, `pin_file`, `unpin_file`, `fetch_external_docs`, and
+read-only `github_*` tools, and that the expected deliverable is a markdown
+report rather than a mutation. `pin_file` / `unpin_file` are not mutating —
+they only touch the in-memory reference buffer — and `fetch_external_docs`
+is a read-only GET, so all three survive the audit-mode filter. Approval prompts
 are never expected to fire in audit mode — there is nothing destructive
 left in the catalogue to gate.
 
@@ -203,6 +205,55 @@ Three things make the tool safe to leave un-gated:
    read-only rootfs, gVisor when available. `sg` lives in the image
    (pre-baked via the Dockerfile `sandbox` target); the orchestrator
    itself never invokes `sg` on the host.
+
+### `fetch_external_docs` — external documentation retrieval
+
+A remote script often fails because the external API it targets has changed
+its documented schema. `fetch_external_docs` lets the model re-check that
+schema mid-task: it takes a single `url` and returns the page reduced to
+plain markdown text.
+
+```jsonc
+{ "url": "https://api.example.com/reference" }
+```
+
+The tool is served in-process by [`internal/docfetch`](../internal/docfetch/)
+— no sandbox container — and the dispatcher streams the result back as a JSON
+envelope on stdout:
+
+```jsonc
+{
+  "url": "https://api.example.com/reference",
+  "final_url": "https://api.example.com/reference",  // after any redirects
+  "content_type": "text/html; charset=utf-8",
+  "markdown": "# API Reference\n\n…",
+  "truncated": false                                 // true if the 2 MB cap was hit
+}
+```
+
+Four guards make it safe to leave un-gated:
+
+1. **SSRF guard.** Only `http`/`https` URLs are accepted. The HTTP client's
+   dialer carries a `Control` hook that inspects the *resolved* IP for every
+   connection — including each redirect hop — and refuses loopback, RFC1918
+   private, RFC4193 unique-local, link-local, RFC6598 carrier-grade-NAT and
+   unspecified/multicast addresses. Because the check runs at dial time on the
+   real IP, DNS rebinding cannot slip past it.
+2. **Strict 10 s timeout.** A single `context` deadline bounds connect, TLS,
+   headers and body read; the redirect chain is capped at 5 hops.
+3. **2 MB response cap.** The body is read through an `io.LimitReader`; bytes
+   past the cap are dropped and `truncated` is set so the model knows the
+   payload is partial.
+4. **HTML stripped to text.** `text/html` is parsed with
+   `golang.org/x/net/html`; `script`, `style`, `nav`, `footer`, `aside` and
+   other chrome are dropped and the readable content is converted to markdown
+   (headings, links, lists, code, blockquotes, tables). Non-HTML `text/*`
+   responses are returned verbatim; any other content type is rejected.
+
+Read-only, so it requires no approval and stays available in audit mode. A
+fetch failure (SSRF refusal, bad scheme, unsupported content type) surfaces as
+a `sandbox_bad_request` tool-result error; a timeout surfaces as
+`sandbox_timeout`.
 
 ### `apply_code_patch` — surgical edit with a preview-gated approval
 

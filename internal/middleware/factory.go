@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"time"
 
+	"github.com/mattcheramie/nomaddev/internal/docfetch"
 	"github.com/mattcheramie/nomaddev/internal/fsops"
 	"github.com/mattcheramie/nomaddev/internal/history"
 	"github.com/mattcheramie/nomaddev/internal/sandbox"
@@ -192,6 +193,10 @@ func NewService(ctx context.Context, c FactoryConfig) (*Service, error) {
 	dispatcher := NewCompositeDispatcher(c.Sandbox, c.FSOps)
 	pins := history.NewReferenceBuffer()
 	dispatcher.Pins = pins
+	// fetch_external_docs is always-on and configless — its 10s timeout and
+	// 2 MB cap are fixed in the docfetch package — so the backend is wired
+	// unconditionally here.
+	dispatcher.Docs = docfetch.New()
 	tools := DefaultTools()
 
 	// dispatch_worker_pool is opt-in: it is only appended to the catalogue

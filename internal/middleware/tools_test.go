@@ -8,8 +8,8 @@ import (
 
 func TestTools_DefaultTools_AllEntries(t *testing.T) {
 	specs := DefaultTools()
-	if len(specs) != 8 {
-		t.Fatalf("want 8 tools, got %d", len(specs))
+	if len(specs) != 9 {
+		t.Fatalf("want 9 tools, got %d", len(specs))
 	}
 	seen := map[string]bool{}
 	for _, s := range specs {
@@ -18,7 +18,7 @@ func TestTools_DefaultTools_AllEntries(t *testing.T) {
 	for _, want := range []string{
 		ToolExecuteScript, ToolReadFile, ToolListDir,
 		ToolWritePatch, ToolApplyCodePatch, ToolSearchSyntax,
-		ToolPinFile, ToolUnpinFile,
+		ToolPinFile, ToolUnpinFile, ToolFetchExternalDocs,
 	} {
 		if !seen[want] {
 			t.Errorf("DefaultTools missing %q", want)
@@ -96,6 +96,46 @@ func TestValidate_UnpinFile(t *testing.T) {
 func TestKnownTool_PinUnpin(t *testing.T) {
 	if !KnownTool(ToolPinFile) || !KnownTool(ToolUnpinFile) {
 		t.Fatal("pin_file / unpin_file rejected by KnownTool")
+	}
+}
+
+func TestKnownTool_FetchExternalDocs(t *testing.T) {
+	if !KnownTool(ToolFetchExternalDocs) {
+		t.Fatal("fetch_external_docs rejected by KnownTool")
+	}
+}
+
+func TestValidate_FetchExternalDocs(t *testing.T) {
+	if err := Validate(ToolFetchExternalDocs, map[string]any{
+		"url": "https://example.com/api/docs",
+	}); err != nil {
+		t.Fatalf("Validate(fetch_external_docs) OK case: %v", err)
+	}
+	if err := Validate(ToolFetchExternalDocs, map[string]any{
+		"url": "http://example.com",
+	}); err != nil {
+		t.Fatalf("Validate(fetch_external_docs) http OK case: %v", err)
+	}
+	bad := []map[string]any{
+		{},                            // missing url
+		{"url": ""},                   // empty url
+		{"url": "file:///etc/passwd"}, // disallowed scheme
+		{"url": "ftp://host/x"},       // disallowed scheme
+		{"url": "notaurl"},            // no scheme/host
+		{"url": "https://" + strings.Repeat("a", 2048)}, // oversize
+	}
+	for i, args := range bad {
+		if err := Validate(ToolFetchExternalDocs, args); !errors.Is(err, ErrToolValidation) {
+			t.Errorf("case %d (%v): want ErrToolValidation, got %v", i, args, err)
+		}
+	}
+}
+
+func TestFetchExternalDocs_NotMutating(t *testing.T) {
+	// fetch_external_docs is a read-only GET — it must survive the audit-mode
+	// filter, so it must not be classified as a mutating base tool.
+	if IsMutatingBaseTool(ToolFetchExternalDocs) {
+		t.Error("fetch_external_docs must not be classified as mutating")
 	}
 }
 
