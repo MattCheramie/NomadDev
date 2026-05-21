@@ -15,7 +15,8 @@ type Translator interface {
 type ToolCall struct {
     ID   string
     Tool string         // "execute_script" | "read_file" | "list_dir" | "write_patch"
-                        // | "apply_code_patch" | "search_syntax" | "github_*"
+                        // | "apply_code_patch" | "search_syntax" | "pin_file"
+                        // | "unpin_file" | "fetch_external_docs" | "github_*"
     Args map[string]any
 }
 
@@ -70,6 +71,10 @@ treats as "reply with `event.error{not_implemented}`".
   Dockerfile target.
 - `read_file`, `list_dir`, `write_patch`, `apply_code_patch` →
   `internal/fsops.Engine` running as native Go on the workspace directory.
+- `pin_file`, `unpin_file` → `internal/history.ReferenceBuffer`.
+- `fetch_external_docs` → `internal/docfetch.Fetcher`, an in-process hardened
+  HTTP GET (SSRF guard, 10 s timeout, 2 MB cap) that strips a documentation
+  page to markdown.
 - `github_*` → `internal/githubmcp.Caller` (subprocess MCP).
 
 The split keeps `internal/sandbox` to the ops that genuinely need
@@ -82,9 +87,10 @@ details.
 `PolicyApprover` decides whether a tool call needs a human round-trip
 (`tool.approval.request` → `tool.approval.granted | denied`) before
 dispatching. Default policy: `execute_script`, `write_patch`, and
-`apply_code_patch` require approval; `read_file`, `list_dir`, and
-`search_syntax` are read-only and auto-approve. See `docs/approval.md`
-for the state machine and knobs.
+`apply_code_patch` require approval; `read_file`, `list_dir`,
+`search_syntax`, `pin_file`, `unpin_file`, and `fetch_external_docs` are
+read-only and auto-approve. See `docs/approval.md` for the state machine
+and knobs.
 
 Audit mode (`user.intent.mode == "audit"`) is an orthogonal, stronger
 restriction: mutating tools are *stripped* from the catalogue before

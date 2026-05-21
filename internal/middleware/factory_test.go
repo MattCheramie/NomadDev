@@ -87,9 +87,9 @@ func TestFactory_GitHubBackend_WiresDispatcherToolsAndApproval(t *testing.T) {
 		t.Fatalf("NewService: %v", err)
 	}
 
-	// Tools merged: DefaultTools (8) + github tools (3).
-	if got := len(svc.AvailableTools()); got != 11 {
-		t.Fatalf("AvailableTools count = %d, want 11", got)
+	// Tools merged: DefaultTools (9) + github tools (3).
+	if got := len(svc.AvailableTools()); got != 12 {
+		t.Fatalf("AvailableTools count = %d, want 12", got)
 	}
 
 	// Dispatcher routes github_* to the fake caller.
@@ -139,8 +139,8 @@ func TestFactory_NoGitHub_DefaultsPreserved(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewService: %v", err)
 	}
-	if got := len(svc.AvailableTools()); got != 8 {
-		t.Fatalf("AvailableTools count = %d, want 8 (DefaultTools)", got)
+	if got := len(svc.AvailableTools()); got != 9 {
+		t.Fatalf("AvailableTools count = %d, want 9 (DefaultTools)", got)
 	}
 	cd := svc.Dispatcher.(*CompositeDispatcher)
 	if cd.GitHub != nil {
@@ -163,9 +163,9 @@ func TestFactory_DaemonMonitorEnabled_AppendsToolsAndGates(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewService: %v", err)
 	}
-	// DefaultTools (8) + DaemonToolSpecs (3).
-	if got := len(svc.AvailableTools()); got != 11 {
-		t.Fatalf("AvailableTools count = %d, want 11", got)
+	// DefaultTools (9) + DaemonToolSpecs (3).
+	if got := len(svc.AvailableTools()); got != 12 {
+		t.Fatalf("AvailableTools count = %d, want 12", got)
 	}
 	pa, ok := svc.Approver.(*PolicyApprover)
 	if !ok {

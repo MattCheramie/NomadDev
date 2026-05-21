@@ -72,6 +72,7 @@ and how to switch between the mock and Docker runners.
 - [x] Map the generated Function Calls directly to the Go Sandbox Runner from Phase 3.
 - [x] Format execution results back into JSON for the LLM to interpret.
 - [x] Audit / dry-run mode: `user.intent` envelopes may carry `mode: "audit"`. The orchestrator strips `execute_script`, `write_patch`, `apply_code_patch`, and destructive `github_*` tools from the catalogue before the schema reaches Gemini, and the dispatcher refuses to run them defense-in-depth. The assistant is steered to produce a markdown report.
+- [x] External documentation fetcher: the `fetch_external_docs` tool lets the model re-check an external API's current schema when a remote script is failing against it. The Go backend ([`internal/docfetch`](./internal/docfetch/)) issues a single hardened GET — only `http`/`https`, with an SSRF guard that inspects the resolved IP of every connection (including redirect hops) and refuses private, loopback, link-local and carrier-grade-NAT addresses — strips the HTML/CSS/script/navigation chrome down to markdown text via `golang.org/x/net/html`, and returns the payload to the orchestrator. A strict 10-second timeout and a 2 MB response cap prevent hangs. Read-only, so it needs no approval and stays available in audit mode.
 - [x] Multi-provider LLM support: alongside Gemini, the middleware ships
   drop-in `Translator` implementations for **OpenAI Chat Completions**
   ([`internal/middleware/openai.go`](./internal/middleware/openai.go)),

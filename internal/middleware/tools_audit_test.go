@@ -43,6 +43,7 @@ func TestAuditMode_AvailableToolsFor_StripsMutators(t *testing.T) {
 
 	want := []string{
 		"github_get_file_contents",
+		ToolFetchExternalDocs,
 		ToolListDir,
 		ToolPinFile,
 		ToolReadFile,

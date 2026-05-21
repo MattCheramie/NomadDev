@@ -4,10 +4,12 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
 
+	"github.com/mattcheramie/nomaddev/internal/docfetch"
 	"github.com/mattcheramie/nomaddev/internal/fsops"
 	"github.com/mattcheramie/nomaddev/internal/history"
 	"github.com/mattcheramie/nomaddev/internal/sandbox"
@@ -56,6 +58,14 @@ type GitHubCaller interface {
 	Call(ctx context.Context, call ToolCall, opts DispatchOptions) (<-chan sandbox.ExecChunk, error)
 }
 
+// DocFetcher fetches an external documentation page and returns it reduced to
+// markdown. It backs the fetch_external_docs tool. Declared as an interface so
+// the dispatcher can be unit-tested with a fake that performs no network IO;
+// the production implementation is *docfetch.Fetcher.
+type DocFetcher interface {
+	Fetch(ctx context.Context, rawURL string) (docfetch.Result, error)
+}
+
 // CompositeDispatcher routes calls by tool name. execute_script goes to the
 // sandbox.Runner; the four fsops tools go to the fsops.Engine; pin_file /
 // unpin_file go to the persistent reference buffer; anything prefixed with
@@ -68,6 +78,10 @@ type CompositeDispatcher struct {
 	// returns ErrBadRequest for those tools when it is. Set by NewService
 	// after construction, the same way GitHub is wired.
 	Pins *history.ReferenceBuffer
+	// Docs backs the fetch_external_docs tool. May be nil — Dispatch returns
+	// ErrBadRequest for that tool when it is. Set by NewService after
+	// construction, the same way GitHub and Pins are wired.
+	Docs DocFetcher
 }
 
 // NewCompositeDispatcher constructs a dispatcher. Any of Sandbox / FSOps /
@@ -133,6 +147,11 @@ func (c *CompositeDispatcher) Dispatch(ctx context.Context, call ToolCall, opts 
 			return nil, fmt.Errorf("%w: reference buffer not configured", sandbox.ErrBadRequest)
 		}
 		return c.unpinFile(call, opts), nil
+	case ToolFetchExternalDocs:
+		if c.Docs == nil {
+			return nil, fmt.Errorf("%w: doc fetcher not configured", sandbox.ErrBadRequest)
+		}
+		return c.fetchDocs(ctx, call), nil
 	}
 	if strings.HasPrefix(call.Tool, GitHubToolPrefix) {
 		if c.GitHub == nil {
@@ -362,4 +381,64 @@ func (c *CompositeDispatcher) unpinFile(call ToolCall, opts DispatchOptions) <-c
 	out <- sandbox.ExecChunk{Stream: sandbox.StreamStdout, Data: []byte(msg)}
 	out <- sandbox.ExecChunk{Stream: sandbox.StreamExit, ExitCode: 0}
 	return out
+}
+
+// fetchDocs runs the fetch_external_docs tool. It calls the configured
+// DocFetcher and emits the JSON-encoded docfetch.Result on stdout, chunked the
+// same way applyCodePatchWithVerify chunks its envelope, then a terminal exit
+// chunk — mirroring the sandbox.Runner contract every other dispatch path
+// follows. A fetch failure surfaces as exit -1: SSRF, scheme and
+// content-type rejections wrap ErrBadRequest (classified sandbox_bad_request),
+// while a timeout keeps context.DeadlineExceeded so it is classified
+// sandbox_timeout.
+func (c *CompositeDispatcher) fetchDocs(ctx context.Context, call ToolCall) <-chan sandbox.ExecChunk {
+	out := make(chan sandbox.ExecChunk, 16)
+	go func() {
+		defer close(out)
+
+		rawURL, _ := call.Args["url"].(string)
+		if rawURL == "" {
+			out <- sandbox.ExecChunk{Stream: sandbox.StreamExit, ExitCode: -1,
+				Err: fmt.Errorf("%w: fetch_external_docs requires a non-empty 'url'", sandbox.ErrBadRequest)}
+			return
+		}
+
+		res, err := c.Docs.Fetch(ctx, rawURL)
+		if err != nil {
+			out <- sandbox.ExecChunk{Stream: sandbox.StreamExit, ExitCode: -1, Err: fetchDocsErr(err)}
+			return
+		}
+
+		body, jerr := json.Marshal(res)
+		if jerr != nil {
+			out <- sandbox.ExecChunk{Stream: sandbox.StreamExit, ExitCode: -1,
+				Err: fmt.Errorf("fetch_external_docs: marshal result: %v", jerr)}
+			return
+		}
+		for off := 0; off < len(body); off += applyVerifyChunkBytes {
+			end := off + applyVerifyChunkBytes
+			if end > len(body) {
+				end = len(body)
+			}
+			select {
+			case out <- sandbox.ExecChunk{Stream: sandbox.StreamStdout, Data: append([]byte(nil), body[off:end]...)}:
+			case <-ctx.Done():
+				out <- sandbox.ExecChunk{Stream: sandbox.StreamExit, ExitCode: -1, Err: ctx.Err()}
+				return
+			}
+		}
+		out <- sandbox.ExecChunk{Stream: sandbox.StreamExit, ExitCode: 0}
+	}()
+	return out
+}
+
+// fetchDocsErr maps a docfetch error onto the sandbox error vocabulary so
+// classifyExit picks the right SandboxErr* code. A timeout or cancellation
+// already wraps the matching context sentinel and passes through unchanged;
+// every other docfetch failure is a bad request from the model's standpoint.
+func fetchDocsErr(err error) error {
+	if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
+		return err
+	}
+	return fmt.Errorf("%w: %v", sandbox.ErrBadRequest, err)
 }
