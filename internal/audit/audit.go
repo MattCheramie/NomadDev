@@ -31,6 +31,7 @@ const (
 	KindApprovalDeny  = "approval.denied"
 	KindDaemonStart   = "daemon.start"
 	KindDaemonStop    = "daemon.stop"
+	KindConfigChange  = "config.change"
 )
 
 // Outcome values for the Outcome field. Stable strings.

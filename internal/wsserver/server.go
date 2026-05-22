@@ -61,6 +61,12 @@ type Server struct {
 	upgrader       websocket.Upgrader
 	http           *http.Server
 	mux            *http.ServeMux
+	// overridePath is the persisted config-override file the /admin/config
+	// API reads and writes. Resolved once from config.OverridePath().
+	overridePath string
+	// restartCh, when non-nil, signals the orchestrator to exit cleanly for
+	// a config-change restart. nil disables POST /admin/config/restart.
+	restartCh chan struct{}
 }
 
 // ReadinessProbe is one named dependency the /readyz handler will
@@ -89,6 +95,11 @@ type Options struct {
 	// where WebAuthn can't satisfy its HTTPS-or-localhost
 	// requirement don't pay for routes they can't use).
 	WebAuthn *webauthn.Service
+	// RestartSignal, when non-nil, wires POST /admin/config/restart: the
+	// handler sends on this channel and the orchestrator's run loop exits
+	// cleanly so the supervisor restarts it with the new config applied.
+	// nil leaves the restart endpoint reachable but returning 503.
+	RestartSignal chan struct{}
 }
 
 // New constructs a Server. The HTTP server is built but not started. runner
@@ -127,7 +138,9 @@ func NewWithOptions(
 			Subprotocols: []string{"bearer"},
 			CheckOrigin:  buildOriginChecker(cfg.AllowedOrigins, log),
 		},
-		mux: mux,
+		mux:          mux,
+		overridePath: config.OverridePath(),
+		restartCh:    opts.RestartSignal,
 	}
 	if runner != nil && cfg.Sandbox.MaxConcurrent > 0 {
 		srv.sem = make(chan struct{}, cfg.Sandbox.MaxConcurrent)
@@ -169,6 +182,10 @@ func NewWithOptions(
 		mux.HandleFunc("/auth/webauthn/login/begin", srv.webauthnLoginBeginHandler)
 		mux.HandleFunc("/auth/webauthn/login/finish", srv.webauthnLoginFinishHandler)
 	}
+	// Settings editor API. Always registered — the verifier gates it and
+	// HasConfigScope enforces the config:read / config:write scopes.
+	mux.HandleFunc("/admin/config", srv.configHandler)
+	mux.HandleFunc("/admin/config/restart", srv.restartHandler)
 	if cfg.SPA.Enabled {
 		// Registered AFTER /ws, /healthz, and /metrics so longest-prefix wins
 		// keeps them resolving to their own handlers; "/" only matches when

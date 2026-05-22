@@ -78,3 +78,56 @@ func TestHasToolScope_EmptyToolNeverAllowed(t *testing.T) {
 		t.Error("empty tool name was authorized")
 	}
 }
+
+func TestHasConfigScope_LegacyPermissive(t *testing.T) {
+	// A token with no config: scope (typical operator mint) is allowed
+	// both read and write.
+	scopes := []string{ScopeConnect}
+	if !HasConfigScope(scopes, false) {
+		t.Error("legacy-permissive token denied config read")
+	}
+	if !HasConfigScope(scopes, true) {
+		t.Error("legacy-permissive token denied config write")
+	}
+	if !HasConfigScope(nil, true) {
+		t.Error("empty scope set denied config write")
+	}
+}
+
+func TestHasConfigScope_StrictRead(t *testing.T) {
+	// config:read grants read but not write.
+	scopes := []string{ScopeConnect, ScopeConfigRead}
+	if !HasConfigScope(scopes, false) {
+		t.Error("config:read denied config read")
+	}
+	if HasConfigScope(scopes, true) {
+		t.Error("config:read wrongly granted config write")
+	}
+}
+
+func TestHasConfigScope_StrictWrite(t *testing.T) {
+	// config:write implies read.
+	scopes := []string{ScopeConfigWrite}
+	if !HasConfigScope(scopes, false) {
+		t.Error("config:write denied config read")
+	}
+	if !HasConfigScope(scopes, true) {
+		t.Error("config:write denied config write")
+	}
+}
+
+func TestHasConfigScope_StrictDeniesUnscoped(t *testing.T) {
+	// A token that opts into the config namespace via some other config:
+	// scope but lacks read/write is denied — strict mode.
+	scopes := []string{"config:something-else"}
+	if HasConfigScope(scopes, false) {
+		t.Error("strict mode wrongly granted config read")
+	}
+	if HasConfigScope(scopes, true) {
+		t.Error("strict mode wrongly granted config write")
+	}
+	// A tools: scope must not leak into the config namespace.
+	if HasConfigScope([]string{ScopeConfigRead}, true) {
+		t.Error("config:read alone wrongly granted write")
+	}
+}

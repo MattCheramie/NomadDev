@@ -11,7 +11,11 @@ User=nomaddev
 Group=nomaddev
 EnvironmentFile=/etc/nomaddev/env
 ExecStart=/usr/local/bin/orchestrator -listen :8080
-Restart=on-failure
+# Restart=always (not on-failure): the orchestrator exits cleanly (status 0)
+# when the web settings editor requests a config-change restart, and that
+# must bounce the service too. `systemctl stop` still stops it — systemd
+# tells an operator stop apart from a process exit.
+Restart=always
 RestartSec=2s
 
 # Hardening. The orchestrator does not need root, special caps, or write

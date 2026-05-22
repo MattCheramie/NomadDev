@@ -35,6 +35,12 @@ import (
 // Stays "dev" for local builds and CI test runs.
 var version = "dev"
 
+// errRestartRequested is returned by run() when POST /admin/config/restart
+// asks the orchestrator to exit so the supervisor (systemd Restart=always /
+// docker restart policy) brings it back up with the new config applied.
+// main() turns it into a clean exit 0.
+var errRestartRequested = errors.New("restart requested")
+
 func main() {
 	listenFlag := flag.String("listen", "", "override NOMADDEV_LISTEN_ADDR")
 	showVersion := flag.Bool("version", false, "print version and exit")
@@ -55,6 +61,11 @@ func main() {
 	}
 
 	if err := run(*listenFlag); err != nil {
+		if errors.Is(err, errRestartRequested) {
+			// Clean exit — the supervisor restarts the process and the
+			// new config-override file is applied on the next boot.
+			os.Exit(0)
+		}
 		fmt.Fprintln(os.Stderr, "orchestrator:", err)
 		os.Exit(1)
 	}
@@ -244,12 +255,16 @@ func run(listenOverride string) error {
 		}()
 	}
 
+	// restartCh lets POST /admin/config/restart ask for a clean exit so the
+	// supervisor restarts the orchestrator with the new config applied.
+	restartCh := make(chan struct{}, 1)
 	srv := wsserver.NewWithOptions(cfg, logger, h, sessions, verifier, runner, mw, wsserver.Options{
-		Issuer:    issuer,
-		Revoker:   revoker,
-		Audit:     auditSink,
-		Readiness: buildReadinessProbes(sessions, mw, revoker),
-		WebAuthn:  waSvc,
+		Issuer:        issuer,
+		Revoker:       revoker,
+		Audit:         auditSink,
+		Readiness:     buildReadinessProbes(sessions, mw, revoker),
+		WebAuthn:      waSvc,
+		RestartSignal: restartCh,
 	})
 	logger.Info("orchestrator: auth",
 		"access_ttl", cfg.Auth.AccessTTL,
@@ -266,9 +281,13 @@ func run(listenOverride string) error {
 		close(srvErr)
 	}()
 
+	restart := false
 	select {
 	case <-rootCtx.Done():
 		logger.Info("orchestrator: signal received, shutting down")
+	case <-restartCh:
+		logger.Info("orchestrator: config-change restart requested, shutting down")
+		restart = true
 	case err := <-srvErr:
 		if err != nil {
 			return err
@@ -281,6 +300,9 @@ func run(listenOverride string) error {
 		logger.Error("orchestrator: shutdown error", "err", err)
 	}
 	logger.Info("orchestrator: stopped")
+	if restart {
+		return errRestartRequested
+	}
 	return nil
 }
 
