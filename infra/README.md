@@ -2,6 +2,10 @@
 
 Provisioning notes and scripts for the host VPS. Nothing here is Go.
 
+> For the end-to-end deploy path see the
+> [Operator Guide](../docs/operator-guide.md). This file covers the mesh /
+> Tailscale-ACL foundation specifically.
+
 ## Overview
 
 Phase 1 establishes secure, passwordless connectivity between the host VPS and

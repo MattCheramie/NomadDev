@@ -1,5 +1,11 @@
 # NomadDev — Operator Runbook
 
+> **For a first deploy, start with the
+> [Operator Guide](../docs/operator-guide.md)** — the single linear
+> provision → deploy → verify → onboard → operate path. This runbook is the
+> incident annex it links back to: the ops-conscious manual walkthrough and
+> the incident-response procedures.
+
 First-deploy and incident runbook for the orchestrator + Tailscale mesh.
 
 > **No TLS certificate is required.** The orchestrator runs over plain

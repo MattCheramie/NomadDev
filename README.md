@@ -28,6 +28,10 @@ The architecture is divided into six modular, decoupled components:
 - [x] Verify ICMP and basic TCP packet transmission exclusively over the Tailscale IP range.
 - [x] Disable public SSH access on the host (port 22).
 
+**New here? Start with [`docs/operator-guide.md`](./docs/operator-guide.md)** —
+the single linear path from a bare VPS to a running, phone-connected
+orchestrator (provision → deploy → verify → onboard → operate).
+
 Provisioning lives at [`infra/`](./infra/). The flow is documented end-to-end
 in [`infra/RUNBOOK.md`](./infra/RUNBOOK.md): walk through
 [`infra/scripts/provision.sh`](./infra/scripts/provision.sh) on a fresh
