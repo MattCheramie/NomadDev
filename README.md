@@ -1337,7 +1337,21 @@ links Docker, GitHub MCP, and all three LLM SDKs into one binary. See
 CX22 / CAX11), a Tailscale account. No DNS, no certificate, no extra
 infrastructure.
 
-Pick one path:
+### Easiest — one command
+
+On a fresh Ubuntu VPS, install everything in one shot:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/MattCheramie/NomadDev/main/install.sh | sudo bash
+```
+
+[`install.sh`](./install.sh) installs the prerequisites (base packages,
+Tailscale, and Docker when the Docker path is used), clones the repo to
+`/opt/nomaddev`, and runs the matching quickstart below. It auto-detects the
+deploy path; force one with `--docker` / `--systemd` (when piped, pass flags
+after `-s --`: `… | sudo bash -s -- --docker`). Idempotent — re-run to update.
+
+### Or pick a path manually
 
 | Path | When to use | One-command deploy |
 | --- | --- | --- |

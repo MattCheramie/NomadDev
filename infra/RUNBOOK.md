@@ -20,6 +20,15 @@ Ubuntu 24.04 VPS. Both download prebuilt artifacts (GHCR image or
 release binary), generate a JWT secret, install/start the service, and
 run the smoke test. Re-runnable.
 
+### One command (fresh Ubuntu VPS)
+```sh
+curl -fsSL https://raw.githubusercontent.com/MattCheramie/NomadDev/main/install.sh | sudo bash
+```
+`install.sh` installs the prerequisites, clones the repo to `/opt/nomaddev`,
+and runs the quickstart for you (deploy path auto-detected; `--docker` /
+`--systemd` to force). The two paths below are what it wraps — run them
+directly if the host is already provisioned and cloned.
+
 ### Docker (recommended for Hetzner CX22 / 4 GB and below)
 ```sh
 # 1. On a fresh box, install Tailscale and bring it up:
