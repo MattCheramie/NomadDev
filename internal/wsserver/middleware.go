@@ -508,6 +508,13 @@ func (s *Server) runToolCall(
 		return s.runDaemonToolCall(ctx, cmdEnv.ID, call, sess, client)
 	}
 
+	// 3d. lsp_query talks to a session-scoped language-server host process,
+	//     not the sandbox runner. It is read-only (no approval) and
+	//     request/response, so it returns the standard 5-tuple straight away.
+	if call.Tool == middleware.ToolLSPQuery {
+		return s.runLSPToolCall(ctx, cmdEnv.ID, call, sess, client)
+	}
+
 	// 4. Dispatch. The dispatcher returns an ExecChunk channel mirroring the
 	//    sandbox.Runner contract; we reuse emitChunk / emitResult.
 	//

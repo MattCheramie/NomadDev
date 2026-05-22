@@ -8,8 +8,8 @@ import (
 
 func TestTools_DefaultTools_AllEntries(t *testing.T) {
 	specs := DefaultTools()
-	if len(specs) != 9 {
-		t.Fatalf("want 9 tools, got %d", len(specs))
+	if len(specs) != 10 {
+		t.Fatalf("want 10 tools, got %d", len(specs))
 	}
 	seen := map[string]bool{}
 	for _, s := range specs {
@@ -18,7 +18,7 @@ func TestTools_DefaultTools_AllEntries(t *testing.T) {
 	for _, want := range []string{
 		ToolExecuteScript, ToolReadFile, ToolListDir,
 		ToolWritePatch, ToolApplyCodePatch, ToolSearchSyntax,
-		ToolPinFile, ToolUnpinFile, ToolFetchExternalDocs,
+		ToolLSPQuery, ToolPinFile, ToolUnpinFile, ToolFetchExternalDocs,
 	} {
 		if !seen[want] {
 			t.Errorf("DefaultTools missing %q", want)

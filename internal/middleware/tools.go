@@ -20,6 +20,12 @@ const (
 	ToolSearchSyntax   = "search_syntax"
 	ToolPinFile        = "pin_file"
 	ToolUnpinFile      = "unpin_file"
+	// lsp_query answers semantic code-navigation questions (go-to-definition,
+	// find-references, hover, implementations, symbol search) by talking to a
+	// real language server. Served by the wsserver LSP path, not the
+	// CompositeDispatcher — the language-server process is a session-scoped
+	// host daemon. Read-only; needs no approval.
+	ToolLSPQuery = "lsp_query"
 	// fetch_external_docs retrieves an external http(s) documentation page,
 	// strips it to markdown, and returns the text. Served in-process by the
 	// dispatcher's docfetch backend — read-only, so it needs no approval and
@@ -180,6 +186,32 @@ func DefaultTools() []ToolSpec {
 			},
 		},
 		{
+			Name: ToolLSPQuery,
+			Description: "Query a language server (gopls, typescript-language-server, pylsp) " +
+				"for semantic code navigation — far more precise than text search on complex " +
+				"projects. operation is one of: 'definition' (jump to where a symbol is " +
+				"defined), 'references' (every use of a symbol), 'hover' (its type and doc " +
+				"comment), 'implementation' (concrete implementations of an interface), " +
+				"'document_symbols' (every symbol declared in one file), 'workspace_symbols' " +
+				"(find a symbol by name across the whole repo). line and character are " +
+				"1-based. The language is inferred from the file extension; pass 'lang' to " +
+				"override. Returns JSON with workspace-relative paths and 1-based positions. " +
+				"Read-only; does not require approval.",
+			Parameters: Schema{
+				Type: "object",
+				Properties: map[string]*Schema{
+					"operation":           {Type: "string", Enum: []string{"definition", "references", "hover", "implementation", "document_symbols", "workspace_symbols"}, Description: "the LSP operation to run"},
+					"path":                {Type: "string", Description: "file path relative to the workspace root; required for every operation except workspace_symbols"},
+					"line":                {Type: "integer", Description: "1-based line number; required for definition/references/hover/implementation"},
+					"character":           {Type: "integer", Description: "1-based column number; required for definition/references/hover/implementation"},
+					"lang":                {Type: "string", Description: "language override (go, typescript, javascript, python); inferred from the file extension when omitted; required for workspace_symbols"},
+					"query":               {Type: "string", Description: "symbol name to search for; required for workspace_symbols"},
+					"include_declaration": {Type: "boolean", Description: "for references: include the declaration itself in the results (default false)"},
+				},
+				Required: []string{"operation"},
+			},
+		},
+		{
 			Name: ToolPinFile,
 			Description: "Pin the current contents of a UTF-8 text file into the persistent " +
 				"reference buffer. Pinned files are injected at the top of the system prompt on " +
@@ -287,8 +319,8 @@ const GitHubToolPrefix = "github_"
 func KnownTool(name string) bool {
 	switch name {
 	case ToolExecuteScript, ToolReadFile, ToolListDir, ToolWritePatch, ToolApplyCodePatch,
-		ToolSearchSyntax, ToolPinFile, ToolUnpinFile, ToolFetchExternalDocs, ToolDispatchWorkerPool,
-		ToolMonitorDaemon, ToolStopDaemon, ToolListDaemons:
+		ToolSearchSyntax, ToolLSPQuery, ToolPinFile, ToolUnpinFile, ToolFetchExternalDocs,
+		ToolDispatchWorkerPool, ToolMonitorDaemon, ToolStopDaemon, ToolListDaemons:
 		return true
 	}
 	return strings.HasPrefix(name, GitHubToolPrefix)
@@ -314,6 +346,8 @@ func Validate(tool string, args map[string]any) error {
 		return validateApplyCodePatch(args)
 	case ToolSearchSyntax:
 		return validateSearchSyntax(args)
+	case ToolLSPQuery:
+		return validateLSPQuery(args)
 	case ToolPinFile:
 		return validatePinFile(args)
 	case ToolUnpinFile:
@@ -512,6 +546,89 @@ func validateSearchSyntax(args map[string]any) error {
 		default:
 			return fmt.Errorf("%w: globs must be a list of strings", ErrToolValidation)
 		}
+	}
+	return nil
+}
+
+// validateLSPQuery checks the lsp_query args. Required args vary by
+// operation: every operation except workspace_symbols needs a relative
+// 'path'; the four position-based operations also need 1-based 'line' and
+// 'character'; workspace_symbols needs 'query' and an explicit 'lang'.
+func validateLSPQuery(args map[string]any) error {
+	op, err := reqString(args, "operation")
+	if err != nil {
+		return err
+	}
+	switch op {
+	case "definition", "references", "hover", "implementation", "document_symbols", "workspace_symbols":
+	default:
+		return fmt.Errorf("%w: operation must be one of definition|references|hover|"+
+			"implementation|document_symbols|workspace_symbols", ErrToolValidation)
+	}
+	if op != "workspace_symbols" {
+		path, perr := reqString(args, "path")
+		if perr != nil {
+			return perr
+		}
+		if strings.HasPrefix(path, "/") {
+			return fmt.Errorf("%w: %q must be relative to the workspace root", ErrToolValidation, "path")
+		}
+		if path == ".." || strings.HasPrefix(path, "../") || strings.Contains(path, "/../") {
+			return fmt.Errorf("%w: %q must not contain '..'", ErrToolValidation, "path")
+		}
+	}
+	switch op {
+	case "definition", "references", "hover", "implementation":
+		if err := validatePositiveInt(args, "line"); err != nil {
+			return err
+		}
+		if err := validatePositiveInt(args, "character"); err != nil {
+			return err
+		}
+	case "workspace_symbols":
+		if _, err := reqString(args, "query"); err != nil {
+			return err
+		}
+		if _, err := reqString(args, "lang"); err != nil {
+			return err
+		}
+	}
+	if v, ok := args["lang"]; ok {
+		if _, sok := v.(string); !sok {
+			return fmt.Errorf("%w: %q must be a string", ErrToolValidation, "lang")
+		}
+	}
+	if v, ok := args["include_declaration"]; ok {
+		if _, bok := v.(bool); !bok {
+			return fmt.Errorf("%w: %q must be a boolean", ErrToolValidation, "include_declaration")
+		}
+	}
+	return nil
+}
+
+// validatePositiveInt requires args[key] to be present and an integer >= 1.
+// JSON decode delivers numbers as float64; a Go-side caller may pass int.
+func validatePositiveInt(args map[string]any, key string) error {
+	v, ok := args[key]
+	if !ok {
+		return fmt.Errorf("%w: missing %q", ErrToolValidation, key)
+	}
+	var n int
+	switch t := v.(type) {
+	case int:
+		n = t
+	case int64:
+		n = int(t)
+	case float64:
+		if t != float64(int64(t)) {
+			return fmt.Errorf("%w: %q must be a whole number", ErrToolValidation, key)
+		}
+		n = int(t)
+	default:
+		return fmt.Errorf("%w: %q must be an integer", ErrToolValidation, key)
+	}
+	if n < 1 {
+		return fmt.Errorf("%w: %q must be >= 1 (positions are 1-based)", ErrToolValidation, key)
 	}
 	return nil
 }

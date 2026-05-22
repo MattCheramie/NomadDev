@@ -79,6 +79,13 @@ func (s *Server) runConnection(
 			logger.Info("ws: stopped session daemons", "count", n)
 		}
 	}
+	// Likewise shut down every language server this session started so a
+	// gopls (or other LSP) process never outlives its connection.
+	if s.lsp != nil {
+		if n := s.lsp.StopAllForSession(client.SID); n > 0 {
+			logger.Info("ws: stopped session language servers", "count", n)
+		}
+	}
 	_ = conn.Close()
 	logger.Info("ws: disconnected")
 }
