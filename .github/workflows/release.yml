@@ -4,6 +4,17 @@ on:
   push:
     tags:
       - 'v*'
+  # Manual path: cut a release from the Actions tab without pushing a tag
+  # locally. Supply the version (e.g. v0.1.0) and the `github release` job
+  # creates the tag at the dispatched commit. Tags created with the default
+  # GITHUB_TOKEN do not re-fire the `push: tags` trigger, so a dispatch run
+  # never doubles up with a tag-push run.
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Release version, e.g. v0.1.0'
+        required: true
+        type: string
 
 permissions:
   contents: write     # gh release create
@@ -12,8 +23,35 @@ permissions:
   attestations: write # cosign attest
 
 jobs:
+  # Single source of truth for the release version: the pushed tag name on
+  # a tag trigger, or the validated dispatch input on a manual run.
+  version:
+    name: resolve version
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.resolve.outputs.version }}
+    steps:
+      - name: resolve version
+        id: resolve
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          INPUT_VERSION: ${{ inputs.version }}
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
+            VERSION="$INPUT_VERSION"
+            if ! printf '%s' "$VERSION" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+'; then
+              echo "::error::version must look like vMAJOR.MINOR.PATCH (e.g. v0.1.0); got '$VERSION'"
+              exit 1
+            fi
+          else
+            VERSION="$REF_NAME"
+          fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
   binaries:
     name: binaries (linux/${{ matrix.arch }})
+    needs: version
     runs-on: ubuntu-latest
     strategy:
       matrix:
@@ -48,9 +86,9 @@ jobs:
           GOOS: linux
           GOARCH: ${{ matrix.arch }}
           CGO_ENABLED: '0'
+          VERSION: ${{ needs.version.outputs.version }}
         run: |
           mkdir -p dist
-          VERSION="${GITHUB_REF_NAME}"
           go build -trimpath -tags "gemini github" \
             -ldflags "-s -w -X main.version=${VERSION}" \
             -o "dist/orchestrator-linux-${{ matrix.arch }}" \
@@ -91,7 +129,7 @@ jobs:
 
   release:
     name: github release
-    needs: binaries
+    needs: [version, binaries]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -103,11 +141,16 @@ jobs:
           merge-multiple: true
 
       - name: create release
+        # On a manual dispatch the tag does not exist yet — gh creates it
+        # at the dispatched commit (--target). On a tag push the tag is
+        # already present and --target is ignored.
         env:
           GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.version.outputs.version }}
         run: |
-          gh release create "${GITHUB_REF_NAME}" \
-            --title "${GITHUB_REF_NAME}" \
+          gh release create "${VERSION}" \
+            --target "${GITHUB_SHA}" \
+            --title "${VERSION}" \
             --generate-notes \
             dist/orchestrator-linux-amd64 \
             dist/orchestrator-linux-amd64.sha256 \
@@ -122,6 +165,7 @@ jobs:
 
   image:
     name: ghcr image (multi-arch)
+    needs: version
     runs-on: ubuntu-latest
     outputs:
       digest: ${{ steps.build.outputs.digest }}
@@ -141,7 +185,7 @@ jobs:
       - name: image ref + tags
         id: tags
         env:
-          REF: ${{ github.ref_name }}
+          REF: ${{ needs.version.outputs.version }}
           REPO: ${{ github.repository }}
         run: |
           # GHCR (OCI) repository names must be lowercase, but
@@ -162,7 +206,7 @@ jobs:
           push: true
           tags: ${{ steps.tags.outputs.tags }}
           build-args: |
-            VERSION=${{ github.ref_name }}
+            VERSION=${{ needs.version.outputs.version }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
