@@ -42,7 +42,11 @@ type Server struct {
 	// daemons tracks monitor_daemon background processes per session. nil when
 	// the feature is disabled (NOMADDEV_DAEMON_MONITOR_ENABLED=false); the
 	// daemon handlers treat a nil registry as "not enabled".
-	daemons   *sandbox.DaemonRegistry
+	daemons *sandbox.DaemonRegistry
+	// lsp owns the per-session language servers backing the lsp_query tool.
+	// nil when no workspace is configured; the lsp handlers treat a nil
+	// registry as "not available" and return a clean tool-result error.
+	lsp       *sandbox.LSPRegistry
 	sem       chan struct{} // optional cap on concurrent execs; nil = unlimited
 	intentSem chan struct{} // optional cap on concurrent user.intent turns; nil = unlimited
 	// workerPoolSem caps concurrent dispatch_worker_pool sub-dispatchers
@@ -130,6 +134,18 @@ func NewWithOptions(
 	}
 	if cfg.Sandbox.DaemonEnabled {
 		srv.daemons = sandbox.NewDaemonRegistry()
+	}
+	// lsp_query is always in the catalogue, but a language server needs a
+	// workspace to index. With no workspace dir the registry stays nil and
+	// the lsp handlers return a clean "not available" tool result.
+	if cfg.Sandbox.WorkspaceDir != "" && len(cfg.Sandbox.LSPServers) > 0 {
+		srv.lsp = sandbox.NewLSPRegistry(sandbox.LSPRegistryConfig{
+			Servers:      cfg.Sandbox.LSPServers,
+			WorkspaceDir: cfg.Sandbox.WorkspaceDir,
+			PerSession:   cfg.Sandbox.PerSessionWorkspace,
+			IdleTimeout:  cfg.Sandbox.LSPIdleTimeout,
+			Logger:       log,
+		})
 	}
 	if mw != nil && mw.Config.MaxConcurrent > 0 {
 		srv.intentSem = make(chan struct{}, mw.Config.MaxConcurrent)

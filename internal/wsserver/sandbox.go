@@ -70,6 +70,14 @@ func (s *Server) handleCommandRequest(
 		return
 	}
 
+	// lsp_query talks to a session-scoped language-server host process, so
+	// like the daemon family it bypasses the sandbox runner. The call itself
+	// is request/response (no async streaming) and read-only (no approval).
+	if p.Tool == middleware.ToolLSPQuery {
+		s.handleLSPCommand(dispatchCtx, env.ID, p, sess, client)
+		return
+	}
+
 	if s.runner == nil {
 		s.replyError(sess, client, env.ID, event.CodeNotImplemented,
 			"sandbox runner not configured")

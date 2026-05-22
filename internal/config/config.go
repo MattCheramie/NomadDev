@@ -13,6 +13,7 @@ import (
 	"time"
 
 	nlog "github.com/mattcheramie/nomaddev/internal/log"
+	"github.com/mattcheramie/nomaddev/internal/sandbox"
 )
 
 // WebAuthnConfig governs the Phase 12.3 security-key flow. Default
@@ -124,6 +125,22 @@ type SandboxConfig struct {
 	// outside the ephemeral-container boundary. Sourced from
 	// NOMADDEV_DAEMON_MONITOR_ENABLED.
 	DaemonEnabled bool
+
+	// LSPServers maps a language id to the language-server command line used
+	// by the lsp_query tool. Built-in defaults cover Go (gopls), TypeScript /
+	// JavaScript (typescript-language-server) and Python (pylsp); entries from
+	// NOMADDEV_LSP_SERVERS (e.g. "go=gopls,python=/usr/bin/pylsp") are merged
+	// over the defaults so an operator can repoint or extend the table. A
+	// language server runs as a detached process on the orchestrator HOST,
+	// rooted at WorkspaceDir, the same way monitor_daemon detaches.
+	LSPServers map[string]string
+	// LSPIdleTimeout reclaims a language server that has had no query for
+	// this long. NOMADDEV_LSP_IDLE_TIMEOUT, default 5m.
+	LSPIdleTimeout time.Duration
+	// LSPRequestTimeout bounds one lsp_query operation. The slower
+	// initialize-handshake budget is fixed in the sandbox package.
+	// NOMADDEV_LSP_REQUEST_TIMEOUT, default 30s.
+	LSPRequestTimeout time.Duration
 }
 
 // MiddlewareConfig governs the Phase 4 NLP middleware that translates
@@ -385,6 +402,9 @@ func Load() (*Config, error) {
 			PerSessionWorkspace: envBool("NOMADDEV_SANDBOX_PER_SESSION_WORKSPACE", false),
 			HeartbeatInterval:   envDuration("NOMADDEV_SANDBOX_HEARTBEAT_INTERVAL", 5*time.Second),
 			DaemonEnabled:       envBool("NOMADDEV_DAEMON_MONITOR_ENABLED", false),
+			LSPServers:          envLSPServers("NOMADDEV_LSP_SERVERS"),
+			LSPIdleTimeout:      envDuration("NOMADDEV_LSP_IDLE_TIMEOUT", 5*time.Minute),
+			LSPRequestTimeout:   envDuration("NOMADDEV_LSP_REQUEST_TIMEOUT", 30*time.Second),
 		},
 		Middleware: MiddlewareConfig{
 			Runtime:                 envOr("NOMADDEV_MIDDLEWARE_RUNTIME", "mock"),
@@ -592,6 +612,34 @@ func envCSV(key string, fallback []string) []string {
 	}
 	if len(out) == 0 {
 		return fallback
+	}
+	return out
+}
+
+// envLSPServers parses the language-server override table and merges it over
+// the built-in defaults. The value is a comma-separated list of
+// language=command pairs, e.g. "go=gopls,python=/usr/bin/pylsp". A bad pair
+// is skipped; the defaults always remain in place.
+func envLSPServers(key string) map[string]string {
+	out := sandbox.DefaultLSPServers()
+	v := os.Getenv(key)
+	if v == "" {
+		return out
+	}
+	for _, pair := range strings.Split(v, ",") {
+		pair = strings.TrimSpace(pair)
+		if pair == "" {
+			continue
+		}
+		lang, cmdline, ok := strings.Cut(pair, "=")
+		if !ok {
+			continue
+		}
+		lang = strings.TrimSpace(lang)
+		cmdline = strings.TrimSpace(cmdline)
+		if lang != "" && cmdline != "" {
+			out[lang] = cmdline
+		}
 	}
 	return out
 }

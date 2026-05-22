@@ -48,6 +48,11 @@ type testOpts struct {
 	SPA                  config.SPAConfig
 	HeartbeatInterval    time.Duration
 	DaemonEnabled        bool
+	// LSPWorkspace and LSPServers, when set, wire the lsp_query language-
+	// server registry: the workspace directory and the language->command
+	// table NewLSPRegistry is built from.
+	LSPWorkspace string
+	LSPServers   map[string]string
 }
 
 func newTestServerFull(t *testing.T, opts testOpts) (*httptest.Server, *Server, session.Store, *auth.IssuerSigner) {
@@ -69,6 +74,9 @@ func newTestServerFull(t *testing.T, opts testOpts) (*httptest.Server, *Server, 
 			MaxConcurrent:     opts.SandboxMaxConcurrent,
 			HeartbeatInterval: opts.HeartbeatInterval,
 			DaemonEnabled:     opts.DaemonEnabled,
+			WorkspaceDir:      opts.LSPWorkspace,
+			LSPServers:        opts.LSPServers,
+			LSPRequestTimeout: 10 * time.Second,
 		},
 		Approval: config.ApprovalConfig{
 			Timeout: opts.ApprovalTimeout,
