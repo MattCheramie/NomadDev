@@ -138,12 +138,19 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ github.token }}
 
-      - name: tags
+      - name: image ref + tags
         id: tags
         env:
           REF: ${{ github.ref_name }}
+          REPO: ${{ github.repository }}
         run: |
-          echo "tags=ghcr.io/${{ github.repository }}:${REF},ghcr.io/${{ github.repository }}:latest" >> "$GITHUB_OUTPUT"
+          # GHCR (OCI) repository names must be lowercase, but
+          # github.repository keeps the repo's original casing
+          # (MattCheramie/NomadDev). Lowercase it before use as an image
+          # reference or docker/buildx and cosign reject the tag.
+          IMAGE="ghcr.io/$(echo "${REPO}" | tr '[:upper:]' '[:lower:]')"
+          echo "image=${IMAGE}" >> "$GITHUB_OUTPUT"
+          echo "tags=${IMAGE}:${REF},${IMAGE}:latest" >> "$GITHUB_OUTPUT"
 
       - name: build and push
         id: build
@@ -169,7 +176,7 @@ jobs:
       - name: generate image SBOM
         uses: anchore/sbom-action@v0
         with:
-          image: ghcr.io/${{ github.repository }}@${{ steps.build.outputs.digest }}
+          image: ${{ steps.tags.outputs.image }}@${{ steps.build.outputs.digest }}
           format: spdx-json
           output-file: image.spdx.json
           upload-artifact: false
@@ -179,7 +186,7 @@ jobs:
           COSIGN_YES: 'true'
         run: |
           cosign sign --yes \
-            "ghcr.io/${{ github.repository }}@${{ steps.build.outputs.digest }}"
+            "${{ steps.tags.outputs.image }}@${{ steps.build.outputs.digest }}"
 
       - name: attest SBOM
         env:
@@ -188,4 +195,4 @@ jobs:
           cosign attest --yes \
             --predicate image.spdx.json \
             --type spdxjson \
-            "ghcr.io/${{ github.repository }}@${{ steps.build.outputs.digest }}"
+            "${{ steps.tags.outputs.image }}@${{ steps.build.outputs.digest }}"

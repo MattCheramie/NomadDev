@@ -87,7 +87,17 @@ note "image:     ${NOMADDEV_IMAGE:-ghcr.io/mattcheramie/nomaddev:latest}"
 
 # ---------------------------------------------------------------- pull + up
 note "pulling image"
-docker compose --env-file "${ENV_FILE}" pull
+if ! docker compose --env-file "${ENV_FILE}" pull; then
+    note "ERROR: image pull failed. Most likely, in order:"
+    note "  1. no release published yet — the GHCR image is built and pushed"
+    note "     by .github/workflows/release.yml when a 'v*' tag is pushed."
+    note "  2. the GHCR package is still private — make it public once under"
+    note "     GitHub > the repo's Packages > nomaddev > Package settings."
+    note "  3. NOMADDEV_IMAGE points at an image tag that does not exist."
+    note "  To build the image locally instead of pulling a prebuilt one:"
+    note "    docker compose --env-file ${ENV_FILE} build"
+    fail "could not pull ${NOMADDEV_IMAGE:-ghcr.io/mattcheramie/nomaddev:latest}"
+fi
 
 note "starting container"
 docker compose --env-file "${ENV_FILE}" up -d
