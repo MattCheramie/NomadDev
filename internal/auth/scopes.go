@@ -35,7 +35,54 @@ const (
 	// scopePrefixTools is the per-tool scope namespace marker.
 	// Internal; callers use HasToolScope.
 	scopePrefixTools = "tools:"
+
+	// ScopeConfigRead grants read access to the /admin/config API
+	// (viewing the orchestrator's effective configuration).
+	ScopeConfigRead = "config:read"
+	// ScopeConfigWrite grants write access to /admin/config — changing
+	// settings and triggering a config-change restart. It implies
+	// ScopeConfigRead. This is a privilege-escalation surface: a token
+	// with it can change the sandbox runtime or disable the approval
+	// gate, so issue it only to operator tokens.
+	ScopeConfigWrite = "config:write"
+
+	// scopePrefixConfig is the config-scope namespace marker.
+	// Internal; callers use HasConfigScope.
+	scopePrefixConfig = "config:"
 )
+
+// HasConfigScope reports whether a JWT scope set authorizes a config
+// operation. write=false checks for read access, write=true for write.
+//
+// The two-tier policy mirrors HasToolScope:
+//
+//  1. **Legacy-permissive.** If no scope starts with `config:`, the caller
+//     is allowed every config operation — tokens minted before this feature
+//     keep working.
+//
+//  2. **Strict.** Once any `config:` scope is present, only `config:read`
+//     (read) or `config:write` (read + write) grant access.
+func HasConfigScope(scopes []string, write bool) bool {
+	hasConfigScope := false
+	for _, s := range scopes {
+		if strings.HasPrefix(s, scopePrefixConfig) {
+			hasConfigScope = true
+			break
+		}
+	}
+	if !hasConfigScope {
+		return true // legacy-permissive
+	}
+	for _, s := range scopes {
+		if s == ScopeConfigWrite {
+			return true
+		}
+		if !write && s == ScopeConfigRead {
+			return true
+		}
+	}
+	return false
+}
 
 // HasToolScope reports whether a JWT scope set authorizes the given
 // tool name. The two-tier policy is:

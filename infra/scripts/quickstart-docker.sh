@@ -35,6 +35,13 @@ command -v docker >/dev/null 2>&1 || fail "docker not installed; see https://doc
 if ! docker compose version >/dev/null 2>&1; then
     fail "docker compose v2 plugin not installed (or you're using legacy 'docker-compose')"
 fi
+command -v curl >/dev/null 2>&1 || fail "curl not installed"
+
+# Warn on low disk — the image pull, container, and SQLite stores need room.
+avail_mb="$(df -Pm /var/lib 2>/dev/null | awk 'NR==2 {print $4}')"
+if [[ -n "${avail_mb}" && "${avail_mb}" -lt 500 ]]; then
+    note "WARNING: only ${avail_mb} MiB free on /var/lib — the image pull may fail"
+fi
 
 # ------------------------------------------------------------- bind address
 if [[ -z "${NOMADDEV_BIND_ADDR:-}" ]]; then
@@ -97,7 +104,13 @@ for _ in $(seq 1 30); do
 done
 
 if ! curl -fsS -o /dev/null "${healthz}" 2>/dev/null; then
-    note "healthz did not come up after 30s; check 'docker compose logs orchestrator'"
+    note "ERROR: /healthz did not come up after 30s. Check, in order:"
+    note "  1. container state:   docker compose ps"
+    note "  2. orchestrator log:  docker compose logs --tail=50 orchestrator"
+    note "       'NOMADDEV_JWT_SECRET must be set'  -> the .env secret is missing or short"
+    note "       'API key is empty'                -> a runtime is selected without its key"
+    note "  3. port already bound: ss -ltnp | grep 8080"
+    note "  4. slow image pull on a poor link      -> re-run this script"
     exit 1
 fi
 
@@ -121,8 +134,7 @@ cat <<EOF
   Metrics:       http://${NOMADDEV_BIND_ADDR}:8080/metrics
   SPA:           http://${NOMADDEV_BIND_ADDR}:8080/
 
-  Mint a QR for the phone (run on this host):
-    go run ./scripts/qr-jwt \\
-        -server-url http://${NOMADDEV_BIND_ADDR}:8080 \\
-        -sub matt -sid sess-1 -ttl 1h -out qr.png
+  Mint a QR for the phone (the orchestrator binary renders it — no Go needed):
+    docker compose exec orchestrator \\
+        orchestrator -mint-qr http://${NOMADDEV_BIND_ADDR}:8080 -sub matt -sid sess-1 -ttl 1h
 EOF

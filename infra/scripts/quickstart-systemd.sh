@@ -58,6 +58,12 @@ case "$(uname -m)" in
 esac
 note "host arch: ${ARCH}"
 
+# Warn on low disk — the binary, SQLite stores, and daily backups need room.
+avail_mb="$(df -Pm /var 2>/dev/null | awk 'NR==2 {print $4}')"
+if [[ -n "${avail_mb}" && "${avail_mb}" -lt 500 ]]; then
+    note "WARNING: only ${avail_mb} MiB free on /var — SQLite stores and backups need room"
+fi
+
 # ---------------------------------------------------------------- user + dirs
 if ! getent passwd "${USER_NAME}" >/dev/null 2>&1; then
     note "creating user ${USER_NAME}"
@@ -127,8 +133,10 @@ note "installed ${BIN_DST} ($("${BIN_DST}" -version 2>/dev/null || echo dev))"
 # when the operator has configured a token — keeps the deploy footprint
 # small for users who don't want the feature.
 GHMCP_BIN_DST="/usr/local/bin/github-mcp-server"
+# Keep this pinned version in step with GITHUB_MCP_VERSION in the Dockerfile.
 GHMCP_VERSION="${NOMADDEV_GITHUB_MCP_VERSION:-v1.0.4}"
 NEED_GHMCP="no"
+GHMCP_FAILED="no"
 if grep -qE '^NOMADDEV_GITHUB_TOKEN=.+' "${ENV_FILE}" 2>/dev/null; then
     # Token is set to something non-empty.
     if ! grep -qE '^NOMADDEV_GITHUB_TOKEN=$' "${ENV_FILE}" 2>/dev/null; then
@@ -158,9 +166,10 @@ if [[ "${NEED_GHMCP}" == "yes" ]]; then
             install -m 0755 -o root -g root "${tmpdir}/github-mcp-server" "${GHMCP_BIN_DST}"
             note "installed ${GHMCP_BIN_DST}"
         else
-            note "WARNING: github-mcp-server download failed; the orchestrator will boot but"
-            note "         github_* tools will fail until the binary is installed manually."
-            note "         See docs/github.md for the install snippet."
+            GHMCP_FAILED="yes"
+            note "WARNING: github-mcp-server download failed. The orchestrator will boot,"
+            note "         but every github_* tool fails until the binary is installed."
+            note "         Fix: install it manually (see docs/github.md) and re-run this script."
         fi
         rm -rf "${tmpdir}"
     fi
@@ -184,6 +193,32 @@ if ! command -v sqlite3 >/dev/null 2>&1; then
 fi
 note "installing ${BACKUP_BIN_DST}"
 install -m 0755 -o root -g root "${REPO_ROOT}/infra/scripts/nomaddev-backup.sh" "${BACKUP_BIN_DST}"
+
+# ---------------------------------------------------------------- logrotate
+# The audit log only lands on disk when NOMADDEV_AUDIT_BACKEND=file, but
+# install the rule unconditionally (missingok) so switching the backend
+# later does not silently grow an un-rotated log until it fills the disk.
+# postrotate sends SIGHUP — the orchestrator reopens the audit file on HUP.
+if command -v logrotate >/dev/null 2>&1; then
+    note "installing logrotate fragment for the audit log"
+    cat > /etc/logrotate.d/nomaddev <<'LOGROTATE'
+/var/lib/nomaddev/audit.log {
+    daily
+    rotate 14
+    compress
+    delaycompress
+    missingok
+    notifempty
+    su nomaddev nomaddev
+    postrotate
+        systemctl kill -s HUP nomaddev-orchestrator.service 2>/dev/null || true
+    endscript
+}
+LOGROTATE
+else
+    note "WARNING: logrotate not installed — if you set NOMADDEV_AUDIT_BACKEND=file,"
+    note "         install logrotate or audit.log will grow unbounded."
+fi
 
 # ---------------------------------------------------------------- systemd
 note "installing unit ${UNIT_DST}"
@@ -209,7 +244,13 @@ for _ in $(seq 1 15); do
 done
 
 if ! curl -fsS -o /dev/null http://127.0.0.1:8080/healthz 2>/dev/null; then
-    fail "/healthz did not come up; inspect 'journalctl -u nomaddev-orchestrator -n 50'"
+    note "ERROR: /healthz did not come up. Check, in order:"
+    note "  1. service state:  systemctl status nomaddev-orchestrator"
+    note "  2. logs:           journalctl -u nomaddev-orchestrator -n 50"
+    note "       'NOMADDEV_JWT_SECRET must be set' -> the secret in ${ENV_FILE} is missing or short"
+    note "       'API key is empty'               -> a runtime is selected without its key"
+    note "  3. port already bound: ss -ltnp | grep 8080"
+    fail "/healthz did not come up after 15s"
 fi
 
 # ---------------------------------------------------------------- smoke
@@ -240,13 +281,21 @@ cat <<EOF
                      (daily snapshots → ${DATA_DIR}/backups, 14d retention)
 EOF
 
+if [[ "${GHMCP_FAILED}" == "yes" ]]; then
+    cat <<EOF
+
+[quickstart] NOTE: github-mcp-server was NOT installed (its download failed).
+             github_* tools stay disabled until you install it manually —
+             see docs/github.md — and re-run this script.
+EOF
+fi
+
 if [[ -n "${TAILNET_IP}" ]]; then
     cat <<EOF
   SPA on tailnet:    http://${TAILNET_IP}:8080/
 
-  Mint a QR for the phone (run on this host as your user, not root):
-    NOMADDEV_JWT_SECRET=\$(sudo grep '^NOMADDEV_JWT_SECRET=' ${ENV_FILE} | cut -d= -f2-) \\
-      go run ./scripts/qr-jwt -server-url http://${TAILNET_IP}:8080 \\
-        -sub matt -sid sess-1 -ttl 1h -out qr.png
+  Mint a QR for the phone (the installed binary renders it — no Go needed):
+    sudo bash -c 'set -a; . ${ENV_FILE}; set +a; \\
+      orchestrator -mint-qr http://${TAILNET_IP}:8080 -sub matt -sid sess-1 -ttl 1h'
 EOF
 fi

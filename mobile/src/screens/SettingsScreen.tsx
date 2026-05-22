@@ -1,5 +1,8 @@
 import { useEffect, useState } from 'react';
 import { ScrollView, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native';
+import { useNavigation } from '@react-navigation/native';
+import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
+import type { RootStackParamList } from '@/navigation/routes';
 import { useStore } from '@/state/store';
 import { ErrorRow } from '@/components/ErrorRow';
 import { useWSClient } from '@/wire/context';
@@ -28,6 +31,7 @@ export function SettingsScreen() {
   const resetLocal = useStore((s) => s.reset);
 
   const client = useWSClient();
+  const navigation = useNavigation<NativeStackNavigationProp<RootStackParamList>>();
   const [outboxLen, setOutboxLen] = useState<number>(client?.outboxLength() ?? 0);
 
   const [keyLabel, setKeyLabel] = useState<string>('');
@@ -128,6 +132,15 @@ export function SettingsScreen() {
       </View>
 
       {lastError ? <ErrorRow message={lastError.message} code={lastError.code} /> : null}
+
+      <TouchableOpacity
+        onPress={() => navigation.navigate('Config')}
+        style={styles.actionButton}
+        accessibilityRole="button"
+        accessibilityLabel="open-server-config-button"
+      >
+        <Text style={styles.actionButtonText}>Server configuration</Text>
+      </TouchableOpacity>
 
       <TouchableOpacity
         onPress={onForceReconnect}

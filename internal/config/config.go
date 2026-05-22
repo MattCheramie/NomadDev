@@ -336,6 +336,15 @@ var ErrMissingSecret = errors.New("NOMADDEV_JWT_SECRET must be set and decode to
 
 // Load reads configuration from NOMADDEV_* environment variables and validates it.
 func Load() (*Config, error) {
+	// Layer the persisted config-override file onto the environment before
+	// any NOMADDEV_* var is read, so changes made in the SPA settings editor
+	// survive a restart. A real environment variable still wins — see
+	// applyOverride. A missing or malformed file is non-fatal: the daemon
+	// boots on env defaults and the /admin/config API surfaces the parse
+	// error to the operator.
+	if ov, err := LoadOverride(OverridePath()); err == nil {
+		applyOverride(ov)
+	}
 	secret, err := loadSecret(os.Getenv("NOMADDEV_JWT_SECRET"))
 	if err != nil {
 		return nil, err

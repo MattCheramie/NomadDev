@@ -37,6 +37,13 @@ command -v gzip >/dev/null 2>&1 || fail "gzip not installed"
 
 install -d -m 0700 "${BACKUP_DIR}"
 
+# Pre-flight: a near-full disk yields a truncated, useless backup. Refuse
+# rather than silently produce a bad archive.
+avail_kb="$(df -Pk "${BACKUP_DIR}" 2>/dev/null | awk 'NR==2 {print $4}')"
+if [[ -n "${avail_kb}" && "${avail_kb}" -lt 51200 ]]; then
+    fail "only ${avail_kb} KiB free at ${BACKUP_DIR}; free space before backing up"
+fi
+
 stamp="$(date -u +%Y%m%dT%H%M%SZ)"
 backed_up=0
 
@@ -64,7 +71,9 @@ for db in "${DBS[@]}"; do
 done
 
 if [[ "${backed_up}" -eq 0 ]]; then
-    note "no databases found in ${DATA_DIR}; nothing to back up"
+    note "WARNING: no databases found in ${DATA_DIR} — 0 files backed up."
+    note "         Expected right after first install (the orchestrator creates the"
+    note "         DBs on first use). Investigate if it persists past the first day."
     exit 0
 fi
 
