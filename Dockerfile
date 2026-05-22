@@ -27,6 +27,8 @@
 # Pin upstream MCP server version. Bump in lockstep with the Go MCP SDK
 # (github.com/modelcontextprotocol/go-sdk) that internal/githubmcp depends
 # on; see docs/github.md for the compatibility note.
+# Keep this version in step with GHMCP_VERSION in
+# infra/scripts/quickstart-systemd.sh — both fetch the same binary.
 ARG GITHUB_MCP_VERSION=v1.0.4
 
 # ---------- Stage 1: mobile SPA export -------------------------------------
