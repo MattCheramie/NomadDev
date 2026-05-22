@@ -10,6 +10,21 @@ where one exists; this guide is the index.
 - **You do not build on the box.** Both quickstarts download prebuilt
   artifacts (a GHCR image or a release binary).
 
+## Express install (one command)
+
+On a fresh Ubuntu VPS, the steps below collapse into a single command:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/MattCheramie/NomadDev/main/install.sh | sudo bash
+```
+
+[`install.sh`](../install.sh) installs the prerequisites, clones the repo to
+`/opt/nomaddev`, and runs the quickstart. If the host has not joined a tailnet
+yet the script says so and prints the `sudo tailscale up --ssh` command — run
+it, then re-run the installer so it binds to your tailnet IP. The step-by-step
+path below is the same flow, unrolled, for operators who want to review each
+stage.
+
 ## What you need
 
 - A fresh Ubuntu 24.04 VPS (4 GB RAM is comfortable — e.g. Hetzner CX22).
