@@ -5,6 +5,11 @@ import { WSClientProvider } from '@/wire/context';
 import type { ConfigResponse } from '@/wire/config';
 import { fetchConfig, putConfig, restartOrchestrator } from '@/wire/config';
 
+// The React Native test renderer plus this suite's module graph is slow to
+// warm up on CI runners — the default 5s jest timeout is too tight for the
+// first render here. Give every test in the file generous headroom.
+jest.setTimeout(30_000);
+
 jest.mock('@/wire/config', () => ({
   fetchConfig: jest.fn(),
   putConfig: jest.fn(),
