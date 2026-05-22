@@ -8,6 +8,11 @@ import {
   UserCommandSetModel,
 } from '@/wire/envelope';
 
+const mockNavigate = jest.fn();
+jest.mock('@react-navigation/native', () => ({
+  useNavigation: () => ({ navigate: mockNavigate }),
+}));
+
 // Build a thin WSClient-shaped stub that records send() calls.
 function makeStubClient() {
   const sent: any[] = [];
@@ -27,6 +32,7 @@ function makeStubClient() {
 }
 
 beforeEach(() => {
+  mockNavigate.mockClear();
   useStore.setState({
     serverUrl: 'http://test',
     token: 't',
@@ -60,6 +66,19 @@ test('Reset history sends user.command{reset_history} and clears the local feed'
   // Local state is cleared on the same press.
   expect(useStore.getState().turns).toEqual([]);
   expect(useStore.getState().lastEventId).toBeNull();
+});
+
+test('Server configuration button navigates to the Config screen', () => {
+  const stub = makeStubClient();
+  const { getByLabelText } = render(
+    <WSClientProvider value={stub.asRef}>
+      <SettingsScreen />
+    </WSClientProvider>,
+  );
+
+  fireEvent.press(getByLabelText('open-server-config-button'));
+
+  expect(mockNavigate).toHaveBeenCalledWith('Config');
 });
 
 test('Force reconnect calls client.close() then client.connect()', () => {

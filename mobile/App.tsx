@@ -9,6 +9,7 @@ import { useStore } from '@/state/store';
 import { OnboardScreen } from '@/screens/OnboardScreen';
 import { ChatScreen } from '@/screens/ChatScreen';
 import { SettingsScreen } from '@/screens/SettingsScreen';
+import { ConfigScreen } from '@/screens/ConfigScreen';
 import * as kv from '@/storage/kv';
 import { KEY_LAST_EVENT_ID, KEY_SERVER_URL, KEY_TOKEN } from '@/storage/keys';
 import { useWebSocket } from '@/hooks/useWebSocket';
@@ -146,6 +147,11 @@ export default function App() {
                     name="Settings"
                     component={SettingsScreen}
                     options={{ title: 'Settings' }}
+                  />
+                  <Stack.Screen
+                    name="Config"
+                    component={ConfigScreen}
+                    options={{ title: 'Server configuration' }}
                   />
                 </>
               ) : (

@@ -4,4 +4,5 @@ export type RootStackParamList = {
   Onboard: undefined;
   Chat: undefined;
   Settings: undefined;
+  Config: undefined;
 };

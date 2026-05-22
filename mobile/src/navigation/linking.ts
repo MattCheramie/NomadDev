@@ -13,6 +13,7 @@ export const linking: LinkingOptions<RootStackParamList> = {
       Onboard: 'onboard',
       Chat: 'chat',
       Settings: 'settings',
+      Config: 'config',
     },
   },
 };

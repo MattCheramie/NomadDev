@@ -149,6 +149,11 @@ export type AppState = {
   // while we wait for confirmation.
   pendingModel: string | null;
 
+  // restartPending is true between an /admin/config/restart request and the
+  // next hello. It lets the UI render a "restarting" banner and suppress the
+  // expected connection-lost error during the reconnect gap.
+  restartPending: boolean;
+
   // mutators
   setCredentials(url: string, token: string): void;
   clearCredentials(): void;
@@ -158,6 +163,7 @@ export type AppState = {
   popApproval(envelopeId: string): void;
   reset(): void;
   setPendingModel(model: string | null): void;
+  setRestartPending(v: boolean): void;
 };
 
 export const useStore = create<AppState>((set, get) => ({
@@ -174,6 +180,7 @@ export const useStore = create<AppState>((set, get) => ({
   currentModel: null,
   availableModels: [],
   pendingModel: null,
+  restartPending: false,
 
   setCredentials(url, token) {
     set({ serverUrl: url, token });
@@ -208,6 +215,9 @@ export const useStore = create<AppState>((set, get) => ({
   setPendingModel(model) {
     set({ pendingModel: model });
   },
+  setRestartPending(v) {
+    set({ restartPending: v });
+  },
 
   ingest(env) {
     // Always advance lastEventId, including for replayed envelopes.
@@ -221,6 +231,9 @@ export const useStore = create<AppState>((set, get) => ({
           provider: p.provider ?? null,
           currentModel: p.model ?? null,
           availableModels: p.available_models ?? [],
+          // A hello means the socket is (re)established — any
+          // config-change restart we were waiting on has completed.
+          restartPending: false,
         });
         return;
       }
