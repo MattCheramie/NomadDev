@@ -29,6 +29,7 @@ type Chat struct {
 	composer widget.Editor
 	send     widget.Clickable
 	attach   widget.Clickable
+	settings widget.Clickable
 
 	// removeBtns are reused across frames so a slow click registers on
 	// the same widget instance — Gio's Clickable swallows the press
@@ -53,6 +54,10 @@ type Chat struct {
 	// image preview. The argument is the index in
 	// state.State.PendingImages at the time of the tap.
 	RemoveImage func(idx int)
+
+	// OpenSettings is invoked when the user taps the gear button in
+	// the chat header. The App shell switches to ScreenSettings.
+	OpenSettings func()
 }
 
 // NewChat returns an empty Chat screen.
@@ -128,6 +133,9 @@ func (c *Chat) terminalFor(commandID string) (*LiveTerminal, time.Time) {
 }
 
 func (c *Chat) header(gtx layout.Context, th *material.Theme, snap state.State) layout.Dimensions {
+	if c.settings.Clicked(gtx) && c.OpenSettings != nil {
+		c.OpenSettings()
+	}
 	inset := layout.Inset{Top: unit.Dp(36), Bottom: unit.Dp(8), Left: unit.Dp(16), Right: unit.Dp(16)}
 	return inset.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
 		return layout.Flex{Axis: layout.Horizontal, Alignment: layout.Middle, Spacing: layout.SpaceBetween}.Layout(gtx,
@@ -137,9 +145,21 @@ func (c *Chat) header(gtx layout.Context, th *material.Theme, snap state.State) 
 				return t.Layout(gtx)
 			}),
 			layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-				lbl := material.Body2(th, statusText(snap.Status))
-				lbl.Color = statusColor(c.pal, snap.Status)
-				return lbl.Layout(gtx)
+				return layout.Flex{Axis: layout.Horizontal, Alignment: layout.Middle}.Layout(gtx,
+					layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+						lbl := material.Body2(th, statusText(snap.Status))
+						lbl.Color = statusColor(c.pal, snap.Status)
+						return lbl.Layout(gtx)
+					}),
+					layout.Rigid(layout.Spacer{Width: unit.Dp(12)}.Layout),
+					layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+						btn := material.Button(th, &c.settings, "⚙")
+						btn.Background = c.pal.Surface
+						btn.Color = c.pal.Fg
+						btn.Inset = layout.UniformInset(unit.Dp(6))
+						return btn.Layout(gtx)
+					}),
+				)
 			}),
 		)
 	})
