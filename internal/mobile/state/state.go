@@ -26,6 +26,18 @@ const TerminalLineCap = 2000
 // Mirrors TOOL_PARTIAL_CAP in the SPA.
 const PartialLineCap = 64 * 1024
 
+// MaxImageCount mirrors NOMADDEV_USER_INTENT_MAX_IMAGES in
+// internal/wsserver — the orchestrator rejects user.intent envelopes with
+// more attachments than this. Enforced client-side so the composer can
+// disable the attach button and surface the limit before submit.
+const MaxImageCount = 4
+
+// MaxImageBytes mirrors NOMADDEV_USER_INTENT_MAX_IMAGE_BYTES — the
+// per-attachment decoded-bytes cap. Decoded bytes are what the orchestrator
+// counts; we measure on the raw file we just read off disk, which equals
+// the decoded count for the formats we accept (jpeg/png/gif/webp).
+const MaxImageBytes = 5 * 1024 * 1024
+
 // TerminalLine is one line of output from a running sandbox tool call,
 // classified by source stream. Seq is monotonic per ToolCall — including
 // lines that have rolled off the front — and doubles as a stable widget key.
@@ -109,12 +121,16 @@ type State struct {
 	Status           wireclient.Status
 	Turns            []Turn
 	PendingApprovals []ApprovalRequest
-	Provider         string
-	Model            string
-	AvailableModels  []string
-	SessionTokens    SessionTokens
-	LastEventID      string
-	LastError        string
+	// PendingImages are attachments the user has picked but not yet sent.
+	// The composer renders thumbnails for these and they ship out with
+	// the next user.intent envelope via TakePendingImages.
+	PendingImages   []event.ImageInput
+	Provider        string
+	Model           string
+	AvailableModels []string
+	SessionTokens   SessionTokens
+	LastEventID     string
+	LastError       string
 }
 
 // Store holds the app's mutable state behind a mutex and notifies
@@ -186,9 +202,80 @@ func (s *Store) SetCredentials(serverURL, token string) {
 			st.LastEventID = ""
 			st.Turns = nil
 			st.PendingApprovals = nil
+			st.PendingImages = nil
 			st.Status = wireclient.StatusIdle
 		}
 	})
+}
+
+// ImageAttachmentError captures the reason AddPendingImage rejected an
+// attachment. The composer surfaces it inline so the user knows whether to
+// retry, downsize, or remove a previous attachment.
+type ImageAttachmentError string
+
+// Error implements the error interface.
+func (e ImageAttachmentError) Error() string { return string(e) }
+
+// Sentinel rejection reasons returned by AddPendingImage. The composer
+// matches on errors.Is so messages can be localised without leaking
+// internal phrasing.
+const (
+	ErrImageTooLarge       ImageAttachmentError = "image exceeds the per-attachment size cap"
+	ErrTooManyImages       ImageAttachmentError = "too many attachments queued"
+	ErrUnsupportedMimeType ImageAttachmentError = "unsupported image type"
+)
+
+// AddPendingImage appends an attachment to the composer queue. It enforces
+// the count + size + MIME caps that mirror the orchestrator's intent
+// validation so the user sees the same answer the server would give.
+func (s *Store) AddPendingImage(img event.ImageInput, decodedBytes int) error {
+	if !isAcceptedImageMIME(img.MediaType) {
+		return ErrUnsupportedMimeType
+	}
+	if decodedBytes > MaxImageBytes {
+		return ErrImageTooLarge
+	}
+	var rejected error
+	s.Update(func(st *State) {
+		if len(st.PendingImages) >= MaxImageCount {
+			rejected = ErrTooManyImages
+			return
+		}
+		st.PendingImages = append(st.PendingImages, img)
+	})
+	return rejected
+}
+
+// RemovePendingImage drops the image at idx, if it exists. Out-of-range
+// indices are a silent no-op so a stale tap from a stale frame doesn't
+// crash.
+func (s *Store) RemovePendingImage(idx int) {
+	s.Update(func(st *State) {
+		if idx < 0 || idx >= len(st.PendingImages) {
+			return
+		}
+		st.PendingImages = append(st.PendingImages[:idx], st.PendingImages[idx+1:]...)
+	})
+}
+
+// TakePendingImages returns the queued attachments and atomically clears
+// them — the composer calls this on Send so the next turn starts empty.
+func (s *Store) TakePendingImages() []event.ImageInput {
+	var out []event.ImageInput
+	s.Update(func(st *State) {
+		out = st.PendingImages
+		st.PendingImages = nil
+	})
+	return out
+}
+
+func isAcceptedImageMIME(mt string) bool {
+	switch mt {
+	case "image/jpeg", "image/png", "image/gif", "image/webp":
+		return true
+	default:
+		return false
+	}
 }
 
 // PopApproval removes the first approval whose EnvelopeID matches and

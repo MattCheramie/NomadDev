@@ -4,6 +4,7 @@ go 1.25.10
 
 require (
 	gioui.org v0.10.0
+	gioui.org/x v0.10.0
 	github.com/anthropics/anthropic-sdk-go v1.44.1
 	github.com/docker/docker v25.0.6+incompatible
 	github.com/go-webauthn/webauthn v0.17.3
@@ -31,6 +32,7 @@ require (
 	cloud.google.com/go/auth v0.9.3 // indirect
 	cloud.google.com/go/compute/metadata v0.9.0 // indirect
 	gioui.org/shader v1.0.8 // indirect
+	git.wow.st/gmp/jni v0.0.0-20210610011705-34026c7e22d0 // indirect
 	github.com/Microsoft/go-winio v0.4.14 // indirect
 	github.com/bahlo/generic-list-go v0.2.0 // indirect
 	github.com/beorn7/perks v1.0.1 // indirect
@@ -49,6 +51,7 @@ require (
 	github.com/go-text/typesetting v0.3.4 // indirect
 	github.com/go-viper/mapstructure/v2 v2.5.0 // indirect
 	github.com/go-webauthn/x v0.2.5 // indirect
+	github.com/godbus/dbus/v5 v5.0.6 // indirect
 	github.com/gogo/protobuf v1.3.2 // indirect
 	github.com/golang/groupcache v0.0.0-20210331224755-41bb18bfe9da // indirect
 	github.com/google/go-cmp v0.7.0 // indirect

@@ -4,6 +4,7 @@ package ui
 
 import (
 	"context"
+	"errors"
 	"image/color"
 	"log"
 	"sync"
@@ -16,6 +17,7 @@ import (
 	"gioui.org/op/paint"
 	"gioui.org/unit"
 	"gioui.org/widget/material"
+	"gioui.org/x/explorer"
 
 	"github.com/mattcheramie/nomaddev/internal/event"
 	"github.com/mattcheramie/nomaddev/internal/mobile/state"
@@ -37,6 +39,13 @@ type App struct {
 	sessionMu sync.Mutex
 	session   *wireclient.Session
 	cancel    context.CancelFunc
+
+	// Explorer is set the first time Run binds to a window; subsequent
+	// pick requests reuse it. Nil during onboarding and across
+	// reconnects — the picker goroutine guards on this.
+	explorerMu sync.Mutex
+	explorer   *explorer.Explorer
+	pickInFlight bool
 }
 
 // NewApp wires the shell. The TokenStore is used to load credentials on
@@ -53,6 +62,8 @@ func NewApp(store *state.Store, tokens state.TokenStore) *App {
 	}
 	a.onboard.Submit = a.connect
 	a.chat.Submit = a.sendIntent
+	a.chat.AttachImage = a.openImagePicker
+	a.chat.RemoveImage = a.store.RemovePendingImage
 	a.approval.Approve = a.approveTopApproval
 	a.approval.Deny = a.denyTopApproval
 	if url, token, err := tokens.Load(); err == nil {
@@ -67,6 +78,14 @@ func NewApp(store *state.Store, tokens state.TokenStore) *App {
 func (a *App) Run(w *app.Window) error {
 	th := NewTheme()
 	pal := a.pal
+
+	// Register the cross-platform file picker against this window. The
+	// returned *Explorer is goroutine-safe; the picker callback runs
+	// off the UI thread.
+	exp := explorer.NewExplorer(w)
+	a.explorerMu.Lock()
+	a.explorer = exp
+	a.explorerMu.Unlock()
 
 	// Rebuild on every store notification so the WS goroutine can update
 	// turns and statuses without polling.
@@ -94,7 +113,13 @@ func (a *App) Run(w *app.Window) error {
 
 	var ops op.Ops
 	for {
-		switch e := w.Event().(type) {
+		evt := w.Event()
+		// The image picker needs every Gio event to track the Android
+		// activity / iOS view controller lifecycle. Call it before the
+		// type switch so even events we don't otherwise handle reach
+		// the explorer.
+		exp.ListenEvents(evt)
+		switch e := evt.(type) {
 		case app.DestroyEvent:
 			a.stopSession()
 			return e.Err
@@ -262,12 +287,15 @@ func (a *App) sendIntent(text string) {
 	a.sessionMu.Lock()
 	sess := a.session
 	a.sessionMu.Unlock()
-	env, err := event.NewEnvelope(event.EventUserIntent, event.UserIntentPayload{Text: text})
+	// Atomically drain pending attachments so a stray frame can't
+	// double-send them, and so the composer clears even on send error.
+	images := a.store.TakePendingImages()
+	env, err := event.NewEnvelope(event.EventUserIntent, event.UserIntentPayload{Text: text, Images: images})
 	if err != nil {
 		a.store.SetLastError(err.Error())
 		return
 	}
-	a.store.RecordSentIntent(env.ID, text, nil)
+	a.store.RecordSentIntent(env.ID, text, images)
 	if sess == nil {
 		a.store.SetLastError("not connected")
 		return
@@ -275,4 +303,51 @@ func (a *App) sendIntent(text string) {
 	if err := sess.Send(env); err != nil {
 		a.store.SetLastError(err.Error())
 	}
+}
+
+// openImagePicker spawns the platform image chooser on a background
+// goroutine, decodes the result via state.DecodeImageAttachment, and
+// pushes the wire-ready ImageInput onto the store's pending queue.
+// Concurrent picker calls are silently ignored — gioui.org/x/explorer
+// only supports one open dialog per window.
+func (a *App) openImagePicker() {
+	a.explorerMu.Lock()
+	exp := a.explorer
+	if exp == nil || a.pickInFlight {
+		a.explorerMu.Unlock()
+		return
+	}
+	a.pickInFlight = true
+	a.explorerMu.Unlock()
+
+	go func() {
+		defer func() {
+			a.explorerMu.Lock()
+			a.pickInFlight = false
+			a.explorerMu.Unlock()
+		}()
+		f, err := exp.ChooseFile(".jpg", ".jpeg", ".png", ".gif", ".webp")
+		if err != nil {
+			if errors.Is(err, explorer.ErrUserDecline) {
+				return // user cancelled — nothing to surface
+			}
+			a.store.SetLastError("pick image: " + err.Error())
+			return
+		}
+		defer f.Close()
+		hint := ""
+		if named, ok := f.(interface{ Name() string }); ok {
+			hint = named.Name()
+		}
+		img, decoded, err := state.DecodeImageAttachment(f, hint)
+		if err != nil {
+			a.store.SetLastError(err.Error())
+			return
+		}
+		if err := a.store.AddPendingImage(img, decoded); err != nil {
+			a.store.SetLastError(err.Error())
+			return
+		}
+		a.store.SetLastError("")
+	}()
 }

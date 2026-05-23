@@ -39,15 +39,19 @@ internal/
   mobile/
     state/             in-memory store + reducer
       state.go         Store, Subscribe/Update/Snapshot, Turn, ToolCall,
-                        TerminalLine, ApprovalRequest, SessionTokens
+                        TerminalLine, ApprovalRequest, SessionTokens,
+                        PendingImages + Add/Remove/Take (M4)
       ingest.go        envelope → state reducer (mirrors mobile/src/state)
+      images.go        DecodeImageAttachment (MIME sniff + base64) (M4)
       tokens.go        TokenStore (file-backed in M2, Keystore in M6)
 
     ui/                Gio widgets (build-tagged: android|ios|darwin|windows)
       theme.go         Palette + material.Theme
-      app.go           shell: subscribe to store, drive screens + session
+      app.go           shell: subscribe to store, drive screens + session,
+                        own the *explorer.Explorer for image pick (M4)
       onboard.go       server URL + JWT entry
-      chat.go          turn list (user/asst bubbles + inline LiveTerminals)
+      chat.go          turn list (user/asst bubbles + inline LiveTerminals
+                        + attachments strip + composer with +image button)
       approval.go      ApprovalSheet modal (M3)
       terminal.go      LiveTerminal widget (M3)
 ```
@@ -99,6 +103,30 @@ becomes:
 5. `command.result` — closes the call (`AwaitingApproval` cleared,
    `Result` set). The `LiveTerminal` swaps "live" for "done" and
    stops the elapsed-time tick.
+
+## Image attachments
+
+The composer's `+image` button opens the platform image picker via
+[`gioui.org/x/explorer`](https://pkg.go.dev/gioui.org/x/explorer):
+
+1. `App.openImagePicker` runs `Explorer.ChooseFile(".jpg", ".jpeg",
+   ".png", ".gif", ".webp")` on a background goroutine. The Android
+   path goes through `ACTION_GET_CONTENT` via explorer's bundled JAR
+   (gogio embeds it automatically); iOS uses `UIDocumentPickerViewController`;
+   desktop falls back to the OS-native file dialog.
+2. The picked `io.ReadCloser` is fed to `state.DecodeImageAttachment`,
+   which reads up to `MaxImageBytes+1` bytes, detects the MIME type
+   via `http.DetectContentType` with a filename-extension fallback for
+   SAF content URIs that strip the extension, and base64-encodes the
+   bytes into a `event.ImageInput{MediaType, Data}`.
+3. `Store.AddPendingImage` enforces `MaxImageCount` (4) and
+   `MaxImageBytes` (5 MiB) — the same caps the orchestrator's
+   user.intent validator applies — and pushes the attachment onto
+   `State.PendingImages`. Composer renders one chip per attachment
+   with a tap-to-remove × badge.
+4. On Send, `App.sendIntent` calls `Store.TakePendingImages` which
+   atomically returns the queue and clears it, then ships them as
+   `UserIntentPayload.Images` on the outbound envelope.
 
 The Status enum (`idle | connecting | open | closed | unauthorized`)
 matches `mobile/src/state/store.ts` so users moving between the SPA

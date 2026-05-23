@@ -1349,8 +1349,52 @@ build instructions, and onboarding flow.
   result and heartbeat paths, the full approval push +
   `PopApproval` round-trip, and the `apply_code_patch` preview shape.
 
-**Up next (M4):** Android image picker via JNI (`ACTION_GET_CONTENT`),
-base64-encoded `ImageInput` in the composer.
+#### 16.4 Image attachments (M4) — done
+- [x] **State additions** in
+  [`internal/mobile/state/state.go`](./internal/mobile/state/state.go).
+  `State.PendingImages` holds wire-ready `event.ImageInput` entries the
+  composer has queued. `Store.AddPendingImage(img, decodedBytes)`,
+  `RemovePendingImage(idx)`, and `TakePendingImages()` enforce
+  `MaxImageCount` (4) and `MaxImageBytes` (5 MiB) — the same caps the
+  orchestrator's `user.intent` validator applies — and return typed
+  `ImageAttachmentError` sentinels so the composer can match errors
+  rather than parse strings. Sign-out clears the queue.
+- [x] **`DecodeImageAttachment`** in
+  [`internal/mobile/state/images.go`](./internal/mobile/state/images.go)
+  reads up to `MaxImageBytes+1` bytes from a picked `io.Reader`,
+  detects the MIME type via `http.DetectContentType`, falls back to a
+  filename-extension lookup for SAF content URIs that strip the
+  extension, and base64-encodes the bytes into an `event.ImageInput`.
+  Whitelist matches the orchestrator's accepted set
+  (`jpeg`/`png`/`gif`/`webp`).
+- [x] **Cross-platform image picker** wired through
+  [`gioui.org/x/explorer`](https://pkg.go.dev/gioui.org/x/explorer).
+  `App` owns one `*explorer.Explorer` per window and feeds every Gio
+  event through `Explorer.ListenEvents` so Android's
+  `ACTION_GET_CONTENT` callback / iOS's `UIDocumentPickerViewController`
+  / desktop's native file dialog all surface back into the app. The
+  Android path uses explorer's bundled `file_android.jar` which gogio
+  embeds automatically — no extra build step.
+- [x] **Composer integration** in
+  [`internal/mobile/ui/chat.go`](./internal/mobile/ui/chat.go). New
+  `+image` button next to the Send button; a horizontal strip above
+  the composer renders one chip per queued attachment (MIME tail label
+  + tap-to-remove × badge). Send accepts an attachment-only submit
+  (text *or* at least one image) matching the SPA composer.
+- [x] **`App.sendIntent` updated**: drains `PendingImages` atomically
+  via `TakePendingImages` and ships them on the outbound
+  `UserIntentPayload.Images`. The user-bubble preview path remains the
+  same — `RecordSentIntent` already accepts the images slice.
+- [x] **Test coverage.** Five new state tests cover the count cap, the
+  per-attachment byte cap, the MIME-type whitelist, the Remove +
+  out-of-range no-op + Take semantics, PNG signature detection through
+  `DecodeImageAttachment`, the extension fallback for SAF content
+  URIs, the non-image rejection path, and the sign-out clear.
+  `go test -race ./internal/...` green; `golangci-lint run ./...`
+  0 issues; desktop build with the new explorer dependency succeeds.
+
+**Up next (M5):** Settings + Config screens (model picker, reset history,
+force reconnect, sign out, schema-driven admin config editor).
 
 ---
 
