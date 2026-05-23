@@ -38,7 +38,8 @@ internal/
 
   mobile/
     state/             in-memory store + reducer
-      state.go         Store, Subscribe/Update/Snapshot, Turn, SessionTokens
+      state.go         Store, Subscribe/Update/Snapshot, Turn, ToolCall,
+                        TerminalLine, ApprovalRequest, SessionTokens
       ingest.go        envelope → state reducer (mirrors mobile/src/state)
       tokens.go        TokenStore (file-backed in M2, Keystore in M6)
 
@@ -46,7 +47,9 @@ internal/
       theme.go         Palette + material.Theme
       app.go           shell: subscribe to store, drive screens + session
       onboard.go       server URL + JWT entry
-      chat.go          turn list + composer
+      chat.go          turn list (user/asst bubbles + inline LiveTerminals)
+      approval.go      ApprovalSheet modal (M3)
+      terminal.go      LiveTerminal widget (M3)
 ```
 
 The `internal/mobile/ui` package is build-constrained to platforms Gio
@@ -74,6 +77,28 @@ broken by Gio's C dependencies.
    `state.Ingest`, which updates `Store` under the same mutex used by
    `Snapshot`. The store's subscribers are notified; the UI goroutine
    sees the change on its next frame.
+
+When the orchestrator's middleware dispatches a tool, the wire flow
+becomes:
+
+1. `command.request` (correlation_id = the user.intent id) — `Ingest`
+   attaches a new `ToolCall` to the matching `Turn`.
+2. Optional `tool.approval.request` — `Ingest` pushes an
+   `ApprovalRequest` onto `PendingApprovals`. The App shell renders
+   `ApprovalSheet` over the chat surface; the operator types the tool
+   name and taps Approve, which sends `tool.approval.granted` with the
+   request envelope ID as `correlation_id`.
+3. `command.chunk` (correlation_id = the command.request id) —
+   `MergeChunkIntoToolCall` folds the chunk into the call's `Lines`
+   ring, holding any unterminated trailing fragment in
+   `StdoutPartial` / `StderrPartial` until the next chunk closes it.
+   Lines beyond `TerminalLineCap` (2000) roll off the front.
+4. `sandbox.heartbeat` — updates the call's `ElapsedMs`. The
+   `LiveTerminal` widget extrapolates forward from this anchor with
+   the local clock so the timer never freezes between heartbeats.
+5. `command.result` — closes the call (`AwaitingApproval` cleared,
+   `Result` set). The `LiveTerminal` swaps "live" for "done" and
+   stops the elapsed-time tick.
 
 The Status enum (`idle | connecting | open | closed | unauthorized`)
 matches `mobile/src/state/store.ts` so users moving between the SPA

@@ -7,6 +7,7 @@ import (
 	"image/color"
 	"log"
 	"sync"
+	"time"
 
 	"gioui.org/app"
 	"gioui.org/io/key"
@@ -29,8 +30,9 @@ type App struct {
 	tokens state.TokenStore
 	pal    Palette
 
-	onboard *Onboard
-	chat    *Chat
+	onboard  *Onboard
+	chat     *Chat
+	approval *ApprovalSheet
 
 	sessionMu sync.Mutex
 	session   *wireclient.Session
@@ -42,14 +44,17 @@ type App struct {
 func NewApp(store *state.Store, tokens state.TokenStore) *App {
 	pal := DefaultPalette()
 	a := &App{
-		store:   store,
-		tokens:  tokens,
-		pal:     pal,
-		onboard: NewOnboard(pal),
-		chat:    NewChat(pal),
+		store:    store,
+		tokens:   tokens,
+		pal:      pal,
+		onboard:  NewOnboard(pal),
+		chat:     NewChat(pal),
+		approval: NewApprovalSheet(pal),
 	}
 	a.onboard.Submit = a.connect
 	a.chat.Submit = a.sendIntent
+	a.approval.Approve = a.approveTopApproval
+	a.approval.Deny = a.denyTopApproval
 	if url, token, err := tokens.Load(); err == nil {
 		a.onboard.SetCredentials(url, token)
 		a.store.SetCredentials(url, token)
@@ -73,6 +78,20 @@ func (a *App) Run(w *app.Window) error {
 		}
 	}()
 
+	// Wake the window every second so the approval countdown stays smooth
+	// even when nothing else changes. Cheap — Invalidate just nudges Gio
+	// to re-run the frame loop. We exit the goroutine when the window
+	// closes by piggy-backing on the store subscription's lifetime: when
+	// Run returns, unsub fires and the ticker leaks for at most one beat
+	// before the process exits (Gio app.Main owns the lifetime).
+	go func() {
+		t := time.NewTicker(time.Second)
+		defer t.Stop()
+		for range t.C {
+			w.Invalidate()
+		}
+	}()
+
 	var ops op.Ops
 	for {
 		switch e := w.Event().(type) {
@@ -88,6 +107,9 @@ func (a *App) Run(w *app.Window) error {
 				a.onboard.Layout(gtx, th, snap.LastError)
 			} else {
 				a.chat.Layout(gtx, th, snap)
+				if len(snap.PendingApprovals) > 0 {
+					a.approval.Layout(gtx, th, snap.PendingApprovals[0], time.Now())
+				}
 			}
 			a.statusOverlay(gtx, th, snap)
 			e.Frame(gtx.Ops)
@@ -179,6 +201,60 @@ func (a *App) stopSession() {
 	}
 	if sess != nil {
 		sess.Close()
+	}
+}
+
+// approveTopApproval sends a tool.approval.granted reply for the
+// front-of-queue pending approval and removes it from the store. The
+// envelope's correlation_id is the original tool.approval.request.id so
+// the orchestrator matches the reply back to its pending command.
+func (a *App) approveTopApproval() {
+	snap := a.store.Snapshot()
+	if len(snap.PendingApprovals) == 0 {
+		return
+	}
+	req, ok := a.store.PopApproval(snap.PendingApprovals[0].EnvelopeID)
+	if !ok {
+		return
+	}
+	env, err := event.NewReply(event.EventToolApprovalGranted, req.EnvelopeID, event.ToolApprovalGrantedPayload{})
+	if err != nil {
+		a.store.SetLastError(err.Error())
+		return
+	}
+	a.sendOrError(env)
+}
+
+// denyTopApproval is the deny-button equivalent of approveTopApproval. The
+// optional reason text is forwarded to the orchestrator and surfaces in
+// the eventual command.result error_message.
+func (a *App) denyTopApproval(reason string) {
+	snap := a.store.Snapshot()
+	if len(snap.PendingApprovals) == 0 {
+		return
+	}
+	req, ok := a.store.PopApproval(snap.PendingApprovals[0].EnvelopeID)
+	if !ok {
+		return
+	}
+	env, err := event.NewReply(event.EventToolApprovalDenied, req.EnvelopeID, event.ToolApprovalDeniedPayload{Reason: reason})
+	if err != nil {
+		a.store.SetLastError(err.Error())
+		return
+	}
+	a.sendOrError(env)
+}
+
+func (a *App) sendOrError(env event.Envelope) {
+	a.sessionMu.Lock()
+	sess := a.session
+	a.sessionMu.Unlock()
+	if sess == nil {
+		a.store.SetLastError("not connected")
+		return
+	}
+	if err := sess.Send(env); err != nil {
+		a.store.SetLastError(err.Error())
 	}
 }
 

@@ -176,6 +176,169 @@ func TestFileTokenStore_RoundTrip(t *testing.T) {
 	}
 }
 
+func TestIngest_CommandRequestAttachesToolCallToTurn(t *testing.T) {
+	s := New()
+	s.RecordSentIntent("01INT", "do a thing", nil)
+	payload, _ := json.Marshal(event.CommandRequestPayload{
+		Tool: "execute_script",
+		Args: map[string]any{"shell": "bash", "script": "echo hi"},
+	})
+	Ingest(s, event.Envelope{
+		ID: "01CMD", Type: event.EventCommandRequest,
+		CorrelationID: "01INT", Payload: payload,
+	})
+	turn := s.Snapshot().Turns[0]
+	if len(turn.ToolCalls) != 1 {
+		t.Fatalf("ToolCalls = %d, want 1", len(turn.ToolCalls))
+	}
+	call := turn.ToolCalls[0]
+	if call.CommandID != "01CMD" || call.Tool != "execute_script" {
+		t.Fatalf("ToolCall = %+v", call)
+	}
+}
+
+func TestIngest_CommandChunkBuildsLinesAcrossPartials(t *testing.T) {
+	s := New()
+	s.RecordSentIntent("01INT", "x", nil)
+	req, _ := json.Marshal(event.CommandRequestPayload{Tool: "execute_script"})
+	Ingest(s, event.Envelope{ID: "01CMD", Type: event.EventCommandRequest, CorrelationID: "01INT", Payload: req})
+
+	chunk := func(stream, data string) {
+		p, _ := json.Marshal(event.CommandChunkPayload{Stream: stream, Data: data})
+		Ingest(s, event.Envelope{Type: event.EventCommandChunk, CorrelationID: "01CMD", Payload: p})
+	}
+	// A line split across two chunks plus an interleaved stderr.
+	chunk(event.StreamStdout, "hello, ")
+	chunk(event.StreamStderr, "warn1\n")
+	chunk(event.StreamStdout, "world\nsecond\n")
+
+	call := s.Snapshot().Turns[0].ToolCalls[0]
+	if got := len(call.Lines); got != 3 {
+		t.Fatalf("Lines = %d, want 3 (got %v)", got, call.Lines)
+	}
+	if call.Lines[0].Text != "warn1" || call.Lines[0].Stream != event.StreamStderr {
+		t.Fatalf("first line = %+v", call.Lines[0])
+	}
+	if call.Lines[1].Text != "hello, world" || call.Lines[1].Stream != event.StreamStdout {
+		t.Fatalf("merged line = %+v", call.Lines[1])
+	}
+	if call.Lines[2].Text != "second" {
+		t.Fatalf("third line = %+v", call.Lines[2])
+	}
+	if call.StdoutPartial != "" || call.StderrPartial != "" {
+		t.Fatalf("partials should be empty: stdout=%q stderr=%q", call.StdoutPartial, call.StderrPartial)
+	}
+	if call.LineCount != 3 {
+		t.Fatalf("LineCount = %d, want 3", call.LineCount)
+	}
+}
+
+func TestIngest_CommandChunkPartialRollsOver(t *testing.T) {
+	s := New()
+	s.RecordSentIntent("01INT", "x", nil)
+	req, _ := json.Marshal(event.CommandRequestPayload{Tool: "execute_script"})
+	Ingest(s, event.Envelope{ID: "01CMD", Type: event.EventCommandRequest, CorrelationID: "01INT", Payload: req})
+
+	// Chunk without trailing newline — should sit in the partial buffer.
+	p, _ := json.Marshal(event.CommandChunkPayload{Stream: event.StreamStdout, Data: "no newline yet"})
+	Ingest(s, event.Envelope{Type: event.EventCommandChunk, CorrelationID: "01CMD", Payload: p})
+	call := s.Snapshot().Turns[0].ToolCalls[0]
+	if call.StdoutPartial != "no newline yet" || len(call.Lines) != 0 {
+		t.Fatalf("expected partial to hold the data, got partial=%q lines=%v", call.StdoutPartial, call.Lines)
+	}
+}
+
+func TestMergeChunkIntoToolCall_LineCapDropsOldest(t *testing.T) {
+	// Direct exercise of the pure function — easier than driving Ingest
+	// thousands of times.
+	c := ToolCall{}
+	for i := 0; i < TerminalLineCap+5; i++ {
+		c = MergeChunkIntoToolCall(c, event.CommandChunkPayload{
+			Stream: event.StreamStdout,
+			Data:   "line\n",
+		})
+	}
+	if len(c.Lines) != TerminalLineCap {
+		t.Fatalf("Lines len = %d, want %d", len(c.Lines), TerminalLineCap)
+	}
+	if c.LineCount != TerminalLineCap+5 {
+		t.Fatalf("LineCount = %d, want %d", c.LineCount, TerminalLineCap+5)
+	}
+	if c.Lines[0].Seq != 5 {
+		t.Fatalf("oldest retained line seq = %d, want 5 (after dropping 5)", c.Lines[0].Seq)
+	}
+}
+
+func TestIngest_CommandResultClosesCall(t *testing.T) {
+	s := New()
+	s.RecordSentIntent("01INT", "x", nil)
+	req, _ := json.Marshal(event.CommandRequestPayload{Tool: "execute_script"})
+	Ingest(s, event.Envelope{ID: "01CMD", Type: event.EventCommandRequest, CorrelationID: "01INT", Payload: req})
+	res, _ := json.Marshal(event.CommandResultPayload{ExitCode: 0, DurationMs: 42})
+	Ingest(s, event.Envelope{Type: event.EventCommandResult, CorrelationID: "01CMD", Payload: res})
+	call := s.Snapshot().Turns[0].ToolCalls[0]
+	if call.Result == nil || call.Result.ExitCode != 0 || call.Result.DurationMs != 42 {
+		t.Fatalf("Result = %+v", call.Result)
+	}
+}
+
+func TestIngest_SandboxHeartbeatUpdatesElapsed(t *testing.T) {
+	s := New()
+	s.RecordSentIntent("01INT", "x", nil)
+	req, _ := json.Marshal(event.CommandRequestPayload{Tool: "execute_script"})
+	Ingest(s, event.Envelope{ID: "01CMD", Type: event.EventCommandRequest, CorrelationID: "01INT", Payload: req})
+	hb, _ := json.Marshal(event.SandboxHeartbeatPayload{ElapsedMs: 1500})
+	Ingest(s, event.Envelope{Type: event.EventSandboxHeartbeat, CorrelationID: "01CMD", Payload: hb})
+	if got := s.Snapshot().Turns[0].ToolCalls[0].ElapsedMs; got != 1500 {
+		t.Fatalf("ElapsedMs = %d, want 1500", got)
+	}
+}
+
+func TestIngest_ToolApprovalRequestAndPop(t *testing.T) {
+	s := New()
+	s.RecordSentIntent("01INT", "x", nil)
+	req, _ := json.Marshal(event.CommandRequestPayload{Tool: "apply_code_patch"})
+	Ingest(s, event.Envelope{ID: "01CMD", Type: event.EventCommandRequest, CorrelationID: "01INT", Payload: req})
+
+	approvalPayload, _ := json.Marshal(event.ToolApprovalRequestPayload{
+		Tool:             "apply_code_patch",
+		Args:             map[string]any{"path": "x.txt"},
+		Reason:           "destructive",
+		PendingCommandID: "01CMD",
+		TimeoutMs:        45_000,
+		Preview: map[string]any{
+			"path":         "x.txt",
+			"line_number":  float64(10),
+			"unified_diff": "@@ -1 +1 @@\n-old\n+new\n",
+		},
+	})
+	Ingest(s, event.Envelope{ID: "01APP", Type: event.EventToolApprovalRequest, Payload: approvalPayload})
+
+	snap := s.Snapshot()
+	if len(snap.PendingApprovals) != 1 {
+		t.Fatalf("PendingApprovals = %d, want 1", len(snap.PendingApprovals))
+	}
+	pa := snap.PendingApprovals[0]
+	if pa.EnvelopeID != "01APP" || pa.Tool != "apply_code_patch" || pa.Preview == nil ||
+		pa.Preview.Path != "x.txt" || pa.Preview.LineNumber != 10 {
+		t.Fatalf("ApprovalRequest = %+v preview=%+v", pa, pa.Preview)
+	}
+	if !snap.Turns[0].ToolCalls[0].AwaitingApproval {
+		t.Fatal("ToolCall.AwaitingApproval should be true")
+	}
+
+	got, ok := s.PopApproval("01APP")
+	if !ok || got.EnvelopeID != "01APP" {
+		t.Fatalf("PopApproval returned (%+v, %v)", got, ok)
+	}
+	if len(s.Snapshot().PendingApprovals) != 0 {
+		t.Fatal("PendingApprovals should be empty after Pop")
+	}
+	if _, ok := s.PopApproval("01APP"); ok {
+		t.Fatal("second Pop should miss")
+	}
+}
+
 func TestStore_ConcurrentUpdates_NoTorn(t *testing.T) {
 	// Race-detector friendly: many goroutines calling Update on the same
 	// store. Ensures the mutex actually serialises mutations.

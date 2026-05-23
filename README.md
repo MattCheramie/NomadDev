@@ -1293,9 +1293,64 @@ packages at [`internal/mobile/`](./internal/mobile/) and
   reducer, file-backed token roundtrip, and concurrent-update race safety.
 
 See [`docs/mobile-native.md`](./docs/mobile-native.md) for the architecture,
-build instructions, and onboarding flow. **Up next (M3):** ApprovalSheet
-with type-to-confirm + countdown, LiveTerminal with auto-tail and heartbeat
-elapsed-time.
+build instructions, and onboarding flow.
+
+#### 16.3 ApprovalSheet + LiveTerminal (M3) — done
+- [x] **State extensions.** `state.Turn` now carries `ToolCalls []ToolCall`;
+  `state.State` gains `PendingApprovals []ApprovalRequest`. New
+  `MergeChunkIntoToolCall` is a pure function exported for direct unit
+  tests of the partial-line buffering and roll-off invariants. `Store.PopApproval(envelopeID)`
+  removes a pending approval atomically and returns it so the caller can
+  compose the correlated reply.
+- [x] **Reducer extensions** in
+  [`internal/mobile/state/ingest.go`](./internal/mobile/state/ingest.go).
+  `command.request` attaches a `ToolCall` to the matching `Turn`;
+  `command.chunk` folds incoming bytes through the partial-line buffer,
+  rolling off lines beyond `TerminalLineCap` (2000) and force-flushing a
+  runaway partial past `PartialLineCap` (64 KiB); `command.result` closes
+  the call; `sandbox.heartbeat` updates `ElapsedMs`;
+  `tool.approval.request` pushes an `ApprovalRequest` and marks the
+  associated `ToolCall.AwaitingApproval` so the surface can render the
+  pending state without consulting the approvals slice.
+- [x] **`ApprovalSheet`** at
+  [`internal/mobile/ui/approval.go`](./internal/mobile/ui/approval.go) —
+  modal overlay rendering the tool name (with a GitHub badge for
+  `github_*` tools), reason, raw args, an optional unified-diff preview
+  with the SPA's per-line colour scheme (green for `+`, red for `-`,
+  muted for hunk headers, foreground for context), the optional Phase-14
+  `verify_command` row, a one-second-precision countdown derived from
+  the request deadline, a type-to-confirm field that gates the Approve
+  button on the tool name, and a separate optional deny-reason field.
+- [x] **`LiveTerminal`** at
+  [`internal/mobile/ui/terminal.go`](./internal/mobile/ui/terminal.go) —
+  scrollable list of `TerminalLine` entries with stderr lines coloured
+  red, an auto-tail policy that pins to the latest line until the
+  operator scrolls up, a "Jump to bottom" pill that re-arms tail when
+  tapped, a header showing `live`/`done` status + extrapolated elapsed
+  time (`MM:SS` / `H:MM:SS` formatting matching the SPA), and a
+  "showing N of M" indicator when the line cap has dropped older rows.
+- [x] **Chat surface integration** in
+  [`internal/mobile/ui/chat.go`](./internal/mobile/ui/chat.go). Each
+  turn's `ToolCall`s render inline under the assistant bubble — one
+  `LiveTerminal` widget instance per `CommandID`, cached across frames
+  so scroll position survives re-renders.
+- [x] **App shell glue** in
+  [`internal/mobile/ui/app.go`](./internal/mobile/ui/app.go). When
+  `PendingApprovals` is non-empty the `ApprovalSheet` paints over the
+  chat surface; Approve sends a `tool.approval.granted` correlated on
+  the request envelope ID, Deny sends `tool.approval.denied` with the
+  optional reason. A 1 Hz ticker calls `Window.Invalidate` so the
+  countdown stays smooth even when no other state changes.
+- [x] **Test coverage.** New tests in
+  [`internal/mobile/state/state_test.go`](./internal/mobile/state/state_test.go)
+  cover command-request → tool-call attachment, mid-line chunk
+  buffering across stdout/stderr interleaving, the line-cap drop-oldest
+  invariant exercised through the pure `MergeChunkIntoToolCall`, the
+  result and heartbeat paths, the full approval push +
+  `PopApproval` round-trip, and the `apply_code_patch` preview shape.
+
+**Up next (M4):** Android image picker via JNI (`ACTION_GET_CONTENT`),
+base64-encoded `ImageInput` in the composer.
 
 ---
 
