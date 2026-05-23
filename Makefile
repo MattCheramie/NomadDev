@@ -1,8 +1,14 @@
-MODULE   := github.com/mattcheramie/nomaddev
-BIN_DIR  := bin
-NPM      := npm
-EXPO     := npx expo
-SPA_DIST := internal/wsserver/dist
+MODULE       := github.com/mattcheramie/nomaddev
+BIN_DIR      := bin
+NPM          := npm
+EXPO         := npx expo
+SPA_DIST     := internal/wsserver/dist
+ANDROID_DIR  := build/android
+ANDROID_APK  := $(ANDROID_DIR)/nomaddev.apk
+ANDROID_APP_ID := dev.nomaddev.mobile
+# gogio is installed under $GOPATH/bin by `go install gioui.org/cmd/gogio@latest`.
+# Make picks it up from PATH if present, otherwise from go env GOPATH.
+GOGIO        := $(shell command -v gogio || echo $$(go env GOPATH)/bin/gogio)
 
 # GO_PACKAGES filters out mobile/node_modules/ — npm pulls a flatted package
 # that ships a stray flatted.go file, which Go's recursive `./...` walk would
@@ -13,6 +19,7 @@ GO_PACKAGES = $(shell go list ./... | grep -v '/mobile/node_modules/')
         test-docker test-gemini test-openai test-anthropic test-github test-github-live \
         lint fmt vet tidy clean ci \
         build-mobile build-full dev-mobile clean-mobile test-mobile \
+        android-tools android-debug android-install android-clean \
         docker-image docker-up docker-down quickstart-docker quickstart-systemd \
         gen-secret
 
@@ -139,3 +146,36 @@ quickstart-systemd:
 # Print a NOMADDEV_JWT_SECRET=… line backed by /dev/urandom.
 gen-secret:
 	@bash infra/scripts/gen-secret.sh
+
+# ---------------------------------------------------------------------------
+# Native Go mobile app (Gio + gogio).
+#
+# Phase M1 ships the foundation: a placeholder Gio app at cmd/nomaddev-mobile
+# that builds into a real APK for sideload onto an Android device. Subsequent
+# milestones port the React Native screens (Onboard, Chat, Settings, Config).
+#
+# Requirements for `android-debug` to succeed:
+#   * Go toolchain (Go 1.25+).
+#   * gogio   — `make android-tools` installs it.
+#   * Android SDK + NDK reachable via $ANDROID_SDK_ROOT (or $ANDROID_HOME).
+#     The SDK needs platform 34+ and build-tools 34+; the NDK needs r25+.
+#   * JDK 17+ on PATH (Gradle still ships with gogio in v0.10).
+#
+# On CI the Android SDK is provisioned by android-actions/setup-android.
+# ---------------------------------------------------------------------------
+android-tools:
+	go install gioui.org/cmd/gogio@v0.10.0
+
+android-debug:
+	@mkdir -p $(ANDROID_DIR)
+	$(GOGIO) -target android -arch arm64,arm \
+	    -appid $(ANDROID_APP_ID) \
+	    -version 0.1.0.1 \
+	    -o $(ANDROID_APK) \
+	    ./cmd/nomaddev-mobile
+
+android-install: android-debug
+	adb install -r $(ANDROID_APK)
+
+android-clean:
+	rm -rf $(ANDROID_DIR)

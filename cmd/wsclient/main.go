@@ -5,13 +5,11 @@ package main
 import (
 	"flag"
 	"fmt"
-	"net/http"
 	"os"
 	"time"
 
-	"github.com/gorilla/websocket"
-
 	"github.com/mattcheramie/nomaddev/internal/event"
+	"github.com/mattcheramie/nomaddev/internal/wireclient"
 )
 
 const reconnectAuto = "auto"
@@ -39,22 +37,15 @@ func main() {
 		os.Exit(2)
 	}
 
-	dialer := *websocket.DefaultDialer
-	var hdr http.Header
-	if *subprotocol {
-		dialer.Subprotocols = []string{"bearer", *token}
-	} else {
-		hdr = http.Header{}
-		hdr.Set("Authorization", "Bearer "+*token)
-	}
-
 	payload, err := buildPayload(*send, *shell, *script, *cmdTimeout, *text, *denyReason)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "wsclient:", err)
 		os.Exit(2)
 	}
 
-	lastID, err := runSession(&dialer, hdr, *url, *send, payload, *correlationID, *disconnectAfter, *timeout)
+	opts := wireclient.DialOptions{URL: *url, Token: *token, UseSubprotocol: *subprotocol}
+
+	lastID, err := runSession(opts, *send, payload, *correlationID, *disconnectAfter, *timeout)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "wsclient:", err)
 		os.Exit(1)
@@ -72,7 +63,7 @@ func main() {
 		resumeID = lastID
 	}
 	fmt.Printf("== reconnecting with last_event_id=%s ==\n", resumeID)
-	if err := resume(&dialer, hdr, *url, resumeID, *timeout); err != nil {
+	if err := resume(opts, resumeID, *timeout); err != nil {
 		fmt.Fprintln(os.Stderr, "wsclient: resume:", err)
 		os.Exit(1)
 	}
@@ -115,26 +106,23 @@ func buildPayload(send, shell, script string, cmdTimeoutMs int, text, denyReason
 // can target a specific request — useful for sending tool.approval.granted
 // in response to a tool.approval.request the operator just observed.
 func runSession(
-	d *websocket.Dialer,
-	hdr http.Header,
-	url, send string,
+	opts wireclient.DialOptions,
+	send string,
 	payload any,
 	correlationID, disconnectAfter string,
 	timeout time.Duration,
 ) (string, error) {
-	conn, resp, err := d.Dial(url, hdr)
+	conn, err := wireclient.Dial(opts)
 	if err != nil {
-		if resp != nil {
-			return "", fmt.Errorf("dial: %w (status=%d)", err, resp.StatusCode)
-		}
-		return "", fmt.Errorf("dial: %w", err)
+		return "", err
 	}
 	defer conn.Close()
 
-	hello, err := readOne(conn, timeout)
+	hello, helloBytes, err := conn.ReadEnvelopeRaw(timeout)
 	if err != nil {
 		return "", fmt.Errorf("read hello: %w", err)
 	}
+	fmt.Printf("<- %s\n", helloBytes)
 	lastID := hello.ID
 
 	if send == "" {
@@ -148,26 +136,28 @@ func runSession(
 	if correlationID != "" {
 		env.CorrelationID = correlationID
 	}
-	b, _ := env.Bytes()
-	if err := conn.WriteMessage(websocket.TextMessage, b); err != nil {
-		return lastID, fmt.Errorf("write: %w", err)
+	b, err := conn.WriteEnvelopeBytes(env)
+	if err != nil {
+		return lastID, err
 	}
 	fmt.Printf("-> %s\n", b)
 
 	// If no disconnect-after, read exactly one reply.
 	if disconnectAfter == "" {
-		got, err := readOne(conn, timeout)
+		got, gotBytes, err := conn.ReadEnvelopeRaw(timeout)
 		if err != nil {
 			return lastID, fmt.Errorf("read reply: %w", err)
 		}
+		fmt.Printf("<- %s\n", gotBytes)
 		return got.ID, nil
 	}
 
 	for {
-		got, err := readOne(conn, timeout)
+		got, gotBytes, err := conn.ReadEnvelopeRaw(timeout)
 		if err != nil {
 			return lastID, fmt.Errorf("read: %w", err)
 		}
+		fmt.Printf("<- %s\n", gotBytes)
 		lastID = got.ID
 		if got.Type == disconnectAfter {
 			return lastID, nil
@@ -177,44 +167,35 @@ func runSession(
 
 // resume reconnects, sends a client.hello with lastID, and prints whatever the
 // server replays (until the read deadline elapses).
-func resume(d *websocket.Dialer, hdr http.Header, url, lastID string, timeout time.Duration) error {
-	conn, resp, err := d.Dial(url, hdr)
+func resume(opts wireclient.DialOptions, lastID string, timeout time.Duration) error {
+	conn, err := wireclient.Dial(opts)
 	if err != nil {
-		if resp != nil {
-			return fmt.Errorf("dial: %w (status=%d)", err, resp.StatusCode)
-		}
-		return fmt.Errorf("dial: %w", err)
+		return err
 	}
 	defer conn.Close()
 
-	if _, err := readOne(conn, timeout); err != nil {
+	if _, helloBytes, err := conn.ReadEnvelopeRaw(timeout); err != nil {
 		return fmt.Errorf("read hello: %w", err)
+	} else {
+		fmt.Printf("<- %s\n", helloBytes)
 	}
 
 	clientHello, err := event.NewEnvelope(event.EventClientHello, event.ClientHelloPayload{LastEventID: lastID})
 	if err != nil {
 		return fmt.Errorf("build client.hello: %w", err)
 	}
-	b, _ := clientHello.Bytes()
-	if err := conn.WriteMessage(websocket.TextMessage, b); err != nil {
+	b, err := conn.WriteEnvelopeBytes(clientHello)
+	if err != nil {
 		return fmt.Errorf("write client.hello: %w", err)
 	}
 	fmt.Printf("-> %s\n", b)
 
 	// Drain replayed events until the read deadline trips.
 	for {
-		if _, err := readOne(conn, timeout); err != nil {
+		_, gotBytes, err := conn.ReadEnvelopeRaw(timeout)
+		if err != nil {
 			return nil
 		}
+		fmt.Printf("<- %s\n", gotBytes)
 	}
-}
-
-func readOne(c *websocket.Conn, timeout time.Duration) (event.Envelope, error) {
-	_ = c.SetReadDeadline(time.Now().Add(timeout))
-	_, data, err := c.ReadMessage()
-	if err != nil {
-		return event.Envelope{}, err
-	}
-	fmt.Printf("<- %s\n", data)
-	return event.DecodeBytes(data)
 }

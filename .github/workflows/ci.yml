@@ -345,6 +345,43 @@ jobs:
           retention-days: 14
           if-no-files-found: warn
 
+  mobile-native-android:
+    name: native mobile (android build)
+    # Phase M1 of the native Go mobile app rollout. Cross-compiles
+    # cmd/nomaddev-mobile (Gio) into an unsigned debug APK so any
+    # breakage in the Go source, gogio version, or SDK/NDK pin is
+    # caught on every PR. No signing, no release — sideload happens
+    # by hand off the GitHub Release in M6.
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - name: set up Android SDK + NDK
+        uses: android-actions/setup-android@v3
+        with:
+          packages: 'platforms;android-34 build-tools;34.0.0 ndk;25.2.9519653'
+      - name: install gogio
+        run: make android-tools
+      - name: build debug APK
+        env:
+          ANDROID_NDK_ROOT: ${{ env.ANDROID_HOME }}/ndk/25.2.9519653
+        run: make android-debug
+      - name: upload APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: nomaddev-android-debug
+          path: build/android/nomaddev.apk
+          retention-days: 14
+          if-no-files-found: error
+
   govulncheck:
     name: govulncheck
     # Catches known Go-module vulnerabilities (golang.org/x/vuln) before
