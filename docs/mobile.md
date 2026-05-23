@@ -1,5 +1,11 @@
 # Mobile / Hosted SPA (Phase 5)
 
+This doc covers the **React Native + Expo SPA** that ships embedded in the
+orchestrator binary. NomadDev also has a separate **native Go mobile app**
+(Android first, iOS later) covered by
+[`docs/mobile-native.md`](./mobile-native.md); both clients speak the same
+v1 wire protocol against the same orchestrator.
+
 Phase 5 is the human-facing client for the orchestrator: an Expo +
 TypeScript single-page app, built once with `expo export --platform web`
 and embedded into the orchestrator binary so the same Tailscale IP that
