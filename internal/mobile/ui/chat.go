@@ -5,6 +5,7 @@ package ui
 import (
 	"image"
 	"image/color"
+	"time"
 
 	"gioui.org/layout"
 	"gioui.org/op/clip"
@@ -17,15 +18,19 @@ import (
 	"github.com/mattcheramie/nomaddev/internal/wireclient"
 )
 
-// Chat renders the turn-by-turn conversation plus a text composer. M2 ships
-// the text-only path: a vertical list of user / assistant bubbles and a
-// single-line composer with a Send button. Live terminal, approval sheets,
-// and image attachments arrive in later milestones.
+// Chat renders the turn-by-turn conversation plus a text composer. M3 adds
+// the per-tool-call LiveTerminal directly under each assistant bubble; the
+// ApprovalSheet is rendered by the App shell above the chat surface.
 type Chat struct {
 	pal      Palette
 	list     widget.List
 	composer widget.Editor
 	send     widget.Clickable
+
+	// Per-tool-call LiveTerminal widgets, keyed by CommandID so scroll
+	// position survives across frames.
+	terminals    map[string]*LiveTerminal
+	terminalSeen map[string]time.Time
 
 	// Submit is invoked when the user taps Send with non-empty text.
 	Submit func(text string)
@@ -33,7 +38,11 @@ type Chat struct {
 
 // NewChat returns an empty Chat screen.
 func NewChat(pal Palette) *Chat {
-	c := &Chat{pal: pal}
+	c := &Chat{
+		pal:          pal,
+		terminals:    map[string]*LiveTerminal{},
+		terminalSeen: map[string]time.Time{},
+	}
 	c.list.Axis = layout.Vertical
 	c.list.ScrollToEnd = true
 	c.composer.SingleLine = false
@@ -65,6 +74,19 @@ func (c *Chat) Layout(gtx layout.Context, th *material.Theme, snap state.State) 
 	)
 }
 
+// terminalFor returns the LiveTerminal widget for the given command,
+// constructing it on first sight and recording the wall-clock anchor for
+// elapsed-time extrapolation between heartbeats.
+func (c *Chat) terminalFor(commandID string) (*LiveTerminal, time.Time) {
+	if t, ok := c.terminals[commandID]; ok {
+		return t, c.terminalSeen[commandID]
+	}
+	t := NewLiveTerminal(c.pal)
+	c.terminals[commandID] = t
+	c.terminalSeen[commandID] = time.Now()
+	return t, c.terminalSeen[commandID]
+}
+
 func (c *Chat) header(gtx layout.Context, th *material.Theme, snap state.State) layout.Dimensions {
 	inset := layout.Inset{Top: unit.Dp(36), Bottom: unit.Dp(8), Left: unit.Dp(16), Right: unit.Dp(16)}
 	return inset.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
@@ -84,23 +106,69 @@ func (c *Chat) header(gtx layout.Context, th *material.Theme, snap state.State) 
 }
 
 func (c *Chat) turns(gtx layout.Context, th *material.Theme, turns []state.Turn) layout.Dimensions {
+	// Flatten turns into a row list: [user, asst, tool*, ...] so each
+	// turn's tool calls render inline under the assistant bubble.
+	type row struct {
+		kind string // "user" | "asst" | "tool" | "err"
+		turn state.Turn
+		call state.ToolCall
+	}
+	rows := make([]row, 0, len(turns)*3)
+	for _, t := range turns {
+		rows = append(rows, row{kind: "user", turn: t})
+		if t.Error != "" {
+			rows = append(rows, row{kind: "err", turn: t})
+		} else {
+			rows = append(rows, row{kind: "asst", turn: t})
+		}
+		for _, call := range t.ToolCalls {
+			rows = append(rows, row{kind: "tool", turn: t, call: call})
+		}
+	}
+	now := time.Now()
 	inset := layout.Inset{Left: unit.Dp(12), Right: unit.Dp(12)}
 	return inset.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
 		ml := material.List(th, &c.list)
-		return ml.Layout(gtx, len(turns)*2, func(gtx layout.Context, i int) layout.Dimensions {
-			turn := turns[i/2]
-			if i%2 == 0 {
-				return c.bubble(gtx, th, turn.UserText, true)
+		return ml.Layout(gtx, len(rows), func(gtx layout.Context, i int) layout.Dimensions {
+			r := rows[i]
+			switch r.kind {
+			case "user":
+				return c.bubble(gtx, th, r.turn.UserText, true)
+			case "err":
+				return c.errorBubble(gtx, th, r.turn.Error)
+			case "tool":
+				return c.toolRow(gtx, th, r.call, now)
+			default:
+				text := r.turn.AssistantText
+				if !r.turn.Finished && text == "" && len(r.turn.ToolCalls) == 0 {
+					text = "…"
+				}
+				if text == "" {
+					return layout.Dimensions{}
+				}
+				return c.bubble(gtx, th, text, false)
 			}
-			text := turn.AssistantText
-			if !turn.Finished && text == "" {
-				text = "…"
-			}
-			if turn.Error != "" {
-				return c.errorBubble(gtx, th, turn.Error)
-			}
-			return c.bubble(gtx, th, text, false)
 		})
+	})
+}
+
+func (c *Chat) toolRow(gtx layout.Context, th *material.Theme, call state.ToolCall, now time.Time) layout.Dimensions {
+	term, anchor := c.terminalFor(call.CommandID)
+	pad := layout.Inset{Top: unit.Dp(6), Bottom: unit.Dp(6), Left: unit.Dp(4), Right: unit.Dp(4)}
+	return pad.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+		return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
+			layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+				lbl := material.Caption(th, call.Tool)
+				lbl.Color = c.pal.Muted
+				return lbl.Layout(gtx)
+			}),
+			layout.Rigid(layout.Spacer{Height: unit.Dp(4)}.Layout),
+			layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+				gtx.Constraints.Min.Y = gtx.Dp(180)
+				gtx.Constraints.Max.Y = gtx.Dp(280)
+				return term.Layout(gtx, th, call, anchor, now)
+			}),
+		)
 	})
 }
 
