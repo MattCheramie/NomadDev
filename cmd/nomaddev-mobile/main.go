@@ -24,6 +24,7 @@ import (
 	"path/filepath"
 
 	"gioui.org/app"
+	"gioui.org/io/event"
 
 	"github.com/mattcheramie/nomaddev/internal/mobile/state"
 	"github.com/mattcheramie/nomaddev/internal/mobile/ui"
@@ -41,7 +42,17 @@ func main() {
 		}
 		os.Exit(0)
 	}()
-	app.Main()
+	// app.Events replaces app.Main when we want non-window events such
+	// as URLEvent (deep links via the `nomaddev` scheme registered in
+	// the Makefile's android-debug / android-release targets). It
+	// never returns; the OS routes URL intents to the yield func
+	// whether or not a window is currently open.
+	app.Events(func(e event.Event) bool {
+		if u, ok := e.(app.URLEvent); ok {
+			a.HandleURL(u.URL)
+		}
+		return true
+	})
 }
 
 // tokenPath returns the on-disk location for the saved JWT. On Android and

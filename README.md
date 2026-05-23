@@ -1489,6 +1489,50 @@ a known-good base.
 Android-Keystore-backed AES-GCM token storage via JNI, deep-link intent
 filter, release-keystore signing, and the on-device smoke gate.
 
+#### 16.7 Signed release APK + deep-link intent filter (M6.2) — done
+- [x] **`-schemes nomaddev` registered** in both
+  [`make android-debug`](./Makefile) and the new `make android-release`,
+  so gogio emits the `<intent-filter>` Android needs to route
+  `nomaddev://` URLs to the app.
+- [x] **Deep-link handler** in
+  [`internal/mobile/ui/app.go`](./internal/mobile/ui/app.go).
+  `App.HandleURL(*url.URL)` accepts the native shape
+  (`nomaddev://onboard?server=…&token=…&sid=…`) **and** the SPA's
+  fragment shape (`https://orch/#token=…&sid=…`) so a single QR works
+  on both clients. The pure parser lives at
+  [`internal/mobile/state/deeplink.go`](./internal/mobile/state/deeplink.go)
+  and is unit-tested independently of Gio.
+- [x] **`app.Events` plumbing** in
+  [`cmd/nomaddev-mobile/main.go`](./cmd/nomaddev-mobile/main.go).
+  Replaces `app.Main()` with the iterator-style entry point so
+  `app.URLEvent` reaches the app whether or not a window is currently
+  in the foreground.
+- [x] **Signed-APK Makefile path** at
+  [`Makefile`](./Makefile). `android-release` reads `ANDROID_KEYSTORE`,
+  `ANDROID_KEYSTORE_PASS`, and `ANDROID_VERSION` from the environment
+  and hands them to gogio's `-signkey` / `-signpass`. A
+  `android-debug-keystore` helper generates a throwaway PKCS12
+  keystore for local smoke testing — strictly never used for real
+  releases (its password is published in the Makefile).
+- [x] **CI release pipeline** updated at
+  [`.github/workflows/release.yml`](./.github/workflows/release.yml).
+  New `android-apk` job provisions JDK 17 + Android SDK 34 + NDK 25,
+  installs gogio, decodes the keystore from
+  `secrets.ANDROID_KEYSTORE_BASE64`, and signs the APK with
+  `secrets.ANDROID_KEYSTORE_PASS`. Missing secrets degrade
+  gracefully to an unsigned APK so the release still produces an
+  artifact. The `release` job now attaches `nomaddev.apk` to the
+  GitHub Release alongside the orchestrator binaries.
+- [x] **`docs/mobile-android.md`** documents the keystore generation,
+  the env-var contract, the release pipeline, and the
+  `nomaddev://` + SPA-fragment URL shapes the app accepts.
+
+**Still deferred to M6.3 (on-device first-ship gate):**
+Android-Keystore-backed AES-GCM token storage via JNI (the M5 file-
+backed store is the floor; an attacker with debug-bridge access to an
+unlocked device can read it). On-device smoke tests against a real
+orchestrator over Tailscale, including the deep-link round trip.
+
 ---
 
 ## 🚀 Running the orchestrator

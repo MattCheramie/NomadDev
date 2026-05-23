@@ -19,7 +19,7 @@ GO_PACKAGES = $(shell go list ./... | grep -v '/mobile/node_modules/')
         test-docker test-gemini test-openai test-anthropic test-github test-github-live \
         lint fmt vet tidy clean ci \
         build-mobile build-full dev-mobile clean-mobile test-mobile \
-        android-tools android-debug android-install android-clean \
+        android-tools android-debug android-install android-release android-debug-keystore android-clean \
         docker-image docker-up docker-down quickstart-docker quickstart-systemd \
         gen-secret
 
@@ -171,11 +171,59 @@ android-debug:
 	$(GOGIO) -target android -arch arm64,arm \
 	    -appid $(ANDROID_APP_ID) \
 	    -version 0.1.0.1 \
+	    -schemes nomaddev \
 	    -o $(ANDROID_APK) \
 	    ./cmd/nomaddev-mobile
 
 android-install: android-debug
 	adb install -r $(ANDROID_APK)
+
+# android-release builds a signed APK ready to attach to a GitHub Release.
+# Required env vars (matched on the gogio flags below):
+#
+#   ANDROID_KEYSTORE        — path to the JKS / PKCS12 keystore file
+#   ANDROID_KEYSTORE_PASS   — keystore password (or set GOGIO_SIGNPASS)
+#   ANDROID_VERSION         — semver+versioncode, e.g. 0.1.0.1
+#                             (defaults to 0.1.0.1 when unset, but every
+#                             release must bump the trailing integer)
+#
+# Use `make android-debug-keystore` to generate a throwaway keystore for
+# local smoke tests; the real release keystore is provisioned by
+# infrastructure and never committed.
+ANDROID_VERSION ?= 0.1.0.1
+ANDROID_RELEASE_APK := $(ANDROID_DIR)/nomaddev-release.apk
+
+android-release:
+	@if [ -z "$$ANDROID_KEYSTORE" ]; then \
+	  echo "android-release: ANDROID_KEYSTORE must point at a JKS / PKCS12 file" >&2; \
+	  exit 2; \
+	fi
+	@if [ ! -f "$$ANDROID_KEYSTORE" ]; then \
+	  echo "android-release: ANDROID_KEYSTORE=$$ANDROID_KEYSTORE does not exist" >&2; \
+	  exit 2; \
+	fi
+	@mkdir -p $(ANDROID_DIR)
+	GOGIO_SIGNPASS="$$ANDROID_KEYSTORE_PASS" $(GOGIO) -target android \
+	    -arch arm64,arm \
+	    -appid $(ANDROID_APP_ID) \
+	    -version $(ANDROID_VERSION) \
+	    -schemes nomaddev \
+	    -signkey "$$ANDROID_KEYSTORE" \
+	    -o $(ANDROID_RELEASE_APK) \
+	    ./cmd/nomaddev-mobile
+
+# android-debug-keystore generates a throwaway PKCS12 keystore at
+# build/android/debug.keystore with the password "debug". Never use this
+# for a real release — the password is published in this Makefile.
+android-debug-keystore:
+	@mkdir -p $(ANDROID_DIR)
+	keytool -genkey -v \
+	    -keystore $(ANDROID_DIR)/debug.keystore \
+	    -storetype PKCS12 \
+	    -storepass debug \
+	    -alias nomaddev \
+	    -keyalg RSA -keysize 2048 -validity 10000 \
+	    -dname "CN=NomadDev Debug, OU=mobile, O=NomadDev, L=Unknown, S=Unknown, C=US"
 
 android-clean:
 	rm -rf $(ANDROID_DIR)

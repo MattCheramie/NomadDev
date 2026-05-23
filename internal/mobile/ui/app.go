@@ -7,6 +7,7 @@ import (
 	"errors"
 	"image/color"
 	"log"
+	"net/url"
 	"sync"
 	"time"
 
@@ -306,6 +307,38 @@ func (a *App) sendOrError(env event.Envelope) {
 	if err := sess.Send(env); err != nil {
 		a.store.SetLastError(err.Error())
 	}
+}
+
+// HandleURL processes a deep-link URL the OS routed to our app. Two
+// shapes are accepted, both delivering credentials onto the Onboard
+// screen and auto-connecting:
+//
+//   - nomaddev://onboard?server=<ws-url>&token=<jwt>&sid=<session-id>
+//   - any URL with `#token=…&sid=…` in the fragment — matches the SPA
+//     QR-onboarding link shape so a single QR works on both clients.
+//
+// Sid is optional; the orchestrator mints a fresh one if omitted.
+// Server is optional too — if absent we derive `wss://<host>/ws` from
+// the URL's authority, which is what the SPA's fragment-onboarding
+// path does. Any error in parsing surfaces via Store.SetLastError so
+// the operator sees it on the Onboard screen.
+func (a *App) HandleURL(u *url.URL) {
+	if u == nil {
+		return
+	}
+	server, token, _ := state.ExtractOnboardParams(u)
+	if token == "" {
+		a.store.SetLastError("deep link missing token")
+		return
+	}
+	if server == "" {
+		a.store.SetLastError("deep link missing server URL")
+		return
+	}
+	// Treat the deep link like the user just typed credentials on the
+	// Onboard screen — connect() persists the token, starts a session,
+	// and clears the previous error.
+	a.connect(server, token)
 }
 
 func (a *App) sendIntent(text string) {

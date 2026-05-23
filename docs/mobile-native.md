@@ -243,6 +243,16 @@ Deferred to Milestone M7 (see roadmap in
 The Gio code is platform-agnostic; only the token storage and image
 picker need iOS-specific shims.
 
+### Signed release APK + deep links
+
+`make android-release` produces a signed APK ready to attach to a
+GitHub Release; the gogio `-signkey` / `-signpass` flags handle the
+signing and `-schemes nomaddev` registers the `nomaddev://` URL
+scheme in the generated manifest. The CI release workflow runs the
+same target on every `v*` tag. See
+[`docs/mobile-android.md`](./mobile-android.md) for the keystore
+provisioning, environment variables, and deep-link URL formats.
+
 ## Onboarding flow
 
 1. User launches the app. `os.UserConfigDir() + "/nomaddev/token.json"`
