@@ -170,7 +170,7 @@ android-debug:
 	@mkdir -p $(ANDROID_DIR)
 	$(GOGIO) -target android -arch arm64,arm \
 	    -appid $(ANDROID_APP_ID) \
-	    -version 1 \
+	    -version 0.1.0.1 \
 	    -o $(ANDROID_APK) \
 	    ./cmd/nomaddev-mobile
 
