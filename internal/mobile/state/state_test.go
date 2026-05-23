@@ -1,7 +1,9 @@
 package state
 
 import (
+	"bytes"
 	"encoding/json"
+	"io"
 	"path/filepath"
 	"sync"
 	"testing"
@@ -10,6 +12,8 @@ import (
 	"github.com/mattcheramie/nomaddev/internal/event"
 	"github.com/mattcheramie/nomaddev/internal/wireclient"
 )
+
+func bytesReader(b []byte) io.Reader { return bytes.NewReader(b) }
 
 func TestStore_InitialSnapshot(t *testing.T) {
 	st := New().Snapshot()
@@ -336,6 +340,105 @@ func TestIngest_ToolApprovalRequestAndPop(t *testing.T) {
 	}
 	if _, ok := s.PopApproval("01APP"); ok {
 		t.Fatal("second Pop should miss")
+	}
+}
+
+func TestStore_AddPendingImage_EnforcesCaps(t *testing.T) {
+	s := New()
+	img := event.ImageInput{MediaType: "image/png", Data: "abc"}
+	for i := 0; i < MaxImageCount; i++ {
+		if err := s.AddPendingImage(img, 1024); err != nil {
+			t.Fatalf("add #%d: %v", i, err)
+		}
+	}
+	if got := len(s.Snapshot().PendingImages); got != MaxImageCount {
+		t.Fatalf("PendingImages len = %d, want %d", got, MaxImageCount)
+	}
+	if err := s.AddPendingImage(img, 1024); err != ErrTooManyImages {
+		t.Fatalf("over-cap add err = %v, want ErrTooManyImages", err)
+	}
+	if err := s.AddPendingImage(img, MaxImageBytes+1); err != ErrImageTooLarge {
+		t.Fatalf("over-bytes add err = %v, want ErrImageTooLarge", err)
+	}
+	if err := s.AddPendingImage(event.ImageInput{MediaType: "image/heic"}, 100); err != ErrUnsupportedMimeType {
+		t.Fatalf("bad-mime add err = %v, want ErrUnsupportedMimeType", err)
+	}
+}
+
+func TestStore_RemoveAndTakePendingImages(t *testing.T) {
+	s := New()
+	for _, tag := range []string{"a", "b", "c"} {
+		if err := s.AddPendingImage(event.ImageInput{MediaType: "image/png", Data: tag}, 1); err != nil {
+			t.Fatal(err)
+		}
+	}
+	s.RemovePendingImage(1) // drop "b"
+	left := s.Snapshot().PendingImages
+	if len(left) != 2 || left[0].Data != "a" || left[1].Data != "c" {
+		t.Fatalf("after Remove, PendingImages = %+v", left)
+	}
+	// Out-of-range removes are a no-op.
+	s.RemovePendingImage(99)
+	s.RemovePendingImage(-1)
+	if got := len(s.Snapshot().PendingImages); got != 2 {
+		t.Fatalf("PendingImages len = %d after no-op removes, want 2", got)
+	}
+	taken := s.TakePendingImages()
+	if len(taken) != 2 {
+		t.Fatalf("Take returned %d, want 2", len(taken))
+	}
+	if got := len(s.Snapshot().PendingImages); got != 0 {
+		t.Fatalf("after Take PendingImages = %d, want 0", got)
+	}
+}
+
+func TestDecodeImageAttachment_PNG(t *testing.T) {
+	// Minimal valid PNG header (8 bytes) is enough for http.DetectContentType
+	// to identify it; the rest of the data doesn't matter for the wire ship.
+	pngHeader := []byte{0x89, 'P', 'N', 'G', '\r', '\n', 0x1a, '\n', 1, 2, 3}
+	img, n, err := DecodeImageAttachment(bytesReader(pngHeader), "photo.png")
+	if err != nil {
+		t.Fatalf("DecodeImageAttachment: %v", err)
+	}
+	if img.MediaType != "image/png" {
+		t.Fatalf("MediaType = %q, want image/png", img.MediaType)
+	}
+	if n != len(pngHeader) {
+		t.Fatalf("decoded bytes = %d, want %d", n, len(pngHeader))
+	}
+	if img.Data == "" {
+		t.Fatal("Data should not be empty")
+	}
+}
+
+func TestDecodeImageAttachment_ExtensionFallback(t *testing.T) {
+	// Non-image bytes — DetectContentType returns octet-stream — but the
+	// filename hint claims webp, so the helper should believe the
+	// extension and pass the wire validator.
+	img, _, err := DecodeImageAttachment(bytesReader([]byte("not-actually-webp")), "x.webp")
+	if err != nil {
+		t.Fatalf("DecodeImageAttachment: %v", err)
+	}
+	if img.MediaType != "image/webp" {
+		t.Fatalf("MediaType = %q, want image/webp via extension", img.MediaType)
+	}
+}
+
+func TestDecodeImageAttachment_UnsupportedRejected(t *testing.T) {
+	_, _, err := DecodeImageAttachment(bytesReader([]byte("plain text")), "notes.txt")
+	if err != ErrUnsupportedMimeType {
+		t.Fatalf("err = %v, want ErrUnsupportedMimeType", err)
+	}
+}
+
+func TestStore_ClearPendingImagesOnSignOut(t *testing.T) {
+	s := New()
+	if err := s.AddPendingImage(event.ImageInput{MediaType: "image/png", Data: "x"}, 1); err != nil {
+		t.Fatal(err)
+	}
+	s.SetCredentials("", "")
+	if got := len(s.Snapshot().PendingImages); got != 0 {
+		t.Fatalf("after sign-out PendingImages = %d, want 0", got)
 	}
 }
 

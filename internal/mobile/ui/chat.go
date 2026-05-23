@@ -14,26 +14,45 @@ import (
 	"gioui.org/widget"
 	"gioui.org/widget/material"
 
+	"github.com/mattcheramie/nomaddev/internal/event"
 	"github.com/mattcheramie/nomaddev/internal/mobile/state"
 	"github.com/mattcheramie/nomaddev/internal/wireclient"
 )
 
 // Chat renders the turn-by-turn conversation plus a text composer. M3 adds
-// the per-tool-call LiveTerminal directly under each assistant bubble; the
-// ApprovalSheet is rendered by the App shell above the chat surface.
+// the per-tool-call LiveTerminal directly under each assistant bubble; M4
+// adds the image-attachment row above the composer. The ApprovalSheet is
+// rendered by the App shell above the chat surface.
 type Chat struct {
 	pal      Palette
 	list     widget.List
 	composer widget.Editor
 	send     widget.Clickable
+	attach   widget.Clickable
+
+	// removeBtns are reused across frames so a slow click registers on
+	// the same widget instance — Gio's Clickable swallows the press
+	// otherwise. Index matches the position in PendingImages.
+	removeBtns []widget.Clickable
 
 	// Per-tool-call LiveTerminal widgets, keyed by CommandID so scroll
 	// position survives across frames.
 	terminals    map[string]*LiveTerminal
 	terminalSeen map[string]time.Time
 
-	// Submit is invoked when the user taps Send with non-empty text.
+	// Submit is invoked when the user taps Send with non-empty text or
+	// at least one attachment queued.
 	Submit func(text string)
+
+	// AttachImage is invoked when the user taps the "+image" button.
+	// The App shell opens the platform image picker and stages the
+	// picked attachment via state.Store.AddPendingImage.
+	AttachImage func()
+
+	// RemoveImage is invoked when the user taps the X next to a staged
+	// image preview. The argument is the index in
+	// state.State.PendingImages at the time of the tap.
+	RemoveImage func(idx int)
 }
 
 // NewChat returns an empty Chat screen.
@@ -54,10 +73,28 @@ func NewChat(pal Palette) *Chat {
 // the current snapshot, which keeps the widget testable and stateless.
 func (c *Chat) Layout(gtx layout.Context, th *material.Theme, snap state.State) layout.Dimensions {
 	paint.Fill(gtx.Ops, c.pal.Bg)
+	// Keep the remove-button slice the same length as PendingImages so
+	// index math stays trivial. Growing reuses the existing tail, so a
+	// click already detected in this frame isn't dropped.
+	if cap(c.removeBtns) < len(snap.PendingImages) {
+		c.removeBtns = make([]widget.Clickable, len(snap.PendingImages))
+	} else {
+		c.removeBtns = c.removeBtns[:len(snap.PendingImages)]
+	}
+	for i := range c.removeBtns {
+		if c.removeBtns[i].Clicked(gtx) && c.RemoveImage != nil {
+			c.RemoveImage(i)
+		}
+	}
+	if c.attach.Clicked(gtx) && c.AttachImage != nil {
+		c.AttachImage()
+	}
 	if c.send.Clicked(gtx) {
 		text := c.composer.Text()
-		c.composer.SetText("")
-		if c.Submit != nil && text != "" {
+		// Allow attachment-only sends: if at least one image is queued
+		// the user can send without text, mirroring the SPA Composer.
+		if c.Submit != nil && (text != "" || len(snap.PendingImages) > 0) {
+			c.composer.SetText("")
 			c.Submit(text)
 		}
 	}
@@ -67,6 +104,9 @@ func (c *Chat) Layout(gtx layout.Context, th *material.Theme, snap state.State) 
 		}),
 		layout.Flexed(1, func(gtx layout.Context) layout.Dimensions {
 			return c.turns(gtx, th, snap.Turns)
+		}),
+		layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+			return c.attachmentsStrip(gtx, th, snap.PendingImages)
 		}),
 		layout.Rigid(func(gtx layout.Context) layout.Dimensions {
 			return c.composerRow(gtx, th)
@@ -222,6 +262,13 @@ func (c *Chat) composerRow(gtx layout.Context, th *material.Theme) layout.Dimens
 	inset := layout.Inset{Top: unit.Dp(8), Bottom: unit.Dp(16), Left: unit.Dp(12), Right: unit.Dp(12)}
 	return inset.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
 		return layout.Flex{Axis: layout.Horizontal, Alignment: layout.Middle, Spacing: layout.SpaceBetween}.Layout(gtx,
+			layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+				btn := material.Button(th, &c.attach, "+image")
+				btn.Background = c.pal.Surface
+				btn.Color = c.pal.Fg
+				return btn.Layout(gtx)
+			}),
+			layout.Rigid(layout.Spacer{Width: unit.Dp(8)}.Layout),
 			layout.Flexed(1, func(gtx layout.Context) layout.Dimensions {
 				ed := material.Editor(th, &c.composer, "Ask the orchestrator…")
 				ed.Color = c.pal.Fg
@@ -235,6 +282,63 @@ func (c *Chat) composerRow(gtx layout.Context, th *material.Theme) layout.Dimens
 			}),
 		)
 	})
+}
+
+// attachmentsStrip renders a single horizontal row of staged image
+// previews. Each preview is a small surface with the MIME-type tail
+// (e.g. "png") and a tap-to-remove X badge. Returns zero size when no
+// attachments are queued so the composer hugs the bottom edge.
+func (c *Chat) attachmentsStrip(gtx layout.Context, th *material.Theme, imgs []event.ImageInput) layout.Dimensions {
+	if len(imgs) == 0 {
+		return layout.Dimensions{}
+	}
+	inset := layout.Inset{Top: unit.Dp(4), Bottom: unit.Dp(4), Left: unit.Dp(12), Right: unit.Dp(12)}
+	return inset.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+		children := make([]layout.FlexChild, 0, len(imgs)*2)
+		for i, img := range imgs {
+			i, img := i, img
+			children = append(children, layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+				return c.imageChip(gtx, th, img, i)
+			}))
+			children = append(children, layout.Rigid(layout.Spacer{Width: unit.Dp(8)}.Layout))
+		}
+		return layout.Flex{Axis: layout.Horizontal, Alignment: layout.Middle}.Layout(gtx, children...)
+	})
+}
+
+func (c *Chat) imageChip(gtx layout.Context, th *material.Theme, img event.ImageInput, idx int) layout.Dimensions {
+	label := mimeTail(img.MediaType)
+	return material.ButtonLayout(th, &c.removeBtns[idx]).Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+		return layout.UniformInset(unit.Dp(6)).Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+			return layout.Flex{Axis: layout.Horizontal, Alignment: layout.Middle}.Layout(gtx,
+				layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+					lbl := material.Caption(th, label)
+					lbl.Color = c.pal.Fg
+					return lbl.Layout(gtx)
+				}),
+				layout.Rigid(layout.Spacer{Width: unit.Dp(6)}.Layout),
+				layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+					x := material.Caption(th, "×")
+					x.Color = c.pal.Danger
+					return x.Layout(gtx)
+				}),
+			)
+		})
+	})
+}
+
+// mimeTail returns "png" for "image/png", "jpeg" for "image/jpeg", etc.
+// Used in the attachment chip to label the preview without showing the
+// full MIME string.
+func mimeTail(mt string) string {
+	if i := len(mt) - 1; i >= 0 {
+		for j := i; j >= 0; j-- {
+			if mt[j] == '/' {
+				return mt[j+1:]
+			}
+		}
+	}
+	return mt
 }
 
 func statusText(s wireclient.Status) string {
