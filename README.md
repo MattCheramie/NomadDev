@@ -1442,6 +1442,53 @@ AES-GCM token storage. The read-only viewer this milestone ships proves
 the endpoint contract end-to-end so the editor work in M6 starts from
 a known-good base.
 
+#### 16.6 Schema-driven Config editor + restart-reconnect loop (M6.1) — done
+- [x] **`AdminClient` extended** with `ApplyConfig(ctx, changes, reset)`
+  and `RestartOrchestrator(ctx)`. PUT carries `{changes, reset}`; per-field
+  rejections surface as a typed `*state.ApplyConfigError` with a populated
+  `EnvVar` field so the editor can highlight the offending row.
+  Cross-field invariants and missing-scope failures come back with
+  `EnvVar == ""` and route to the banner instead.
+- [x] **State plumbing.** `State.RestartPending` flips to `true` after
+  `POST /admin/config/restart` and resets when the next `hello` arrives,
+  giving the polling loop a single source of truth. `Store.SetRestartPending`
+  is the explicit setter; the reducer in
+  [`internal/mobile/state/ingest.go`](./internal/mobile/state/ingest.go)
+  flips it to `false` on every `hello` so a reconnect after the restart
+  drives the editor into `ConfigPhaseApplied`.
+- [x] **Editor widget** at
+  [`internal/mobile/ui/config.go`](./internal/mobile/ui/config.go).
+  Dirty tracking per row + a category dirty-count badge. Type-driven
+  fields: bool / enum render as tap-to-cycle buttons; string / int /
+  duration / csv / float / int64 all share a text editor and rely on
+  the server's per-field validator. Read-only rows render the current
+  value as muted text. Secrets display `(secret set)` / `(unset)` when
+  empty. Each dirty row sprouts a Revert button; the footer carries a
+  Revert-all plus the Apply button. Dangerous changes gate Apply behind
+  an explicit "Acknowledge dangerous changes" confirmation and the
+  Apply button itself turns red.
+- [x] **Apply + Restart + polling state machine** in
+  [`internal/mobile/ui/app.go`](./internal/mobile/ui/app.go). Five phases
+  (`idle | applying | restarting | applied | reauth | failed`) match the
+  SPA's vocabulary. PUT runs on a goroutine; on 401 the editor flips to
+  `reauth` with a sign-out button; on field error it highlights the row
+  and opens the category. On PUT success the WS session tears down,
+  `POST /admin/config/restart` fires, and `driveRestartPolling`
+  rebuilds the session with 2.5 s checks against a 35 s budget. Success
+  re-fetches `GET /admin/config` so the operator sees the new effective
+  values.
+- [x] **Test coverage.** Four new tests in
+  [`internal/mobile/state/admin_test.go`](./internal/mobile/state/admin_test.go)
+  cover the PUT happy path (asserts the wire body shape against an
+  `httptest` server), the per-field rejection path (verifies the
+  `*ApplyConfigError` typed error carries `Status`, `EnvVar`, and
+  `Message`), the non-JSON 403 (config:write scope missing) surface,
+  and the restart endpoint tolerating both `200 OK` and `202 Accepted`.
+
+**Still deferred to M6.2 (Android Keystore + signed APK ship):**
+Android-Keystore-backed AES-GCM token storage via JNI, deep-link intent
+filter, release-keystore signing, and the on-device smoke gate.
+
 ---
 
 ## 🚀 Running the orchestrator

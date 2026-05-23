@@ -58,6 +58,10 @@ func applyHello(st *State, env event.Envelope) {
 		st.AvailableModels = append([]string(nil), p.AvailableModels...)
 	}
 	st.LastError = ""
+	// A fresh hello means the orchestrator is up and authenticated us. If
+	// the Config editor's restart was in flight, this is the signal the
+	// polling loop is waiting for.
+	st.RestartPending = false
 }
 
 func applyAssistantChunk(st *State, env event.Envelope) {

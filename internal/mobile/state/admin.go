@@ -1,6 +1,7 @@
 package state
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -118,4 +119,112 @@ func (c *AdminClient) FetchConfig(ctx context.Context) (ConfigSnapshot, error) {
 		return ConfigSnapshot{}, fmt.Errorf("state: decode /admin/config: %w", err)
 	}
 	return out, nil
+}
+
+// ApplyConfigResult carries the outcome of a successful PUT /admin/config.
+// RequiresRestart is always true after a non-empty change set; the editor
+// follows up with RestartOrchestrator unconditionally.
+type ApplyConfigResult struct {
+	Applied         int  `json:"applied"`
+	RequiresRestart bool `json:"requires_restart"`
+}
+
+// ApplyConfigError is returned when the orchestrator rejects a PUT — either
+// a per-field validation error (with EnvVar populated) or a cross-field
+// invariant violation (EnvVar empty). The editor renders EnvVar-keyed
+// errors inline next to the offending row and falls back to a banner for
+// the unkeyed kind.
+type ApplyConfigError struct {
+	Status  int
+	Message string
+	EnvVar  string
+}
+
+// Error implements the error interface.
+func (e *ApplyConfigError) Error() string {
+	if e.EnvVar != "" {
+		return fmt.Sprintf("state: /admin/config %d (%s): %s", e.Status, e.EnvVar, e.Message)
+	}
+	return fmt.Sprintf("state: /admin/config %d: %s", e.Status, e.Message)
+}
+
+// ApplyConfig PUTs a batch of changes to /admin/config. The orchestrator
+// validates the whole set atomically; on rejection the response body
+// carries a structured `{error, env_var?}` shape we surface verbatim.
+//
+// Pass `reset` to delete fields entirely (restore the orchestrator's
+// default for those env vars); pass `changes` to set new string values.
+// The two slices may share env vars only when the operator explicitly
+// chose "revert this field" — in which case `reset` wins on the server.
+func (c *AdminClient) ApplyConfig(ctx context.Context, changes map[string]string, reset []string) (ApplyConfigResult, error) {
+	if changes == nil {
+		changes = map[string]string{}
+	}
+	if reset == nil {
+		reset = []string{}
+	}
+	body, err := json.Marshal(struct {
+		Changes map[string]string `json:"changes"`
+		Reset   []string          `json:"reset"`
+	}{Changes: changes, Reset: reset})
+	if err != nil {
+		return ApplyConfigResult{}, fmt.Errorf("state: marshal apply body: %w", err)
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPut, c.base+"/admin/config", bytes.NewReader(body))
+	if err != nil {
+		return ApplyConfigResult{}, fmt.Errorf("state: build request: %w", err)
+	}
+	req.Header.Set("Authorization", "Bearer "+c.token)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json")
+	resp, err := c.client.Do(req)
+	if err != nil {
+		return ApplyConfigResult{}, fmt.Errorf("state: PUT /admin/config: %w", err)
+	}
+	defer resp.Body.Close()
+	rawResp, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if resp.StatusCode != http.StatusOK {
+		var errBody struct {
+			Error  string `json:"error"`
+			EnvVar string `json:"env_var"`
+		}
+		_ = json.Unmarshal(rawResp, &errBody)
+		msg := errBody.Error
+		if msg == "" {
+			msg = strings.TrimSpace(string(rawResp))
+		}
+		return ApplyConfigResult{}, &ApplyConfigError{
+			Status:  resp.StatusCode,
+			Message: msg,
+			EnvVar:  errBody.EnvVar,
+		}
+	}
+	var out ApplyConfigResult
+	if err := json.Unmarshal(rawResp, &out); err != nil {
+		return ApplyConfigResult{}, fmt.Errorf("state: decode apply response: %w", err)
+	}
+	return out, nil
+}
+
+// RestartOrchestrator hits POST /admin/config/restart so the daemon exits
+// cleanly and the supervisor (systemd / docker) brings it back with the
+// freshly-PUT config. The WebSocket drops as a side-effect; the caller
+// closes its session and starts polling for a fresh hello.
+func (c *AdminClient) RestartOrchestrator(ctx context.Context) error {
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.base+"/admin/config/restart", nil)
+	if err != nil {
+		return fmt.Errorf("state: build request: %w", err)
+	}
+	req.Header.Set("Authorization", "Bearer "+c.token)
+	req.Header.Set("Accept", "application/json")
+	resp, err := c.client.Do(req)
+	if err != nil {
+		return fmt.Errorf("state: POST /admin/config/restart: %w", err)
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusAccepted {
+		return fmt.Errorf("state: /admin/config/restart %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
+	}
+	return nil
 }
