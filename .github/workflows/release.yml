@@ -127,9 +127,95 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
+  android-apk:
+    name: signed android apk
+    # Builds the native Go mobile app into a signed APK on every tagged
+    # release and uploads it as an artifact the release job attaches to
+    # the GitHub Release. Operators sideload by downloading the APK from
+    # the release page.
+    #
+    # Signing inputs (repository secrets):
+    #   ANDROID_KEYSTORE_BASE64 — JKS/PKCS12 keystore, base64-encoded
+    #   ANDROID_KEYSTORE_PASS   — keystore password
+    #
+    # When either secret is unset the job skips the signing step but
+    # still uploads the unsigned APK so the release records the build.
+    # The release job then attaches whichever artifact was produced.
+    needs: version
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - name: set up Android SDK + NDK
+        uses: android-actions/setup-android@v3
+        with:
+          packages: 'platforms;android-34 build-tools;34.0.0 ndk;25.2.9519653'
+      - name: install gogio
+        run: make android-tools
+      - name: derive version for gogio
+        # gogio's -version flag is major.minor.patch.versioncode. We take
+        # the release version (e.g. v0.1.0) and append the commit count
+        # ahead of the parent tag for the integer versioncode — that
+        # gives a monotonically increasing value across releases.
+        id: gogio_version
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
+        run: |
+          semver="${VERSION#v}"
+          code=$(git rev-list --count HEAD)
+          echo "version=${semver}.${code}" >> "$GITHUB_OUTPUT"
+      - name: decode keystore (if provided)
+        id: keystore
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+        run: |
+          if [ -z "${ANDROID_KEYSTORE_BASE64}" ]; then
+            echo "no ANDROID_KEYSTORE_BASE64 secret set; producing an unsigned APK"
+            echo "have_keystore=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          mkdir -p build/android
+          echo "${ANDROID_KEYSTORE_BASE64}" | base64 -d > build/android/release.keystore
+          echo "have_keystore=true" >> "$GITHUB_OUTPUT"
+      - name: build signed APK
+        if: steps.keystore.outputs.have_keystore == 'true'
+        env:
+          ANDROID_KEYSTORE: ${{ github.workspace }}/build/android/release.keystore
+          ANDROID_KEYSTORE_PASS: ${{ secrets.ANDROID_KEYSTORE_PASS }}
+          ANDROID_NDK_ROOT: ${{ env.ANDROID_HOME }}/ndk/25.2.9519653
+          ANDROID_VERSION: ${{ steps.gogio_version.outputs.version }}
+        run: make android-release
+      - name: build unsigned APK
+        if: steps.keystore.outputs.have_keystore != 'true'
+        env:
+          ANDROID_NDK_ROOT: ${{ env.ANDROID_HOME }}/ndk/25.2.9519653
+        run: make android-debug
+      - name: stage APK for upload
+        run: |
+          mkdir -p dist
+          if [ -f build/android/nomaddev-release.apk ]; then
+            cp build/android/nomaddev-release.apk dist/nomaddev.apk
+          else
+            cp build/android/nomaddev.apk dist/nomaddev.apk
+          fi
+      - name: upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: nomaddev-android
+          path: dist/nomaddev.apk
+          retention-days: 14
+
   release:
     name: github release
-    needs: [version, binaries]
+    needs: [version, binaries, android-apk]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -161,7 +247,8 @@ jobs:
             dist/orchestrator-linux-arm64.sha256 \
             dist/orchestrator-linux-arm64.spdx.json \
             dist/orchestrator-linux-arm64.sig \
-            dist/orchestrator-linux-arm64.pem
+            dist/orchestrator-linux-arm64.pem \
+            dist/nomaddev.apk
 
   image:
     name: ghcr image (multi-arch)
