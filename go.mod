@@ -3,6 +3,7 @@ module github.com/mattcheramie/nomaddev
 go 1.25.10
 
 require (
+	gioui.org v0.10.0
 	github.com/anthropics/anthropic-sdk-go v1.44.1
 	github.com/docker/docker v25.0.6+incompatible
 	github.com/go-webauthn/webauthn v0.17.3
@@ -29,6 +30,7 @@ require (
 	cloud.google.com/go v0.116.0 // indirect
 	cloud.google.com/go/auth v0.9.3 // indirect
 	cloud.google.com/go/compute/metadata v0.9.0 // indirect
+	gioui.org/shader v1.0.8 // indirect
 	github.com/Microsoft/go-winio v0.4.14 // indirect
 	github.com/bahlo/generic-list-go v0.2.0 // indirect
 	github.com/beorn7/perks v1.0.1 // indirect
@@ -44,6 +46,7 @@ require (
 	github.com/fxamacker/cbor/v2 v2.9.2 // indirect
 	github.com/go-logr/logr v1.4.3 // indirect
 	github.com/go-logr/stdr v1.2.2 // indirect
+	github.com/go-text/typesetting v0.3.4 // indirect
 	github.com/go-viper/mapstructure/v2 v2.5.0 // indirect
 	github.com/go-webauthn/x v0.2.5 // indirect
 	github.com/gogo/protobuf v1.3.2 // indirect
@@ -88,6 +91,8 @@ require (
 	go.opentelemetry.io/proto/otlp v1.10.0 // indirect
 	go.yaml.in/yaml/v2 v2.4.2 // indirect
 	golang.org/x/crypto v0.51.0 // indirect
+	golang.org/x/exp/shiny v0.0.0-20250408133849-7e4ce0ab07d0 // indirect
+	golang.org/x/image v0.26.0 // indirect
 	golang.org/x/oauth2 v0.35.0 // indirect
 	golang.org/x/sync v0.20.0 // indirect
 	golang.org/x/sys v0.44.0 // indirect
