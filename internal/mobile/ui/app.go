@@ -34,6 +34,8 @@ type App struct {
 
 	onboard  *Onboard
 	chat     *Chat
+	settings *Settings
+	config   *Config
 	approval *ApprovalSheet
 
 	sessionMu sync.Mutex
@@ -43,8 +45,8 @@ type App struct {
 	// Explorer is set the first time Run binds to a window; subsequent
 	// pick requests reuse it. Nil during onboarding and across
 	// reconnects — the picker goroutine guards on this.
-	explorerMu sync.Mutex
-	explorer   *explorer.Explorer
+	explorerMu   sync.Mutex
+	explorer     *explorer.Explorer
 	pickInFlight bool
 }
 
@@ -58,12 +60,26 @@ func NewApp(store *state.Store, tokens state.TokenStore) *App {
 		pal:      pal,
 		onboard:  NewOnboard(pal),
 		chat:     NewChat(pal),
+		settings: NewSettings(pal),
+		config:   NewConfig(pal),
 		approval: NewApprovalSheet(pal),
 	}
 	a.onboard.Submit = a.connect
 	a.chat.Submit = a.sendIntent
 	a.chat.AttachImage = a.openImagePicker
 	a.chat.RemoveImage = a.store.RemovePendingImage
+	a.chat.OpenSettings = func() { a.store.SetScreen(state.ScreenSettings) }
+	a.settings.OnBack = func() { a.store.SetScreen(state.ScreenChat) }
+	a.settings.OnSelectModel = a.setModel
+	a.settings.OnResetHistory = a.resetHistory
+	a.settings.OnForceReconnect = a.forceReconnect
+	a.settings.OnOpenConfig = func() {
+		a.store.SetScreen(state.ScreenConfig)
+		a.refreshConfig() // kick a fetch when the user opens the screen
+	}
+	a.settings.OnSignOut = a.signOut
+	a.config.OnBack = func() { a.store.SetScreen(state.ScreenSettings) }
+	a.config.OnRefresh = a.refreshConfig
 	a.approval.Approve = a.approveTopApproval
 	a.approval.Deny = a.denyTopApproval
 	if url, token, err := tokens.Load(); err == nil {
@@ -131,8 +147,15 @@ func (a *App) Run(w *app.Window) error {
 			if snap.Token == "" {
 				a.onboard.Layout(gtx, th, snap.LastError)
 			} else {
-				a.chat.Layout(gtx, th, snap)
-				if len(snap.PendingApprovals) > 0 {
+				switch snap.Screen {
+				case state.ScreenSettings:
+					a.settings.Layout(gtx, th, snap, a.outboxLen())
+				case state.ScreenConfig:
+					a.config.Layout(gtx, th)
+				default:
+					a.chat.Layout(gtx, th, snap)
+				}
+				if len(snap.PendingApprovals) > 0 && snap.Screen == state.ScreenChat {
 					a.approval.Layout(gtx, th, snap.PendingApprovals[0], time.Now())
 				}
 			}
@@ -303,6 +326,87 @@ func (a *App) sendIntent(text string) {
 	if err := sess.Send(env); err != nil {
 		a.store.SetLastError(err.Error())
 	}
+}
+
+// outboxLen returns the current outbox depth so the Settings screen can
+// render the "N queued" indicator. Returns 0 when no session is alive.
+func (a *App) outboxLen() int {
+	a.sessionMu.Lock()
+	sess := a.session
+	a.sessionMu.Unlock()
+	if sess == nil {
+		return 0
+	}
+	return sess.OutboxLen()
+}
+
+// resetHistory clears the local chat surface immediately for snappy UX
+// and sends a user.command{reset_history} envelope so the orchestrator
+// wipes its server-side history too. The session token tickers reset as
+// a side-effect of ResetTurns since they belong to the same session.
+func (a *App) resetHistory() {
+	a.store.ResetTurns()
+	env, err := event.NewEnvelope(event.EventUserCommand, event.UserCommandPayload{Action: event.UserCommandResetHistory})
+	if err != nil {
+		a.store.SetLastError(err.Error())
+		return
+	}
+	a.sendOrError(env)
+}
+
+// setModel sends user.command{set_model, model}. The ack reducer in
+// state.Ingest sets the active model when the server accepts; on
+// rejection the orchestrator returns an ack with Error set and the
+// reducer leaves Model alone.
+func (a *App) setModel(model string) {
+	env, err := event.NewEnvelope(event.EventUserCommand, event.UserCommandPayload{
+		Action: event.UserCommandSetModel,
+		Model:  model,
+	})
+	if err != nil {
+		a.store.SetLastError(err.Error())
+		return
+	}
+	a.sendOrError(env)
+}
+
+// forceReconnect tears the current session down and rebuilds it against
+// the credentials currently on file. The next FrameEvent picks up the
+// new session via the same store-subscription path.
+func (a *App) forceReconnect() {
+	snap := a.store.Snapshot()
+	if snap.ServerURL == "" || snap.Token == "" {
+		return
+	}
+	a.startSession(snap.ServerURL, snap.Token)
+}
+
+// refreshConfig kicks a GET /admin/config in the background. The viewer
+// widget owns the snapshot + loading + error state internally so the App
+// only needs to hand it values via the setters.
+func (a *App) refreshConfig() {
+	snap := a.store.Snapshot()
+	if snap.ServerURL == "" || snap.Token == "" {
+		a.config.SetError("not connected")
+		return
+	}
+	client, err := state.NewAdminClient(snap.ServerURL, snap.Token)
+	if err != nil {
+		a.config.SetError(err.Error())
+		return
+	}
+	a.config.SetLoading(true)
+	go func() {
+		defer a.config.SetLoading(false)
+		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer cancel()
+		cs, err := client.FetchConfig(ctx)
+		if err != nil {
+			a.config.SetError(err.Error())
+			return
+		}
+		a.config.SetSnapshot(cs)
+	}()
 }
 
 // openImagePicker spawns the platform image chooser on a background

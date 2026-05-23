@@ -1393,8 +1393,54 @@ build instructions, and onboarding flow.
   `go test -race ./internal/...` green; `golangci-lint run ./...`
   0 issues; desktop build with the new explorer dependency succeeds.
 
-**Up next (M5):** Settings + Config screens (model picker, reset history,
-force reconnect, sign out, schema-driven admin config editor).
+#### 16.5 Settings + read-only Config viewer (M5) — done
+- [x] **Screen navigation.** New `state.Screen` enum (`chat | settings |
+  config`) plus `Store.SetScreen`. The App shell's frame switch routes
+  to the matching widget; the chat header's new ⚙ button flips to
+  Settings; Back / sign-out / reset paths route between them cleanly.
+- [x] **Settings screen** at
+  [`internal/mobile/ui/settings.go`](./internal/mobile/ui/settings.go) —
+  connection metadata block (server URL, status, session ID, last event
+  ID, outbox depth), the cumulative session-token + cost ticker, the
+  model picker (when the orchestrator's `hello` advertised
+  `available_models`; selected row highlighted, tap sends
+  `user.command{set_model}`), the last-error block, and four actions:
+  Reset history (sends `user.command{reset_history}` and clears local
+  `Turns` / `SessionTokens` immediately via the new `Store.ResetTurns`),
+  Force reconnect (rebuilds the `wireclient.Session` against saved
+  creds), Open server config (navigates + kicks a fetch), Sign out
+  (clears the token, returns to Onboard).
+- [x] **`AdminClient`** at
+  [`internal/mobile/state/admin.go`](./internal/mobile/state/admin.go).
+  Typed `ConfigSetting` / `ConfigSnapshot` mirroring
+  `internal/wsserver/config_handlers.go`. `DeriveHTTPBase` normalises
+  the WebSocket URL the App already has on file (`ws://host/ws`) into
+  the HTTP base the admin endpoints anchor at (`http://host`), with
+  HTTPS / explicit-http / trailing-path / missing-host cases covered.
+  `FetchConfig(ctx)` hits `GET /admin/config` with the bearer token
+  and surfaces the server's body verbatim on 401 / 403 so the
+  operator knows whether to re-onboard or ask for `config:read`.
+- [x] **Read-only Config viewer** at
+  [`internal/mobile/ui/config.go`](./internal/mobile/ui/config.go).
+  Settings grouped by category with one collapsible header per group
+  (▸ / ▾, drilldown survives re-fetch), per-row display of env var,
+  type, dangerous / read-only flags, value (`(secret set)` /
+  `(unset)` for secret rows), and help text. Refresh button kicks a
+  fresh `GET /admin/config`; loading and error states render inline.
+- [x] **Test coverage.** Four new tests in
+  [`internal/mobile/state/admin_test.go`](./internal/mobile/state/admin_test.go)
+  cover `DeriveHTTPBase` across the URL shapes the app actually sees
+  (ws/wss/http/https/trailing path/missing host/unsupported scheme),
+  the happy-path GET round-trip with bearer auth, the 403 error
+  surface, and the WS-URL-on-the-Onboard-screen → HTTP-call path.
+
+**Deferred to M6 (Android hardening + first ship):** the schema-driven
+Config **editor** (dirty tracking, type-driven field widgets,
+type-to-confirm for dangerous fields, Apply + Restart with 35 s
+timeout and 2.5 s polling reconnect) and Android-Keystore-backed
+AES-GCM token storage. The read-only viewer this milestone ships proves
+the endpoint contract end-to-end so the editor work in M6 starts from
+a known-good base.
 
 ---
 

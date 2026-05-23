@@ -40,20 +40,28 @@ internal/
     state/             in-memory store + reducer
       state.go         Store, Subscribe/Update/Snapshot, Turn, ToolCall,
                         TerminalLine, ApprovalRequest, SessionTokens,
-                        PendingImages + Add/Remove/Take (M4)
+                        PendingImages + Add/Remove/Take (M4),
+                        Screen + SetScreen + ResetTurns (M5)
       ingest.go        envelope → state reducer (mirrors mobile/src/state)
       images.go        DecodeImageAttachment (MIME sniff + base64) (M4)
+      admin.go         AdminClient — GET /admin/config + WS→HTTP URL
+                        derivation (M5; full editor + restart in M6)
       tokens.go        TokenStore (file-backed in M2, Keystore in M6)
 
     ui/                Gio widgets (build-tagged: android|ios|darwin|windows)
       theme.go         Palette + material.Theme
       app.go           shell: subscribe to store, drive screens + session,
-                        own the *explorer.Explorer for image pick (M4)
+                        own the *explorer.Explorer for image pick (M4),
+                        route between Chat/Settings/Config (M5)
       onboard.go       server URL + JWT entry
       chat.go          turn list (user/asst bubbles + inline LiveTerminals
-                        + attachments strip + composer with +image button)
+                        + attachments strip + composer + ⚙ header button)
       approval.go      ApprovalSheet modal (M3)
       terminal.go      LiveTerminal widget (M3)
+      settings.go      Settings screen — connection metadata, session
+                        tokens, model picker, reset/reconnect/sign-out (M5)
+      config.go        read-only /admin/config viewer with collapsible
+                        categories (M5; editor lands in M6)
 ```
 
 The `internal/mobile/ui` package is build-constrained to platforms Gio
@@ -127,6 +135,34 @@ The composer's `+image` button opens the platform image picker via
 4. On Send, `App.sendIntent` calls `Store.TakePendingImages` which
    atomically returns the queue and clears it, then ships them as
    `UserIntentPayload.Images` on the outbound envelope.
+
+## Navigation and the admin surface
+
+The Chat header has a ⚙ button that flips `State.Screen` to
+`ScreenSettings`. The Settings screen surfaces the connection
+metadata (server URL, status, session ID, last event ID, outbox
+depth), the cumulative session token + cost ticker, the model picker
+(populated from the `hello`'s `available_models`), the last error,
+and four action buttons:
+
+- **Reset history** — clears `State.Turns` and `State.SessionTokens`
+  locally for snappy UX, then sends a `user.command{reset_history}`
+  envelope so the orchestrator wipes its server-side history.
+- **Force reconnect** — tears down the current `wireclient.Session`
+  and rebuilds it against the saved credentials.
+- **Open server config** — navigates to the read-only `Config`
+  viewer and kicks an asynchronous `GET /admin/config` fetch.
+- **Sign out** — closes the session, clears `TokenStore`, and
+  returns to Onboard.
+
+The Config viewer (M5) is read-only: it groups settings by category,
+each category is collapsible, and rows show env var, type,
+dangerous / read-only flags, value (or `(secret set)` / `(unset)`
+for secrets), and the help text. The full schema-driven editor +
+Apply + Restart flow lands in M6 alongside the Android Keystore
+hardening; the read-only path proves the `/admin/config` endpoint
+works against the bearer token the WS client already carries
+(`AdminClient` derives the HTTP base from the WebSocket URL).
 
 The Status enum (`idle | connecting | open | closed | unauthorized`)
 matches `mobile/src/state/store.ts` so users moving between the SPA

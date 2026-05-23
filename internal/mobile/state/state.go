@@ -113,12 +113,25 @@ type SessionTokens struct {
 	CostUSD    float64
 }
 
+// Screen names the top-level surface the App shell is currently rendering.
+// Onboard is implicit (Token == "" routes to Onboard automatically); this
+// enum only governs the post-auth navigation between Chat, Settings, and
+// the read-only Config viewer.
+type Screen string
+
+const (
+	ScreenChat     Screen = "chat"
+	ScreenSettings Screen = "settings"
+	ScreenConfig   Screen = "config"
+)
+
 // State is the immutable snapshot exposed by Store.Snapshot.
 type State struct {
 	ServerURL        string
 	Token            string
 	SessionID        string
 	Status           wireclient.Status
+	Screen           Screen
 	Turns            []Turn
 	PendingApprovals []ApprovalRequest
 	// PendingImages are attachments the user has picked but not yet sent.
@@ -144,9 +157,27 @@ type Store struct {
 // New returns a fresh Store in the idle state.
 func New() *Store {
 	return &Store{
-		state: State{Status: wireclient.StatusIdle},
+		state: State{Status: wireclient.StatusIdle, Screen: ScreenChat},
 		subs:  make(map[chan struct{}]struct{}),
 	}
+}
+
+// SetScreen switches the top-level surface. Onboard is implicit (Token
+// empty); this only governs Chat/Settings/Config navigation.
+func (s *Store) SetScreen(scr Screen) {
+	s.Update(func(st *State) { st.Screen = scr })
+}
+
+// ResetTurns wipes the local conversation history. Called when the user
+// taps "Reset history" on Settings so the chat surface clears immediately;
+// the server side is wiped by the user.command{reset_history} envelope
+// the caller sends in parallel.
+func (s *Store) ResetTurns() {
+	s.Update(func(st *State) {
+		st.Turns = nil
+		st.PendingApprovals = nil
+		st.SessionTokens = SessionTokens{}
+	})
 }
 
 // Snapshot returns a value copy of the current state. The Turns slice is
