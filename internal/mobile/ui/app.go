@@ -80,6 +80,8 @@ func NewApp(store *state.Store, tokens state.TokenStore) *App {
 	a.settings.OnSignOut = a.signOut
 	a.config.OnBack = func() { a.store.SetScreen(state.ScreenSettings) }
 	a.config.OnRefresh = a.refreshConfig
+	a.config.Apply = a.applyConfig
+	a.config.Reauth = a.signOut
 	a.approval.Approve = a.approveTopApproval
 	a.approval.Deny = a.denyTopApproval
 	if url, token, err := tokens.Load(); err == nil {
@@ -407,6 +409,109 @@ func (a *App) refreshConfig() {
 		}
 		a.config.SetSnapshot(cs)
 	}()
+}
+
+// restartBudget bounds how long the apply flow waits for the orchestrator
+// to come back after POST /admin/config/restart. Matches RESTART_BUDGET_MS
+// in mobile/src/screens/ConfigScreen.tsx so users see the same timing on
+// both clients.
+const (
+	restartBudget   = 35 * time.Second
+	restartPollEvery = 2500 * time.Millisecond
+)
+
+// applyConfig drives the full PUT → POST /admin/config/restart →
+// polling-reconnect sequence on a background goroutine. The Config widget
+// reflects every phase via SetPhase / SetBanner / SetFieldError so the
+// UI thread only renders state — never blocks on the network.
+func (a *App) applyConfig(changes map[string]string) {
+	snap := a.store.Snapshot()
+	if snap.ServerURL == "" || snap.Token == "" {
+		a.config.SetBanner("not connected", "err")
+		return
+	}
+	client, err := state.NewAdminClient(snap.ServerURL, snap.Token)
+	if err != nil {
+		a.config.SetBanner(err.Error(), "err")
+		return
+	}
+	a.config.SetPhase(ConfigPhaseApplying)
+	a.config.SetBanner("Applying configuration…", "info")
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer cancel()
+		if _, err := client.ApplyConfig(ctx, changes, nil); err != nil {
+			a.handleApplyError(err)
+			return
+		}
+		// PUT succeeded — fire the restart.
+		if err := client.RestartOrchestrator(ctx); err != nil {
+			a.config.SetPhase(ConfigPhaseFailed)
+			a.config.SetBanner("Settings saved but restart failed: "+err.Error(), "err")
+			return
+		}
+		// Tear our current session down so the polling loop dials
+		// fresh against the restarted orchestrator.
+		a.store.SetRestartPending(true)
+		a.config.SetPhase(ConfigPhaseRestarting)
+		a.config.SetBanner("Restarting orchestrator…", "info")
+		a.stopSession()
+		a.driveRestartPolling(snap.ServerURL, snap.Token)
+	}()
+}
+
+func (a *App) handleApplyError(err error) {
+	var ae *state.ApplyConfigError
+	if errors.As(err, &ae) {
+		a.config.SetPhase(ConfigPhaseIdle)
+		if ae.Status == 401 {
+			a.config.SetPhase(ConfigPhaseReauth)
+			a.config.SetBanner("Token is no longer accepted — sign back in.", "err")
+			return
+		}
+		if ae.EnvVar != "" {
+			a.config.SetFieldError(ae.EnvVar, ae.Message)
+			a.config.SetBanner("A setting was rejected — see the highlighted field.", "err")
+			return
+		}
+		a.config.SetBanner(ae.Message, "err")
+		return
+	}
+	a.config.SetPhase(ConfigPhaseIdle)
+	a.config.SetBanner(err.Error(), "err")
+}
+
+// driveRestartPolling re-dials the orchestrator every restartPollEvery
+// until either a fresh hello clears RestartPending (success), the
+// session status flips to unauthorized (the JWT secret rotated → reauth),
+// or restartBudget elapses (failure). Runs on the goroutine the apply
+// path spawned; the UI thread only reads phase / banner.
+func (a *App) driveRestartPolling(serverURL, token string) {
+	deadline := time.Now().Add(restartBudget)
+	// Start a fresh session immediately; wireclient.Session handles its
+	// own dial/backoff/reconnect so we don't hammer the orchestrator
+	// while it's coming back up.
+	a.startSession(serverURL, token)
+	for {
+		time.Sleep(restartPollEvery)
+		snap := a.store.Snapshot()
+		if !snap.RestartPending && snap.Status == wireclient.StatusOpen {
+			a.config.SetPhase(ConfigPhaseApplied)
+			a.config.SetBanner("Configuration applied and the orchestrator is back online.", "ok")
+			a.refreshConfig()
+			return
+		}
+		if snap.Status == wireclient.StatusUnauthorized {
+			a.config.SetPhase(ConfigPhaseReauth)
+			a.config.SetBanner("JWT secret rotated — sign back in.", "err")
+			return
+		}
+		if time.Now().After(deadline) {
+			a.config.SetPhase(ConfigPhaseFailed)
+			a.config.SetBanner("Orchestrator did not come back in time. Check the server logs.", "err")
+			return
+		}
+	}
 }
 
 // openImagePicker spawns the platform image chooser on a background

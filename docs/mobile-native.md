@@ -60,8 +60,10 @@ internal/
       terminal.go      LiveTerminal widget (M3)
       settings.go      Settings screen — connection metadata, session
                         tokens, model picker, reset/reconnect/sign-out (M5)
-      config.go        read-only /admin/config viewer with collapsible
-                        categories (M5; editor lands in M6)
+      config.go        schema-driven /admin/config editor with dirty
+                        tracking, type-driven fields, dangerous-flag
+                        acknowledgement gate, and the Apply + Restart +
+                        polling-reconnect flow (M5 read-only → M6 editor)
 ```
 
 The `internal/mobile/ui` package is build-constrained to platforms Gio
@@ -155,14 +157,49 @@ and four action buttons:
 - **Sign out** — closes the session, clears `TokenStore`, and
   returns to Onboard.
 
-The Config viewer (M5) is read-only: it groups settings by category,
-each category is collapsible, and rows show env var, type,
-dangerous / read-only flags, value (or `(secret set)` / `(unset)`
-for secrets), and the help text. The full schema-driven editor +
-Apply + Restart flow lands in M6 alongside the Android Keystore
-hardening; the read-only path proves the `/admin/config` endpoint
-works against the bearer token the WS client already carries
-(`AdminClient` derives the HTTP base from the WebSocket URL).
+The Config editor (M6) groups settings by category. Each category is
+collapsible with a dirty-count badge. Type-driven field widgets:
+
+- **bool** and **enum** fields render as tap-to-cycle buttons (each
+  tap advances to the next value in the cycle list).
+- **string / int / duration / csv / float / int64** all hand off to a
+  text editor; the orchestrator's validator returns a per-field error
+  on apply when the input doesn't parse, and the editor surfaces that
+  error inline next to the row.
+- **Read-only** rows render the current value as muted text — no
+  editor, since the server rejects writes to them.
+- **Secrets** display `(secret set)` / `(unset)` when empty; the
+  text editor accepts new values, an empty submit is treated as "leave
+  unchanged" by the server.
+
+Dirty fields show a Revert button per row plus an aggregate Revert-all
+in the footer. When at least one staged change targets a row flagged
+`dangerous: true`, the Apply button is gated behind an explicit
+"Acknowledge dangerous changes" confirmation; the apply button itself
+turns red so the colour reinforces the typed acknowledgement.
+
+The Apply + Restart flow is a state machine (`idle` → `applying` →
+`restarting` → `applied` / `reauth` / `failed`) running on a background
+goroutine in the App shell:
+
+1. `App.applyConfig` PUTs the changes via `AdminClient.ApplyConfig`.
+   A per-field error (`env_var` populated) marks the offending row
+   and opens its category; a banner-only error renders above the
+   editor. 401 transitions to `reauth` so the operator re-onboards.
+2. On success, `POST /admin/config/restart` fires and the App tears
+   down its current `wireclient.Session` so the orchestrator can
+   exit cleanly.
+3. The polling loop (`driveRestartPolling`) starts a new session and
+   waits up to 35 s, checking every 2.5 s for a fresh hello to clear
+   `RestartPending` (success) or for the dial to come back with
+   `unauthorized` (JWT secret rotated → `reauth`).
+4. On `applied`, the editor re-fetches `GET /admin/config` so the
+   operator sees the new effective values.
+
+The same client (`AdminClient`) drives every endpoint; it derives the
+HTTP base from the WebSocket URL the App already has on file
+(`ws://host/ws` → `http://host`) so the operator never has to type a
+second URL.
 
 The Status enum (`idle | connecting | open | closed | unauthorized`)
 matches `mobile/src/state/store.ts` so users moving between the SPA

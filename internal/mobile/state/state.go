@@ -144,6 +144,10 @@ type State struct {
 	SessionTokens   SessionTokens
 	LastEventID     string
 	LastError       string
+	// RestartPending is true between POST /admin/config/restart and the
+	// next successful hello. The Config editor uses it to drive the
+	// post-restart polling loop.
+	RestartPending bool
 }
 
 // Store holds the app's mutable state behind a mutex and notifies
@@ -166,6 +170,14 @@ func New() *Store {
 // empty); this only governs Chat/Settings/Config navigation.
 func (s *Store) SetScreen(scr Screen) {
 	s.Update(func(st *State) { st.Screen = scr })
+}
+
+// SetRestartPending toggles the restart-in-progress flag. The Config
+// editor sets it to true after POST /admin/config/restart returns; the
+// next hello arriving via Ingest clears it so the polling loop can
+// declare success.
+func (s *Store) SetRestartPending(v bool) {
+	s.Update(func(st *State) { st.RestartPending = v })
 }
 
 // ResetTurns wipes the local conversation history. Called when the user

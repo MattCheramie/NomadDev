@@ -3,6 +3,7 @@ package state
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -112,5 +113,94 @@ func TestAdminClient_AcceptsWebSocketURL(t *testing.T) {
 	}
 	if _, err := c.FetchConfig(context.Background()); err != nil {
 		t.Fatalf("FetchConfig: %v", err)
+	}
+}
+
+func TestAdminClient_ApplyConfig_Success(t *testing.T) {
+	var got struct {
+		Changes map[string]string `json:"changes"`
+		Reset   []string          `json:"reset"`
+	}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPut || r.URL.Path != "/admin/config" {
+			t.Errorf("unexpected %s %s", r.Method, r.URL.Path)
+		}
+		if got := r.Header.Get("Authorization"); got != "Bearer t" {
+			t.Errorf("Authorization = %q", got)
+		}
+		_ = json.NewDecoder(r.Body).Decode(&got)
+		_, _ = w.Write([]byte(`{"applied":2,"requires_restart":true}`))
+	}))
+	defer srv.Close()
+	c, _ := NewAdminClient(srv.URL, "t")
+	res, err := c.ApplyConfig(context.Background(),
+		map[string]string{"NOMADDEV_HISTORY_BACKEND": "memory", "NOMADDEV_LOG_LEVEL": "debug"},
+		[]string{"NOMADDEV_OLD_FLAG"},
+	)
+	if err != nil {
+		t.Fatalf("ApplyConfig: %v", err)
+	}
+	if res.Applied != 2 || !res.RequiresRestart {
+		t.Fatalf("result = %+v", res)
+	}
+	if got.Changes["NOMADDEV_HISTORY_BACKEND"] != "memory" {
+		t.Fatalf("server saw changes = %+v", got.Changes)
+	}
+	if len(got.Reset) != 1 || got.Reset[0] != "NOMADDEV_OLD_FLAG" {
+		t.Fatalf("server saw reset = %v", got.Reset)
+	}
+}
+
+func TestAdminClient_ApplyConfig_FieldError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte(`{"error":"invalid backend","env_var":"NOMADDEV_HISTORY_BACKEND"}`))
+	}))
+	defer srv.Close()
+	c, _ := NewAdminClient(srv.URL, "t")
+	_, err := c.ApplyConfig(context.Background(), map[string]string{"NOMADDEV_HISTORY_BACKEND": "nope"}, nil)
+	if err == nil {
+		t.Fatal("ApplyConfig: want error, got nil")
+	}
+	var ae *ApplyConfigError
+	if !errors.As(err, &ae) {
+		t.Fatalf("err = %T %v, want *ApplyConfigError", err, err)
+	}
+	if ae.Status != 400 || ae.EnvVar != "NOMADDEV_HISTORY_BACKEND" || ae.Message != "invalid backend" {
+		t.Fatalf("ApplyConfigError = %+v", ae)
+	}
+}
+
+func TestAdminClient_ApplyConfig_NonJSONError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "missing scope config:write", http.StatusForbidden)
+	}))
+	defer srv.Close()
+	c, _ := NewAdminClient(srv.URL, "t")
+	_, err := c.ApplyConfig(context.Background(), map[string]string{"k": "v"}, nil)
+	var ae *ApplyConfigError
+	if !errors.As(err, &ae) {
+		t.Fatalf("err = %T %v", err, err)
+	}
+	if ae.Status != 403 || !strings.Contains(ae.Message, "config:write") || ae.EnvVar != "" {
+		t.Fatalf("ApplyConfigError = %+v", ae)
+	}
+}
+
+func TestAdminClient_RestartOrchestrator_AcceptsAccepted(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || r.URL.Path != "/admin/config/restart" {
+			t.Errorf("unexpected %s %s", r.Method, r.URL.Path)
+		}
+		// /admin/config/restart historically returned 200; some
+		// versions may answer 202 (Accepted). The client tolerates
+		// either.
+		w.WriteHeader(http.StatusAccepted)
+		_, _ = w.Write([]byte(`{"restarting":true}`))
+	}))
+	defer srv.Close()
+	c, _ := NewAdminClient(srv.URL, "t")
+	if err := c.RestartOrchestrator(context.Background()); err != nil {
+		t.Fatalf("RestartOrchestrator: %v", err)
 	}
 }
