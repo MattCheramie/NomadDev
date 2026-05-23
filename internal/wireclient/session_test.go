@@ -51,26 +51,6 @@ func newSessionFakeServer(t *testing.T, respond func(*websocket.Conn)) (*httptes
 	return srv, f
 }
 
-func (f *sessionFakeServer) sendHello(conn *websocket.Conn) error {
-	env, _ := event.NewEnvelope(event.EventHello, event.HelloPayload{SessionID: "sess"})
-	b, _ := env.Bytes()
-	return conn.WriteMessage(websocket.TextMessage, b)
-}
-
-func (f *sessionFakeServer) drainInto(conn *websocket.Conn) {
-	for {
-		_, data, err := conn.ReadMessage()
-		if err != nil {
-			return
-		}
-		env, derr := event.DecodeBytes(data)
-		if derr != nil {
-			continue
-		}
-		f.got <- env
-	}
-}
-
 func wsURLFrom(httpURL string) string {
 	return "ws" + strings.TrimPrefix(httpURL, "http") + "/ws"
 }
