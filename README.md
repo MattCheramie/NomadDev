@@ -15,7 +15,7 @@ The architecture is divided into six modular, decoupled components:
 3. **The Ephemeral Sandbox (Worker):** A Go-based wrapper around the Docker SDK that runs each tool call in a one-shot container with no network, read-only rootfs, and gVisor (`runsc`) isolation when the host advertises it. Hard memory / CPU / pids caps and a wall-clock timeout bound every execution.
 4. **The NLP-to-RPC Middleware (Logic):** A translation layer that maps natural language requests to predefined JSON schemas and remote procedure calls (RPC). Pluggable provider backends: Google GenAI (Gemini), OpenAI Chat Completions, Anthropic Messages API, and DeepSeek — each selectable via the `NOMADDEV_MIDDLEWARE_RUNTIME` env var and gated behind its own build tag.
 5. **The GitHub MCP Backend (Integration):** A subprocess-managed embedding of the official [github-mcp-server](https://github.com/github/github-mcp-server) exposing ~75 GitHub operations as additional tool calls. Mutating operations flow through the same approval gate as shell scripts.
-6. **The Control Hub (Client):** A React Native mobile application that consumes JSON event streams to render a clean, native UI instead of raw terminal output.
+6. **The Control Hub (Client):** Two interchangeable clients consume the same WebSocket protocol. The React Native + Expo SPA (Phase 5) is exported as static web assets and embedded into the orchestrator binary — it works in any phone browser without an install step. The native Go app (Phase 16, Android-first) is a single Gio binary sideloaded onto the device, with platform-native keystores, image pickers, and lifecycle integration.
 
 ---
 
@@ -1227,6 +1227,75 @@ for the orchestration walkthrough,
 `worker.update` wire shape, and
 [`docs/adr/0002-concurrent-worker-pool.md`](./docs/adr/0002-concurrent-worker-pool.md)
 for the design decisions.
+
+### Phase 16: Native Go mobile apps — in progress
+*Objective: ship a real native phone app (Android first, iOS later) as a
+second interface alongside the React Native SPA. The orchestrator and wire
+protocol are unchanged; the new client speaks the same v1 envelopes.*
+
+Built on [Gio](https://gioui.org) — a pure-Go cross-platform UI toolkit that
+produces real APKs and IPAs through `gogio`, the same toolchain Tailscale's
+mobile apps use. The native app lives at
+[`cmd/nomaddev-mobile/`](./cmd/nomaddev-mobile/), and the supporting
+packages at [`internal/mobile/`](./internal/mobile/) and
+[`internal/wireclient/`](./internal/wireclient/).
+
+#### 16.1 Foundation (M1) — done
+- [x] **New `internal/wireclient` package** extracted from
+  [`cmd/wsclient/main.go`](./cmd/wsclient/main.go) so the CLI smoke tool
+  and the native mobile binary share one transport. Owns dialing (Authorization
+  header or `Sec-WebSocket-Protocol: bearer, <jwt>` subprotocol), per-frame
+  timeouts, and envelope read/write. Existing wsclient stdout / flags / exit
+  codes are unchanged so [`infra/scripts/smoke.sh`](./infra/scripts/smoke.sh)
+  continues to work.
+- [x] **Gio scaffolding at [`cmd/nomaddev-mobile/`](./cmd/nomaddev-mobile/)**
+  — a placeholder window that confirms the build path end-to-end. The package
+  is build-constrained to platforms Gio supports without extra C deps; a
+  no-op stub keeps `go list ./...` happy on Linux CI runners.
+- [x] **Makefile targets** `android-tools`, `android-debug` (cross-compiles
+  to `build/android/nomaddev.apk` via `gogio -target android`),
+  `android-install`, `android-clean`.
+- [x] **CI job `mobile-native-android`** in
+  [`.github/workflows/ci.yml`](./.github/workflows/ci.yml): JDK 17 + Android
+  SDK 34 + NDK 25, builds an unsigned debug APK on every PR and uploads it
+  as a 14-day artifact.
+
+#### 16.2 Onboard + minimal Chat (M2) — done
+- [x] **Long-lived `wireclient.Session`** in
+  [`internal/wireclient/session.go`](./internal/wireclient/session.go).
+  Auto-reconnects with exponential backoff (1s → 30s cap), drains a 64-deep
+  outbox of queued `user.intent` envelopes on reconnect, replays missed
+  events via `client.hello{last_event_id}`, and surfaces status transitions
+  (`idle|connecting|open|closed|unauthorized`) plus inbound envelopes via
+  callbacks. Stops the loop on 401/403 instead of reconnect-spinning.
+- [x] **State store** at
+  [`internal/mobile/state/state.go`](./internal/mobile/state/state.go) mirrors
+  the Zustand slices in `mobile/src/state/store.ts`. `Subscribe` returns a
+  coalescing channel + unsubscribe; `Update` runs a callback against an
+  addressable state copy under one mutex and fans out to subscribers.
+  `Ingest` in `ingest.go` routes inbound envelopes (`hello`,
+  `assistant.chunk`, `assistant.message`, `error`, `ack`) into the store.
+- [x] **`TokenStore` interface** in
+  [`internal/mobile/state/tokens.go`](./internal/mobile/state/tokens.go).
+  M2 ships a plain JSON file under `os.UserConfigDir()/nomaddev/`; M6 will
+  swap in Android-Keystore-backed AES-GCM behind the same interface.
+- [x] **Gio screens** at [`internal/mobile/ui/`](./internal/mobile/ui/):
+  `Onboard` (server URL + JWT entry with masked token, error surface),
+  `Chat` (turn list with user/assistant bubbles, connection status header,
+  text-only composer), and an `App` shell that subscribes to the store,
+  drives the session in a background goroutine, and switches screens
+  based on auth state. Android's Back button signs the user out.
+- [x] **Test coverage.** `internal/wireclient/session_test.go` covers
+  status transitions, outbox cap (drops oldest), outbox drain on reconnect,
+  401 → unauthorized stop, and backoff saturation, all with a fake
+  WebSocket server. `internal/mobile/state/state_test.go` covers store
+  initial state, sign-out clearing, subscribe-coalesce, the full ingest
+  reducer, file-backed token roundtrip, and concurrent-update race safety.
+
+See [`docs/mobile-native.md`](./docs/mobile-native.md) for the architecture,
+build instructions, and onboarding flow. **Up next (M3):** ApprovalSheet
+with type-to-confirm + countdown, LiveTerminal with auto-tail and heartbeat
+elapsed-time.
 
 ---
 

@@ -1,11 +1,11 @@
 // Command nomaddev-mobile is the Gio entrypoint for the native Android and
 // iOS NomadDev apps. It builds into a real APK / IPA via gogio (see the
 // android-* targets in the top-level Makefile), and into a desktop window on
-// host platforms for fast iteration.
+// host platforms with the right system libs for fast iteration.
 //
-// M1 ships only the foundation: a placeholder window that confirms the Go +
-// Gio toolchain builds and the binary launches. M2 lands real screens
-// (Onboard, Chat) on top of internal/wireclient and internal/mobile/state.
+// M2 lands the Onboard + minimal Chat screens on top of the M1 foundation:
+// a state.Store reducer, a wireclient.Session for reconnect/outbox, and a
+// file-backed token cache (Keystore-backed AES-GCM arrives in M6).
 //
 // Build constraint: Linux desktop iteration needs X11/Wayland dev headers
 // (libwayland-dev, libxkbcommon-dev, libgles2-mesa-dev, libegl1-mesa-dev).
@@ -19,25 +19,24 @@
 package main
 
 import (
-	"image/color"
 	"log"
 	"os"
+	"path/filepath"
 
 	"gioui.org/app"
-	"gioui.org/font/gofont"
-	"gioui.org/layout"
-	"gioui.org/op"
-	"gioui.org/op/paint"
-	"gioui.org/text"
-	"gioui.org/unit"
-	"gioui.org/widget/material"
+
+	"github.com/mattcheramie/nomaddev/internal/mobile/state"
+	"github.com/mattcheramie/nomaddev/internal/mobile/ui"
 )
 
 func main() {
+	store := state.New()
+	tokens := state.NewFileTokenStore(tokenPath())
+	a := ui.NewApp(store, tokens)
 	go func() {
 		w := new(app.Window)
 		w.Option(app.Title("NomadDev"))
-		if err := loop(w); err != nil {
+		if err := a.Run(w); err != nil {
 			log.Fatal(err)
 		}
 		os.Exit(0)
@@ -45,36 +44,14 @@ func main() {
 	app.Main()
 }
 
-func loop(w *app.Window) error {
-	th := material.NewTheme()
-	th.Shaper = text.NewShaper(text.WithCollection(gofont.Collection()))
-	th.Palette.Bg = color.NRGBA{R: 0x0d, G: 0x12, B: 0x1a, A: 0xff}
-	th.Palette.Fg = color.NRGBA{R: 0xe5, G: 0xee, B: 0xfa, A: 0xff}
-
-	var ops op.Ops
-	for {
-		switch e := w.Event().(type) {
-		case app.DestroyEvent:
-			return e.Err
-		case app.FrameEvent:
-			gtx := app.NewContext(&ops, e)
-			paint.Fill(gtx.Ops, th.Palette.Bg)
-			layout.Center.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
-				return layout.Flex{Axis: layout.Vertical, Alignment: layout.Middle}.Layout(gtx,
-					layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-						title := material.H4(th, "NomadDev")
-						title.Color = th.Palette.Fg
-						return title.Layout(gtx)
-					}),
-					layout.Rigid(layout.Spacer{Height: unit.Dp(8)}.Layout),
-					layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-						sub := material.Body1(th, "native shell — M1 foundation")
-						sub.Color = color.NRGBA{R: 0x8a, G: 0xa0, B: 0xc6, A: 0xff}
-						return sub.Layout(gtx)
-					}),
-				)
-			})
-			e.Frame(gtx.Ops)
-		}
+// tokenPath returns the on-disk location for the saved JWT. On Android and
+// iOS this lives under the app's private data directory; gogio sets up the
+// process so os.UserConfigDir resolves there. On desktop hosts it falls
+// back to the OS-conventional config dir.
+func tokenPath() string {
+	base, err := os.UserConfigDir()
+	if err != nil || base == "" {
+		base = "."
 	}
+	return filepath.Join(base, "nomaddev", "token.json")
 }
