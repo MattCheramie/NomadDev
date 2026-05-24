@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"io"
+	"os"
 	"path/filepath"
 	"sync"
 	"testing"
@@ -440,6 +441,122 @@ func TestStore_ClearPendingImagesOnSignOut(t *testing.T) {
 	if got := len(s.Snapshot().PendingImages); got != 0 {
 		t.Fatalf("after sign-out PendingImages = %d, want 0", got)
 	}
+}
+
+func TestEncryptedFileTokenStore_RoundTrip(t *testing.T) {
+	dir := t.TempDir()
+	codec := NewAESGCMCodec(filepath.Join(dir, "token.key"))
+	store := NewEncryptedFileTokenStore(filepath.Join(dir, "token"), codec)
+	if _, _, err := store.Load(); err != ErrNoToken {
+		t.Fatalf("Load on empty: err = %v, want ErrNoToken", err)
+	}
+	if err := store.Save("ws://x/ws", "tok"); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	url, tok, err := store.Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if url != "ws://x/ws" || tok != "tok" {
+		t.Fatalf("Load returned (%q,%q)", url, tok)
+	}
+	// File on disk is ciphertext.
+	raw, err := readFile(t, filepath.Join(dir, "token"))
+	if err != nil {
+		t.Fatalf("read disk file: %v", err)
+	}
+	if bytes.Contains(raw, []byte("ws://x/ws")) || bytes.Contains(raw, []byte("tok")) {
+		t.Fatalf("token file contains plaintext credentials: %q", raw)
+	}
+}
+
+func TestEncryptedFileTokenStore_ClearWipesKey(t *testing.T) {
+	dir := t.TempDir()
+	keyPath := filepath.Join(dir, "token.key")
+	tokenPath := filepath.Join(dir, "token")
+	store := NewEncryptedFileTokenStore(tokenPath, NewAESGCMCodec(keyPath))
+	if err := store.Save("ws://x/ws", "tok"); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	if err := store.Clear(); err != nil {
+		t.Fatalf("Clear: %v", err)
+	}
+	for _, p := range []string{keyPath, tokenPath} {
+		if _, err := readFile(t, p); err == nil {
+			t.Fatalf("%s should be deleted after Clear", p)
+		}
+	}
+}
+
+func TestEncryptedFileTokenStore_MigratesLegacyPlainJSON(t *testing.T) {
+	// A v0.x install with the M2 plaintext-JSON token should keep
+	// working after the binary upgrades — the encryptedFileStore
+	// detects the JSON shape on Load, returns the values, and the
+	// next Save rewrites the file as ciphertext.
+	dir := t.TempDir()
+	tokenPath := filepath.Join(dir, "token")
+	legacy := `{"server_url":"ws://legacy/ws","token":"legacy-jwt"}`
+	if err := writeFile(t, tokenPath, []byte(legacy)); err != nil {
+		t.Fatalf("seed legacy file: %v", err)
+	}
+	codec := NewAESGCMCodec(filepath.Join(dir, "token.key"))
+	store := NewEncryptedFileTokenStore(tokenPath, codec)
+	url, tok, err := store.Load()
+	if err != nil {
+		t.Fatalf("Load legacy: %v", err)
+	}
+	if url != "ws://legacy/ws" || tok != "legacy-jwt" {
+		t.Fatalf("legacy values = (%q, %q)", url, tok)
+	}
+	// Next Save (e.g. a token refresh) re-encrypts.
+	if err := store.Save(url, "rotated-jwt"); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	raw, err := readFile(t, tokenPath)
+	if err != nil {
+		t.Fatalf("read disk file: %v", err)
+	}
+	if bytes.Contains(raw, []byte("rotated-jwt")) {
+		t.Fatalf("post-migration file still contains plaintext: %q", raw)
+	}
+	// Round-trip the new value to be sure.
+	_, tok, err = store.Load()
+	if err != nil {
+		t.Fatalf("Load after migration: %v", err)
+	}
+	if tok != "rotated-jwt" {
+		t.Fatalf("rotated token = %q", tok)
+	}
+}
+
+func TestEncryptedFileTokenStore_NilCodecIsPassthrough(t *testing.T) {
+	// Passing nil for the codec is a safety net — the store falls back
+	// to PassthroughCodec rather than crashing.
+	dir := t.TempDir()
+	store := NewEncryptedFileTokenStore(filepath.Join(dir, "token"), nil)
+	if err := store.Save("ws://x/ws", "abc"); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	url, tok, err := store.Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if url != "ws://x/ws" || tok != "abc" {
+		t.Fatalf("nil-codec round-trip = (%q,%q)", url, tok)
+	}
+}
+
+func readFile(t *testing.T, path string) ([]byte, error) {
+	t.Helper()
+	return os.ReadFile(path)
+}
+
+func writeFile(t *testing.T, path string, data []byte) error {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return err
+	}
+	return os.WriteFile(path, data, 0o600)
 }
 
 func TestStore_ConcurrentUpdates_NoTorn(t *testing.T) {

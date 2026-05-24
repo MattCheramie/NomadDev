@@ -32,7 +32,7 @@ import (
 
 func main() {
 	store := state.New()
-	tokens := state.NewFileTokenStore(tokenPath())
+	tokens := state.NewEncryptedFileTokenStore(tokenPath(), state.NewAESGCMCodec(tokenKeyPath()))
 	a := ui.NewApp(store, tokens)
 	go func() {
 		w := new(app.Window)
@@ -55,14 +55,37 @@ func main() {
 	})
 }
 
-// tokenPath returns the on-disk location for the saved JWT. On Android and
-// iOS this lives under the app's private data directory; gogio sets up the
-// process so os.UserConfigDir resolves there. On desktop hosts it falls
-// back to the OS-conventional config dir.
+// tokenPath returns the on-disk location for the saved JWT envelope. On
+// Android and iOS this lives under the app's private data directory;
+// gogio sets up the process so os.UserConfigDir resolves there. On
+// desktop hosts it falls back to the OS-conventional config dir.
+//
+// File extension intentionally absent — the contents are an AES-GCM
+// ciphertext blob (binary), not JSON. The encryptedFileStore transparently
+// migrates the legacy `token.json` plaintext file on first Load (see
+// looksLikePlainJSON in internal/mobile/state/tokens.go); we look for
+// the legacy file first so an existing M5/M6.2 install keeps working.
 func tokenPath() string {
 	base, err := os.UserConfigDir()
 	if err != nil || base == "" {
 		base = "."
 	}
-	return filepath.Join(base, "nomaddev", "token.json")
+	// Prefer the legacy path when present so we drive the migration
+	// codepath; once Save rewrites it the contents become ciphertext.
+	legacy := filepath.Join(base, "nomaddev", "token.json")
+	if _, err := os.Stat(legacy); err == nil {
+		return legacy
+	}
+	return filepath.Join(base, "nomaddev", "token")
+}
+
+// tokenKeyPath returns the on-disk location for the per-install AES-256
+// key the encrypted token store uses. Lives next to the token file at
+// 0o600 perms — see internal/mobile/state/codec.go.
+func tokenKeyPath() string {
+	base, err := os.UserConfigDir()
+	if err != nil || base == "" {
+		base = "."
+	}
+	return filepath.Join(base, "nomaddev", "token.key")
 }

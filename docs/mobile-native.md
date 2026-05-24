@@ -41,12 +41,18 @@ internal/
       state.go         Store, Subscribe/Update/Snapshot, Turn, ToolCall,
                         TerminalLine, ApprovalRequest, SessionTokens,
                         PendingImages + Add/Remove/Take (M4),
-                        Screen + SetScreen + ResetTurns (M5)
+                        Screen + SetScreen + ResetTurns (M5),
+                        RestartPending + SetRestartPending (M6.1)
       ingest.go        envelope → state reducer (mirrors mobile/src/state)
       images.go        DecodeImageAttachment (MIME sniff + base64) (M4)
-      admin.go         AdminClient — GET /admin/config + WS→HTTP URL
-                        derivation (M5; full editor + restart in M6)
-      tokens.go        TokenStore (file-backed in M2, Keystore in M6)
+      admin.go         AdminClient — /admin/config GET + PUT +
+                        /admin/config/restart with typed errors (M5/M6.1)
+      deeplink.go      ExtractOnboardParams — nomaddev:// and SPA-fragment
+                        URL parser shared by HandleURL (M6.2)
+      tokens.go        TokenStore + encryptedFileStore with auto-migration
+                        from the legacy plain-JSON layout (M6.3)
+      codec.go         TokenCodec + Passthrough + AES-256-GCM with
+                        per-install key file at 0o600 (M6.3)
 
     ui/                Gio widgets (build-tagged: android|ios|darwin|windows)
       theme.go         Palette + material.Theme
@@ -252,6 +258,36 @@ scheme in the generated manifest. The CI release workflow runs the
 same target on every `v*` tag. See
 [`docs/mobile-android.md`](./mobile-android.md) for the keystore
 provisioning, environment variables, and deep-link URL formats.
+
+### Token encryption at rest (M6.3)
+
+The saved JWT lives at `os.UserConfigDir()/nomaddev/token`. M6.3 wraps
+that file in AES-256-GCM via the new `TokenCodec` interface:
+
+- `state.NewAESGCMCodec(path)` lazily generates a 32-byte random key
+  on first use, persists it at `os.UserConfigDir()/nomaddev/token.key`
+  with mode `0o600`, and uses it to seal every Save.
+- `state.NewEncryptedFileTokenStore(path, codec)` wraps the codec
+  around the same on-disk layout the M2 store used. AES-GCM provides
+  authenticated encryption — a tampered file surfaces as a decrypt
+  error rather than silently corrupted credentials.
+- The store auto-migrates the legacy plain-JSON file from M2: if Load
+  sees an opening `{` it parses the file as plaintext, returns the
+  values, and the next Save rewrites the file as ciphertext. No
+  manual upgrade step.
+- `Clear` (sign-out) deletes both the token and the key file so the
+  next session starts with a fresh key — any previously-leaked key
+  file is self-healing on the next onboard.
+
+The threat model the codec defends against is "an attacker reads the
+token file alone" (cloud backup, casual filesystem-share, photo of
+the operator's screen during recovery). An attacker who has read
+access to the whole app private dir — root on the device,
+debug-bridge access to an unlocked phone — reads both files and can
+decrypt. Closing that gap requires binding the key to the
+hardware-backed Android Keystore, which needs a JNI bridge and
+on-device validation; that work is deferred to M6.4 and the
+`TokenCodec` interface is the seam it'll plug into.
 
 ## Onboarding flow
 

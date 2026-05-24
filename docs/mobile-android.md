@@ -140,13 +140,36 @@ parses the URL via the `ExtractOnboardParams` helper in
 saves the credentials via the `TokenStore`, and starts a session — the
 same code path the Onboard screen's Connect button drives.
 
+## Token encryption at rest
+
+M6.3 wraps the saved JWT in AES-256-GCM using a per-install key. The
+two files at `os.UserConfigDir()/nomaddev/`:
+
+- `token` — AES-GCM ciphertext (binary, was JSON in M2). The first
+  12 bytes are the GCM nonce; the rest is the sealed payload + tag.
+- `token.key` — 32-byte AES-256 key, `0o600` perms, generated from
+  `crypto/rand` on first use.
+
+Both files live in the app's private data directory, which on Android
+means they're inside the app's UID-scoped sandbox. An attacker reading
+the token file alone gets ciphertext. An attacker with root /
+debug-bridge access to an unlocked device can read the key file too
+and decrypt — closing that gap requires the Android Keystore JNI
+bridge that's the next milestone. The `TokenCodec` interface in
+[`internal/mobile/state/codec.go`](../internal/mobile/state/codec.go)
+is the seam the Keystore implementation plugs into.
+
+The store auto-migrates the legacy M2 plain-JSON file on first Load:
+if the contents look like JSON, it parses them as plaintext and the
+next Save rewrites the file as ciphertext. Existing v0.x installs
+upgrade transparently.
+
 ## What's not in this milestone
 
-- **Android-Keystore-backed AES-GCM token storage.** Tokens still
-  live in `os.UserConfigDir()/nomaddev/token.json` (private to the
-  app's data directory). Upgrading the storage to Keystore-backed
-  encryption requires a JNI bridge and needs on-device validation;
-  it's the next milestone.
+- **Android-Keystore-backed token storage.** The AES-GCM codec ships
+  today (defense-in-depth against file-only exfiltration); binding
+  the key to the hardware-backed Keystore needs a JNI bridge and
+  on-device validation. The `TokenCodec` interface is the seam.
 - **Google Play Store distribution.** The release pipeline produces
   a sideloadable APK; the Play Store requires an AAB (Android App
   Bundle) and a developer-account upload step. Sideload via GitHub

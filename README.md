@@ -1533,6 +1533,54 @@ backed store is the floor; an attacker with debug-bridge access to an
 unlocked device can read it). On-device smoke tests against a real
 orchestrator over Tailscale, including the deep-link round trip.
 
+#### 16.8 Token encryption at rest (M6.3) — done
+- [x] **`TokenCodec` interface** at
+  [`internal/mobile/state/codec.go`](./internal/mobile/state/codec.go) —
+  the AEAD seam every future on-device key store plugs into. Two
+  implementations ship today: `PassthroughCodec` (no-op, used in tests
+  and on platforms with no encryption yet) and `AESGCMCodec` (default
+  on the native app).
+- [x] **`AESGCMCodec`** — lazy 32-byte key generation from
+  `crypto/rand`, persisted at `os.UserConfigDir()/nomaddev/token.key`
+  with `0o600` perms on first use. Encrypt prepends a random
+  per-message GCM nonce so identical plaintexts produce distinct
+  ciphertexts. Decrypt is authenticated — a flipped byte surfaces as
+  a decrypt error, never as silent corruption. `Wipe()` deletes the
+  key file and clears the in-memory cache so any previously-leaked
+  key is self-healing on the next onboard.
+- [x] **`encryptedFileTokenStore`** at
+  [`internal/mobile/state/tokens.go`](./internal/mobile/state/tokens.go).
+  Wraps the codec around the same on-disk path the M2 store used.
+  `Clear()` deletes the token file **and** the codec's key file so
+  sign-out leaves no remnant on disk. `Save` writes atomically via a
+  `.tmp` sibling + `os.Rename`, matching the M2 invariant.
+- [x] **Seamless upgrade from M2.** The store detects the legacy
+  plain-JSON layout (`looksLikePlainJSON` sniffs for an opening `{`
+  and a `"token"` key) and parses it directly on Load; the next Save
+  rewrites the file as ciphertext. v0.x installs that already have
+  the M2 file at `token.json` keep working — the cmd entrypoint
+  prefers that path when it exists and falls back to the new
+  extensionless `token` path otherwise.
+- [x] **`cmd/nomaddev-mobile/main.go`** wires the encrypted store as
+  the default. `tokenKeyPath()` resolves the key-file location next
+  to the token; both live in the app's UID-scoped private dir on
+  Android / iOS and `os.UserConfigDir()` on desktop dev.
+- [x] **Test coverage.** 11 new tests across two files:
+  `codec_test.go` covers Passthrough round-trip, AES-GCM round-trip,
+  nonce uniqueness across two encrypts, key persistence across
+  codec instances (process-restart equivalent), `0o600` key file
+  permissions, tamper rejection, Wipe forcing a fresh key, and
+  short-ciphertext rejection. `state_test.go` covers the encrypted
+  store's round-trip, Clear-wipes-key, the legacy plain-JSON
+  migration path, and the nil-codec safety net.
+
+**Still deferred to M6.4 (the on-device first-ship gate, take 2):**
+binding the AES key to the Android Keystore via JNI so an attacker
+with debug-bridge access to an unlocked device can't read the key
+file. `TokenCodec` is the seam — the new implementation drops in
+without callers changing. On-device smoke tests against a real
+orchestrator over Tailscale follow once the Keystore binding lands.
+
 ---
 
 ## 🚀 Running the orchestrator
